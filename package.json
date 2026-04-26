@@ -28,7 +28,6 @@
     "build:force": "tsc -b tsconfig.json --force && corepack pnpm --filter agentmako run build && corepack pnpm --filter @mako-ai/web run build",
     "typecheck": "tsc -b tsconfig.json --pretty false && tsc --noEmit -p test/tsconfig.json --pretty false",
     "dev": "corepack pnpm -r --parallel --if-present dev",
-    "ml:readiness": "node --import tsx scripts/ml-readiness-report.ts",
     "supabase:start": "corepack pnpm exec supabase start",
     "supabase:reset": "corepack pnpm exec supabase db reset --yes",
     "supabase:status": "corepack pnpm exec supabase status -o env",
