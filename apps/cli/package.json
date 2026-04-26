@@ -5,8 +5,27 @@
   "license": "Apache-2.0",
   "repository": {
     "type": "git",
-    "url": "https://github.com/dustin/agentmako.git",
+    "url": "git+https://github.com/drhalto/agentmako.git",
     "directory": "apps/cli"
+  },
+  "homepage": "https://github.com/drhalto/agentmako#readme",
+  "bugs": {
+    "url": "https://github.com/drhalto/agentmako/issues"
+  },
+  "keywords": [
+    "mcp",
+    "model-context-protocol",
+    "claude-code",
+    "coding-agents",
+    "code-intelligence",
+    "local-first",
+    "developer-tools"
+  ],
+  "engines": {
+    "node": ">=20"
+  },
+  "publishConfig": {
+    "access": "public"
   },
   "type": "module",
   "main": "./dist/index.js",
