@@ -19,7 +19,7 @@
  */
 
 import assert from "node:assert/strict";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { randomUUID } from "node:crypto";
 import os from "node:os";
 import path from "node:path";
@@ -98,25 +98,32 @@ function seedProject(projectRoot: string, projectId: string): void {
     });
 
     store.replaceIndexSnapshot({
-      files: contents.map(({ relPath, body }) => ({
-        path: relPath,
-        sha256: relPath,
-        language: "typescript",
-        sizeBytes: body.length,
-        lineCount: body.split("\n").length,
-        chunks: [
-          {
-            chunkKind: "file" as const,
-            name: relPath,
-            lineStart: 1,
-            lineEnd: body.split("\n").length,
-            content: body,
-          },
-        ],
-        symbols: [],
-        imports: [],
-        routes: [],
-      })),
+      files: contents.map(({ relPath, body }) => {
+        const indexedContent = `${body}\n`;
+        const lineCount = indexedContent.split("\n").length;
+        const stat = statSync(path.join(projectRoot, relPath));
+
+        return {
+          path: relPath,
+          sha256: relPath,
+          language: "typescript",
+          sizeBytes: stat.size,
+          lineCount,
+          lastModifiedAt: stat.mtime.toISOString(),
+          chunks: [
+            {
+              chunkKind: "file" as const,
+              name: relPath,
+              lineStart: 1,
+              lineEnd: lineCount,
+              content: indexedContent,
+            },
+          ],
+          symbols: [],
+          imports: [],
+          routes: [],
+        };
+      }),
       schemaObjects: [],
       schemaUsages: [],
     });

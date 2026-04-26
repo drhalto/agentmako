@@ -6,7 +6,7 @@
 
 import assert from "node:assert/strict";
 import { createHash, randomUUID } from "node:crypto";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, statSync, writeFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import type {
@@ -48,6 +48,7 @@ function writeProjectFile(projectRoot: string, relPath: string, content: string)
 }
 
 function fileRecord(
+  projectRoot: string,
   relPath: string,
   content: string,
   options: {
@@ -55,20 +56,23 @@ function fileRecord(
     imports?: ImportEdgeRecord[];
   } = {},
 ): IndexedFileRecord {
-  const lines = lineCount(content);
+  const indexedContent = `${content}\n`;
+  const lines = lineCount(indexedContent);
+  const stat = statSync(path.join(projectRoot, relPath));
   return {
     path: relPath,
-    sha256: sha256(content),
+    sha256: sha256(indexedContent),
     language: "typescript",
-    sizeBytes: Buffer.byteLength(content, "utf8"),
+    sizeBytes: stat.size,
     lineCount: lines,
+    lastModifiedAt: stat.mtime.toISOString(),
     chunks: [
       {
         chunkKind: "file",
         name: relPath,
         lineStart: 1,
         lineEnd: lines,
-        content,
+        content: indexedContent,
       },
     ],
     symbols: options.symbols ?? [],
@@ -131,7 +135,7 @@ function seedProject(projectRoot: string, projectId: string): void {
 
     writeProjectFile(projectRoot, relPath, content);
     featureFiles.push(
-      fileRecord(relPath, content, {
+      fileRecord(projectRoot, relPath, content, {
         symbols: [
           {
             name: `feature${index}`,
@@ -187,7 +191,7 @@ function seedProject(projectRoot: string, projectId: string): void {
 
     store.replaceIndexSnapshot({
       files: [
-        fileRecord("src/shared.ts", sharedContent, {
+        fileRecord(projectRoot, "src/shared.ts", sharedContent, {
           symbols: [
             {
               name: "sharedValue",
@@ -198,7 +202,7 @@ function seedProject(projectRoot: string, projectId: string): void {
             },
           ],
         }),
-        fileRecord("src/user-query.ts", userQueryContent, {
+        fileRecord(projectRoot, "src/user-query.ts", userQueryContent, {
           symbols: [
             {
               name: "loadUser",
@@ -210,7 +214,7 @@ function seedProject(projectRoot: string, projectId: string): void {
             },
           ],
         }),
-        fileRecord("src/db-usage.ts", dbUsageContent, {
+        fileRecord(projectRoot, "src/db-usage.ts", dbUsageContent, {
           symbols: [
             {
               name: "loadUsers",

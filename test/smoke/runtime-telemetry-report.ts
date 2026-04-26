@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import type {
@@ -104,7 +104,14 @@ function makeGraphNeighborsOutput(projectId: string): GraphNeighborsToolOutput {
 
 async function main(): Promise<void> {
   const tmpRoot = mkdtempSync(path.join(os.tmpdir(), "mako-rt-report-"));
+  const previousStateHome = process.env.MAKO_STATE_HOME;
+  const previousStateDirname = process.env.MAKO_STATE_DIRNAME;
   try {
+    const stateHome = path.join(tmpRoot, "state");
+    mkdirSync(stateHome, { recursive: true });
+    process.env.MAKO_STATE_HOME = stateHome;
+    delete process.env.MAKO_STATE_DIRNAME;
+
     const projectId = "proj_rt_report";
     seedProject(tmpRoot, projectId);
 
@@ -314,6 +321,16 @@ async function main(): Promise<void> {
 
     console.log("runtime-telemetry-report: PASS");
   } finally {
+    if (previousStateHome == null) {
+      delete process.env.MAKO_STATE_HOME;
+    } else {
+      process.env.MAKO_STATE_HOME = previousStateHome;
+    }
+    if (previousStateDirname == null) {
+      delete process.env.MAKO_STATE_DIRNAME;
+    } else {
+      process.env.MAKO_STATE_DIRNAME = previousStateDirname;
+    }
     rmSync(tmpRoot, { recursive: true, force: true });
   }
 }
