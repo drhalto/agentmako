@@ -30,7 +30,10 @@ interface ClassifiedSource {
 }
 
 function normalizeManifestPath(manifestPath: string): string {
-  return manifestPath.replace(/\\/g, "/").replace(/^\.\//, "").replace(/\/+$/, "");
+  const replaced = manifestPath.replace(/\\/g, "/").replace(/^\.\//, "");
+  let end = replaced.length;
+  while (end > 0 && replaced.charAt(end - 1) === "/") end--;
+  return replaced.slice(0, end);
 }
 
 function classifySource(manifestPath: string): SchemaSourceKind | null {

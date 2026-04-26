@@ -104,14 +104,20 @@ interface FallbackChainEntry {
 }
 
 const AUTO_TITLE_MAX_LENGTH = 72;
+const AUTO_TITLE_LEADING = new Set(["`", '"', "'", "(", "[", "{", "<", " ", "\t", "\n", "\r"]);
+const AUTO_TITLE_TRAILING = new Set([
+  "`", '"', "'", ")", "]", "}", ">", ".", ",", "!", "?", ";", ":", " ", "\t", "\n", "\r",
+]);
 
 function deriveAutoTitle(content: string): string | null {
   const normalized = content.replace(/\s+/g, " ").trim();
   if (!normalized) return null;
 
-  const stripped = normalized
-    .replace(/^[`"'([{<\s]+/, "")
-    .replace(/[`"')\]}>.,!?;:\s]+$/, "");
+  let start = 0;
+  while (start < normalized.length && AUTO_TITLE_LEADING.has(normalized.charAt(start))) start++;
+  let end = normalized.length;
+  while (end > start && AUTO_TITLE_TRAILING.has(normalized.charAt(end - 1))) end--;
+  const stripped = normalized.slice(start, end);
   const base = stripped.length > 0 ? stripped : normalized;
   if (base.length <= AUTO_TITLE_MAX_LENGTH) return base;
 

@@ -147,12 +147,12 @@ function referencePrecedentItem(
 }
 
 function parseSymbolName(title: string): string {
-  const match = /^\S+\s+(.+)$/.exec(title.trim());
+  const match = /^\S+\s+(\S.*)$/.exec(title.trim());
   return match?.[1]?.trim() || title.trim();
 }
 
 function parseRouteContent(content: string): { method: string | null; pattern: string } {
-  const match = /^([A-Z]+)\s+(.+)$/.exec(content.trim());
+  const match = /^([A-Z]+)\s+(\S.*)$/.exec(content.trim());
   if (!match) {
     return {
       method: null,

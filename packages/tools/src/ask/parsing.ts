@@ -1,12 +1,23 @@
 import type { AskToolInput, JsonObject } from "@mako-ai/contracts";
 import { type AskSelection, type AskToolSelection, projectLocatorArgs, toProjectScopedArgs } from "./types.js";
 
+const QUESTION_TRAILING_PUNCT = new Set(["?", ".", "!"]);
+const VALUE_TRAILING_PUNCT = new Set(["?", ".", "!", ",", ":", ";"]);
+
+function trimTrailingFromSet(value: string, chars: Set<string>): string {
+  let end = value.length;
+  while (end > 0 && chars.has(value.charAt(end - 1))) {
+    end--;
+  }
+  return value.slice(0, end);
+}
+
 export function normalizeQuestion(question: string): string {
-  return question.trim().replace(/\s+/g, " ").replace(/[?.!]+$/, "");
+  return trimTrailingFromSet(question.trim().replace(/\s+/g, " "), QUESTION_TRAILING_PUNCT);
 }
 
 export function trimTrailingPunctuation(value: string): string {
-  return value.trim().replace(/[?.!,:;]+$/g, "");
+  return trimTrailingFromSet(value.trim(), VALUE_TRAILING_PUNCT);
 }
 
 export function extractRoutePath(question: string): string | null {
@@ -14,10 +25,19 @@ export function extractRoutePath(question: string): string | null {
   return match?.[0] ?? null;
 }
 
+const FILE_EXTENSION_RE = /^[A-Za-z0-9_-]+$/;
+
 export function extractFilePath(question: string): string | null {
   const normalized = question.replace(/\\/g, "/");
-  const match = normalized.match(/([A-Za-z0-9._-]+(?:\/[A-Za-z0-9._-]+)+\.[A-Za-z0-9._-]+)/);
-  return match?.[1] ?? null;
+  for (const token of normalized.split(/[^A-Za-z0-9_./-]+/)) {
+    if (!token.includes("/")) continue;
+    const dot = token.lastIndexOf(".");
+    if (dot <= 0 || dot >= token.length - 1) continue;
+    if (FILE_EXTENSION_RE.test(token.slice(dot + 1))) {
+      return token;
+    }
+  }
+  return null;
 }
 
 export function extractDbIdentifier(value: string): string | null {
@@ -164,7 +184,7 @@ function selectDbQuestion(question: string, input: AskToolInput): AskToolSelecti
     };
   }
 
-  const columnMatch = question.match(/^(?:what\s+columns(?:\s+does)?|columns\s+of|columns\s+for|show\s+(?:me\s+)?columns\s+of|show\s+(?:me\s+)?columns\s+for)\s+(.+?)(?:\s+have)?$/i);
+  const columnMatch = question.match(/^(?:what columns(?: does)?|columns of|columns for|show (?:me )?columns of|show (?:me )?columns for) (.+?)(?: have)?$/i);
   if (columnMatch) {
     const table = extractDbIdentifier(columnMatch[1]);
     if (table) {
@@ -178,7 +198,7 @@ function selectDbQuestion(question: string, input: AskToolInput): AskToolSelecti
     }
   }
 
-  const schemaMatch = question.match(/^(?:schema\s+for|show\s+(?:me\s+)?the\s+schema\s+for|show\s+(?:me\s+)?the\s+table\s+shape\s+for|table\s+shape\s+for|shape\s+for)\s+(.+)$/i);
+  const schemaMatch = question.match(/^(?:schema for|show (?:me )?the schema for|show (?:me )?the table shape for|table shape for|shape for) (.+)$/i);
   if (schemaMatch) {
     const table = extractDbIdentifier(schemaMatch[1]);
     if (table) {
@@ -192,7 +212,7 @@ function selectDbQuestion(question: string, input: AskToolInput): AskToolSelecti
     }
   }
 
-  const fkMatch = question.match(/^(?:what\s+foreign\s+keys\s+does|foreign\s+keys\s+for|fk\s+for|what\s+references)\s+(.+?)(?:\s+have)?$/i);
+  const fkMatch = question.match(/^(?:what foreign keys does|foreign keys for|fk for|what references) (.+?)(?: have)?$/i);
   if (fkMatch) {
     const table = extractDbIdentifier(fkMatch[1]);
     if (table) {
@@ -206,7 +226,7 @@ function selectDbQuestion(question: string, input: AskToolInput): AskToolSelecti
     }
   }
 
-  const rlsMatch = question.match(/^(?:is\s+rls\s+enabled\s+on|show\s+policies\s+for|what\s+policies\s+protect|show\s+rls\s+for|rls\s+for)\s+(.+)$/i);
+  const rlsMatch = question.match(/^(?:is rls enabled on|show policies for|what policies protect|show rls for|rls for) (.+)$/i);
   if (rlsMatch) {
     const table = extractDbIdentifier(rlsMatch[1]);
     if (table) {
@@ -221,10 +241,10 @@ function selectDbQuestion(question: string, input: AskToolInput): AskToolSelecti
   }
 
   const rpcMatch =
-    question.match(/^show\s+rpc\s+(.+)$/i) ??
-    question.match(/^show\s+(?:function|procedure)\s+(.+)$/i) ??
-    question.match(/^(?:arguments|args?)\s+for\s+(.+)$/i) ??
-    question.match(/^what\s+does\s+(.+?)\s+return$/i);
+    question.match(/^show rpc (.+)$/i) ??
+    question.match(/^show (?:function|procedure) (.+)$/i) ??
+    question.match(/^(?:arguments|args?) for (.+)$/i) ??
+    question.match(/^what does (.+?) return$/i);
   if (rpcMatch) {
     const selector = extractRoutineSelector(rpcMatch[1]);
     if (selector) {
@@ -250,9 +270,9 @@ function selectDbQuestion(question: string, input: AskToolInput): AskToolSelecti
 
 function selectAuthQuestion(question: string, input: AskToolInput): AskToolSelection | null {
   const authMatch =
-    question.match(/^what\s+auth\s+protects\s+(.+)$/i) ??
-    question.match(/^auth\s+path\s+for\s+(.+)$/i) ??
-    question.match(/^how\s+is\s+(.+?)\s+protected$/i);
+    question.match(/^what auth protects (.+)$/i) ??
+    question.match(/^auth path for (.+)$/i) ??
+    question.match(/^how is (.+?) protected$/i);
   if (!authMatch) {
     return null;
   }
@@ -295,9 +315,9 @@ function selectAuthQuestion(question: string, input: AskToolInput): AskToolSelec
 
 function selectRouteQuestion(question: string, input: AskToolInput): AskToolSelection | null {
   const routeMatch =
-    question.match(/^where\s+is\s+(.+?)\s+handled$/i) ??
-    question.match(/^what\s+handles\s+(.+)$/i) ??
-    question.match(/^trace\s+route\s+(.+)$/i);
+    question.match(/^where is (.+?) handled$/i) ??
+    question.match(/^what handles (.+)$/i) ??
+    question.match(/^trace route (.+)$/i);
   if (!routeMatch) {
     return null;
   }
@@ -327,7 +347,7 @@ function selectImportOrSymbolQuestion(question: string, input: AskToolInput): As
     };
   }
 
-  if (/\bimport cycles\b/i.test(question) || /^show\s+import\s+cycles$/i.test(question)) {
+  if (/\bimport cycles\b/i.test(question) || /^show import cycles$/i.test(question)) {
     return {
       mode: "tool",
       selectedFamily: "imports",
@@ -337,7 +357,7 @@ function selectImportOrSymbolQuestion(question: string, input: AskToolInput): As
     };
   }
 
-  const importsMatch = question.match(/^what\s+does\s+(.+)\s+import$/i);
+  const importsMatch = question.match(/^what does (.+) import$/i);
   if (importsMatch) {
     const file = extractFilePath(importsMatch[1]);
     if (file) {
@@ -351,7 +371,7 @@ function selectImportOrSymbolQuestion(question: string, input: AskToolInput): As
     }
   }
 
-  const impactMatch = question.match(/^what\s+depends\s+on\s+(.+)$/i);
+  const impactMatch = question.match(/^what depends on (.+)$/i);
   if (impactMatch) {
     const file = extractFilePath(impactMatch[1]);
     if (file) {
@@ -365,7 +385,7 @@ function selectImportOrSymbolQuestion(question: string, input: AskToolInput): As
     }
   }
 
-  const symbolsMatch = question.match(/^symbols\s+in\s+(.+)$/i);
+  const symbolsMatch = question.match(/^symbols in (.+)$/i);
   if (symbolsMatch) {
     const file = extractFilePath(symbolsMatch[1]);
     if (file) {
@@ -380,9 +400,9 @@ function selectImportOrSymbolQuestion(question: string, input: AskToolInput): As
   }
 
   const exportsMatch =
-    question.match(/^exports?\s+of\s+(.+)$/i) ??
-    question.match(/^what\s+does\s+file\s+(.+?)\s+export$/i) ??
-    question.match(/^what\s+does\s+(.+?)\s+export$/i);
+    question.match(/^exports? of (.+)$/i) ??
+    question.match(/^what does file (.+?) export$/i) ??
+    question.match(/^what does (.+?) export$/i);
   if (exportsMatch) {
     const candidate = exportsMatch[1] ?? "";
     const file = extractFilePath(candidate);
@@ -402,8 +422,8 @@ function selectImportOrSymbolQuestion(question: string, input: AskToolInput): As
 
 function selectComposerQuestion(question: string, input: AskToolInput): AskToolSelection | null {
   const traceFileMatch =
-    question.match(/^trace\s+file\s+(.+)$/i) ??
-    question.match(/^context\s+for\s+(.+\.[A-Za-z0-9._-]+)$/i);
+    question.match(/^trace file (.+)$/i) ??
+    question.match(/^context for (.+\.[A-Za-z0-9_-]+)$/i);
   if (traceFileMatch) {
     const file = extractFilePath(traceFileMatch[1]);
     if (file) {
@@ -417,7 +437,7 @@ function selectComposerQuestion(question: string, input: AskToolInput): AskToolS
     }
   }
 
-  const preflightTableMatch = question.match(/^preflight\s+table\s+(.+)$/i);
+  const preflightTableMatch = question.match(/^preflight table (.+)$/i);
   if (preflightTableMatch) {
     const table = extractDbIdentifier(preflightTableMatch[1]);
     if (table) {
@@ -432,8 +452,8 @@ function selectComposerQuestion(question: string, input: AskToolInput): AskToolS
   }
 
   const traceTableMatch =
-    question.match(/^trace\s+table\s+(.+)$/i) ??
-    question.match(/^(?:where\s+is|what\s+uses)\s+table\s+(.+?)(?:\s+used)?$/i);
+    question.match(/^trace table (.+)$/i) ??
+    question.match(/^(?:where is|what uses) table (.+?)(?: used)?$/i);
   if (traceTableMatch) {
     const table = extractDbIdentifier(traceTableMatch[1]);
     if (table) {
@@ -448,8 +468,8 @@ function selectComposerQuestion(question: string, input: AskToolInput): AskToolS
   }
 
   const traceRpcMatch =
-    question.match(/^trace\s+rpc\s+(.+)$/i) ??
-    question.match(/^who\s+calls\s+rpc\s+(.+)$/i);
+    question.match(/^trace rpc (.+)$/i) ??
+    question.match(/^who calls rpc (.+)$/i);
   if (traceRpcMatch) {
     const selector = extractRoutineSelector(traceRpcMatch[1]);
     if (selector) {
@@ -467,7 +487,7 @@ function selectComposerQuestion(question: string, input: AskToolInput): AskToolS
     }
   }
 
-  const traceEdgeMatch = question.match(/^trace\s+edge\s+(.+)$/i);
+  const traceEdgeMatch = question.match(/^trace edge (.+)$/i);
   if (traceEdgeMatch) {
     const name = trimTrailingPunctuation(traceEdgeMatch[1]);
     if (name.length > 0) {
@@ -481,7 +501,7 @@ function selectComposerQuestion(question: string, input: AskToolInput): AskToolS
     }
   }
 
-  const traceErrorMatch = question.match(/^trace\s+error\s+(.+)$/i);
+  const traceErrorMatch = question.match(/^trace error (.+)$/i);
   if (traceErrorMatch) {
     const term = trimTrailingPunctuation(traceErrorMatch[1]);
     if (term.length > 0) {
@@ -516,9 +536,9 @@ function selectComposerQuestion(question: string, input: AskToolInput): AskToolS
 
 function selectSchemaOrFileQuestion(question: string, input: AskToolInput): AskToolSelection | null {
   const schemaMatch =
-    question.match(/^where\s+is\s+(.+?)\s+used$/i) ??
-    question.match(/^where\s+is\s+(.+?)\s+referenced$/i) ??
-    question.match(/^what\s+code\s+uses\s+(.+)$/i);
+    question.match(/^where is (.+?) used$/i) ??
+    question.match(/^where is (.+?) referenced$/i) ??
+    question.match(/^what code uses (.+)$/i);
   if (schemaMatch) {
     const selector = extractSchemaUsageSelector(schemaMatch[1]);
     if (selector) {
@@ -532,7 +552,7 @@ function selectSchemaOrFileQuestion(question: string, input: AskToolInput): AskT
     }
   }
 
-  const fileHealthMatch = question.match(/^file\s+health\s+for\s+(.+)$/i) ?? question.match(/^what\s+does\s+(.+?)\s+do$/i);
+  const fileHealthMatch = question.match(/^file health for (.+)$/i) ?? question.match(/^what does (.+?) do$/i);
   if (fileHealthMatch) {
     const file = extractFilePath(fileHealthMatch[1]);
     if (file) {

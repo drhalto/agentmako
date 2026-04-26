@@ -78,7 +78,7 @@ export function collectExactRouteCandidates(
     return [];
   }
 
-  const methodPattern = /^(ANY|GET|POST|PUT|PATCH|DELETE|HEAD|OPTIONS)\s+(.+)$/i;
+  const methodPattern = /^(ANY|GET|POST|PUT|PATCH|DELETE|HEAD|OPTIONS)\s+(\S.*)$/i;
   const routes = projectStore.listRoutes();
   const exactByRouteKey = routes.filter((route) => route.routeKey === normalized);
   if (exactByRouteKey.length > 0) {
