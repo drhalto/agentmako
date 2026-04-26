@@ -1,6 +1,6 @@
 # Start Here
 
-Mako AI is a local-first project intelligence engine for coding agents.
+agentmako is a local-first project intelligence engine for coding agents.
 Use it when an agent needs fast, evidence-backed context about a
 codebase, database schema, diagnostics, prior tool runs, and Reef Engine
 facts.
@@ -24,7 +24,7 @@ facts.
 - The optional Studio/Tauri/MSIX desktop work is not part of the main
   release surface.
 - The repository is being prepared for a clean Apache-2.0 public release
-  into a new repository with no private development history.
+  as `agentmako`, with no private development history.
 
 ## First Local Run
 
@@ -64,11 +64,3 @@ corepack pnpm run test:smoke:reef-model-facing-views
 ```
 
 Run `corepack pnpm test` for the full smoke suite.
-
-## Release Hygiene
-
-Before publishing publicly, use
-[docs/open-source-release.md](./docs/open-source-release.md). Do not copy
-this repo's `.git` directory, local runtime state, `.env` files, SQLite
-databases, generated bundles, local logs, or agent worktrees into the
-public repository.

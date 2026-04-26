@@ -5,7 +5,7 @@
   "license": "Apache-2.0",
   "repository": {
     "type": "git",
-    "url": "https://github.com/dustin/mako-ai.git",
+    "url": "https://github.com/dustin/agentmako.git",
     "directory": "apps/cli"
   },
   "type": "module",

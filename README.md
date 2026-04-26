@@ -1,6 +1,10 @@
-# Mako AI
+<p align="center">
+  <img src="apps/web/public/agentmako.png" alt="agentmako logo" width="180" />
+</p>
 
-Mako AI is a local-first codebase intelligence engine for AI coding
+# agentmako
+
+agentmako is a local-first codebase intelligence engine for AI coding
 tools.
 
 It gives agents like Codex, Claude Code, Cursor, and local harnesses a
@@ -29,11 +33,11 @@ Mako is built for the first mile of coding-agent work:
   publications, subscriptions, and replication
 - Recall, acknowledgements, and agent feedback for repeated review work
 
-Everything important runs locally. No hosted Mako service is required.
+Everything important runs locally. No hosted service is required.
 
 ## Happy Path Setup
 
-This is the recommended setup while Mako is pre-1.0 and being run from
+This is the recommended setup while agentmako is pre-1.0 and being run from
 source.
 
 ### 1. Install prerequisites
@@ -50,11 +54,11 @@ Enable Corepack if needed:
 corepack enable
 ```
 
-### 2. Clone and build Mako
+### 2. Clone and build agentmako
 
 ```bash
-git clone <your-mako-repo-url> mako-ai
-cd mako-ai
+git clone <your-agentmako-repo-url> agentmako
+cd agentmako
 corepack pnpm install
 corepack pnpm run build
 npm link ./apps/cli
@@ -126,7 +130,42 @@ In the agent, start with one of these tools:
 - `reef_scout` when you want ranked project facts/findings/history
 - `ask` when you have a natural-language repo question
 
-### 6. Optional: launch the dashboard
+### 6. Optional: use the Claude Code plugin
+
+Plain MCP works with Claude Code, but the bundled plugin adds Mako-specific
+Claude skills and includes the same `agentmako mcp` wiring in
+`mako-ai-claude-plugin/.mcp.json`.
+
+Prerequisites:
+
+- Claude Code installed
+- `agentmako` available on `PATH`
+- Your target project already attached with `agentmako connect`
+
+From the agentmako repo root:
+
+```powershell
+claude plugin validate .\mako-ai-claude-plugin
+claude --plugin-dir .\mako-ai-claude-plugin
+```
+
+Inside Claude Code, run `/mcp` and confirm `mako-ai` is connected.
+
+The plugin exposes these skills:
+
+- `/mako-ai:mako-guide`
+- `/mako-ai:mako-discovery`
+- `/mako-ai:mako-trace`
+- `/mako-ai:mako-neighborhoods`
+- `/mako-ai:mako-graph`
+- `/mako-ai:mako-database`
+- `/mako-ai:mako-code-intel`
+- `/mako-ai:mako-workflow`
+
+Use the plugin when you want Claude Code to load Mako-specific guidance for
+which tools to call and how to interpret their results.
+
+### 7. Optional: launch the dashboard
 
 From your target project:
 
@@ -136,7 +175,7 @@ agentmako dashboard .
 
 This starts the local API, harness service, and web dashboard.
 
-### 7. Optional: add Supabase/Postgres awareness
+### 8. Optional: add Supabase/Postgres awareness
 
 Mako works without a database. Add this only after code intelligence is
 working.
@@ -199,7 +238,7 @@ All commands and the MCP config stay the same.
 
 ## Development Checks
 
-From the Mako repo:
+From the agentmako repo:
 
 ```bash
 corepack pnpm run typecheck
@@ -238,6 +277,7 @@ devdocs/      roadmap and design records
 
 - [Tool overview](./TOOLS.md)
 - [CLI docs](./apps/cli/README.md)
+- [Claude Code plugin](./mako-ai-claude-plugin/README.md)
 - [Reef Engine](./devdocs/roadmap/reef-engine/README.md)
 - [Contributing](./CONTRIBUTING.md)
 - [Open source release guide](./docs/open-source-release.md)

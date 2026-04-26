@@ -54,4 +54,4 @@ Advanced substrate commands are still available under `agentmako project …` fo
 
 ## More
 
-The `agentmako` CLI is one surface of the mako-ai project. For the full architecture, roadmap, and contributor docs, see the [main repository](https://github.com/dustin/mako-ai).
+The `agentmako` CLI is one surface of the agentmako project. For the full architecture, roadmap, and contributor docs, see the [main repository](https://github.com/dustin/agentmako).

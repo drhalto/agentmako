@@ -88,7 +88,7 @@ export function Shell({ children }: ShellProps) {
             title={isAgentRoute ? "Back to dashboard" : "Home"}
           >
             <BrandMark />
-            <span className="mk-wordmark text-[14px]">mako</span>
+            <span className="mk-wordmark text-[14px]">agentmako</span>
             {isAgentRoute ? (
               <span
                 aria-hidden
@@ -295,22 +295,14 @@ function ScopeIcon() {
 
 function BrandMark() {
   return (
-    <svg
-      viewBox="0 0 16 16"
-      width="16"
-      height="16"
+    <img
+      src="/agentmako.png"
+      alt=""
+      width="24"
+      height="24"
       aria-hidden
-      className="text-mk-crest"
-    >
-      <path
-        d="M2 12L8 3L14 12"
-        stroke="currentColor"
-        strokeWidth="2"
-        strokeLinecap="round"
-        strokeLinejoin="round"
-        fill="none"
-      />
-    </svg>
+      className="h-6 w-6 rounded-[4px] object-cover"
+    />
   );
 }
 
