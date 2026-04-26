@@ -25,8 +25,8 @@ Mako is built for the first mile of coding-agent work:
 - Deterministic context packets: `context_packet`, `reef_scout`
 - Code search and structure tools: `cross_search`, `live_text_search`,
   `ast_find_pattern`, `repo_map`
-- Reef Engine facts and findings across indexed, working-tree, and staged
-  state
+- [Reef Engine](./docs/reef-engine.md) facts and findings across indexed,
+  working-tree, and staged state
 - TypeScript, ESLint, Oxlint, Biome, and staged git diagnostic ingestion
 - Optional Postgres/Supabase schema snapshots and read-only DB inspection
 - Local DB review comments for notes on tables, RLS, triggers,
@@ -57,7 +57,7 @@ corepack enable
 ### 2. Clone and build agentmako
 
 ```bash
-git clone <your-agentmako-repo-url> agentmako
+git clone https://github.com/drhalto/agentmako.git
 cd agentmako
 corepack pnpm install
 corepack pnpm run build
@@ -277,10 +277,12 @@ devdocs/      roadmap and design records
 
 - [Tool overview](./TOOLS.md)
 - [CLI docs](./apps/cli/README.md)
+- [Reef Engine](./docs/reef-engine.md)
 - [Claude Code plugin](./mako-ai-claude-plugin/README.md)
-- [Reef Engine](./devdocs/roadmap/reef-engine/README.md)
+- [Agent guidance to paste into CLAUDE.md / AGENTS.md](./AGENTS.md)
 - [Contributing](./CONTRIBUTING.md)
-- [Open source release guide](./docs/open-source-release.md)
+- [Security policy](./SECURITY.md)
+- [Changelog](./CHANGELOG.md)
 
 ## License
 

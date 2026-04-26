@@ -1,7 +1,0 @@
-{
-  "mcpServers": {
-    "mako-ai": {
-      "command": "agentmako",
-      "args": ["mcp"]
-    }
-  }

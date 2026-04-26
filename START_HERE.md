@@ -12,9 +12,10 @@ facts.
 | Product overview | [README.md](./README.md) |
 | Tool overview | [TOOLS.md](./TOOLS.md) |
 | CLI package docs | [apps/cli/README.md](./apps/cli/README.md) |
-| Reef Engine docs | [devdocs/roadmap/reef-engine/README.md](./devdocs/roadmap/reef-engine/README.md) |
-| Open source release guide | [docs/open-source-release.md](./docs/open-source-release.md) |
+| Agent guidance to paste into CLAUDE.md / AGENTS.md | [AGENTS.md](./AGENTS.md) |
+| Claude Code plugin | [mako-ai-claude-plugin/README.md](./mako-ai-claude-plugin/README.md) |
 | Contributing | [CONTRIBUTING.md](./CONTRIBUTING.md) |
+| Security policy | [SECURITY.md](./SECURITY.md) |
 | Changelog | [CHANGELOG.md](./CHANGELOG.md) |
 
 ## Current Status
@@ -23,8 +24,8 @@ facts.
   packages, and Reef Engine.
 - The optional Studio/Tauri/MSIX desktop work is not part of the main
   release surface.
-- The repository is being prepared for a clean Apache-2.0 public release
-  as `agentmako`, with no private development history.
+- Released under Apache-2.0 as `agentmako`. See
+  [CHANGELOG.md](./CHANGELOG.md) for the version history.
 
 ## First Local Run
 
