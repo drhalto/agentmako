@@ -1,0 +1,10 @@
+packages:
+  - apps/*
+  - packages/*
+  - services/*
+  - extensions/*
+
+onlyBuiltDependencies:
+  - '@vscode/ripgrep'
+  - esbuild
+  - supabase

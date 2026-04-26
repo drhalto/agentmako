@@ -1,0 +1,40 @@
+<!doctype html>
+<html lang="en" class="mk-root">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="color-scheme" content="light dark" />
+    <title>mako</title>
+    <link rel="icon" type="image/svg+xml" href="/mako-mark.svg" />
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      rel="stylesheet"
+      href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;500&display=swap"
+    />
+    <script>
+      // Pre-paint theme application — avoids FOUC. Reads localStorage,
+      // falls back to system preference, sets `data-theme` on <html>.
+      (function () {
+        try {
+          var stored = localStorage.getItem("mako.theme");
+          var resolved;
+          if (stored === "light" || stored === "dark") {
+            resolved = stored;
+          } else {
+            resolved = window.matchMedia("(prefers-color-scheme: dark)").matches
+              ? "dark"
+              : "light";
+          }
+          document.documentElement.setAttribute("data-theme", resolved);
+        } catch (_) {
+          document.documentElement.setAttribute("data-theme", "light");
+        }
+      })();
+    </script>
+  </head>
+  <body>
+    <div id="root"></div>
+    <script type="module" src="/src/main.tsx"></script>
+  </body>
+</html>

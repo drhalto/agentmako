@@ -1,0 +1,3 @@
+{
+  "__comment": "Phase 3.9 bundled models.dev snapshot. Regenerate with `node apps/cli/scripts/snapshot-models.ts`. An empty object here means the snapshot hasn't been fetched yet; the BUNDLED_CATALOG floor still answers the catalog query."
+}

@@ -1,0 +1,48 @@
+{
+  "name": "agentmako",
+  "version": "0.1.0",
+  "description": "Agentmako is a local project intelligence CLI and MCP server for codebases and databases, with repo-aware indexing, schema snapshots, and secure live database connectivity.",
+  "license": "Apache-2.0",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/dustin/mako-ai.git",
+    "directory": "apps/cli"
+  },
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "bin": {
+    "agentmako": "./dist/index.js",
+    "mako": "./dist/index.js"
+  },
+  "files": [
+    "dist",
+    "README.md"
+  ],
+  "scripts": {
+    "build": "tsup",
+    "build:types": "tsc -p tsconfig.json --emitDeclarationOnly --outDir dist",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "prepublishOnly": "npm run build:types && npm run build && node scripts/verify-bundle.mjs"
+  },
+  "dependencies": {
+    "@ast-grep/napi": "^0.39.5",
+    "@inquirer/password": "^5.0.12",
+    "@modelcontextprotocol/sdk": "^1.17.4",
+    "@napi-rs/keyring": "^1.1.5",
+    "@vscode/ripgrep": "^1.17.1",
+    "eventsource-parser": "^3.0.8",
+    "pg": "^8.20.0",
+    "pgsql-parser": "^17.9.15",
+    "tree-sitter-typescript": "^0.23.2",
+    "typescript": "^5.8.3",
+    "web-tree-sitter": "^0.25.8"
+  },
+  "devDependencies": {
+    "@mako-ai/api": "workspace:*",
+    "@mako-ai/config": "workspace:*",
+    "@mako-ai/contracts": "workspace:*",
+    "@mako-ai/harness": "workspace:*",
+    "tsup": "^8.5.1"
+  }
+}

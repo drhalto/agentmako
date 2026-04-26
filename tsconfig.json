@@ -1,0 +1,31 @@
+{
+  "files": [],
+  "references": [
+    { "path": "./packages/contracts" },
+    { "path": "./packages/config" },
+    { "path": "./packages/logger" },
+    { "path": "./packages/store" },
+    { "path": "./packages/tools" },
+    { "path": "./packages/sdk" },
+    { "path": "./packages/harness-contracts" },
+    { "path": "./packages/harness-tools" },
+    { "path": "./packages/harness-core" },
+    { "path": "./services/engine" },
+    { "path": "./services/indexer" },
+    { "path": "./services/api" },
+    { "path": "./services/harness" },
+    { "path": "./services/worker" },
+    { "path": "./apps/cli" },
+    { "path": "./extensions/filesystem" },
+    { "path": "./extensions/github" },
+    { "path": "./extensions/postgres" },
+    { "path": "./extensions/supabase" },
+    { "path": "./extensions/openai" },
+    { "path": "./extensions/anthropic" },
+    { "path": "./extensions/moonshot" },
+    { "path": "./extensions/ollama" },
+    { "path": "./extensions/ollama-cloud" },
+    { "path": "./extensions/openai-compatible" },
+    { "path": "./extensions/lmstudio" }
+  ]
+}

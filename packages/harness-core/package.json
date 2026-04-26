@@ -1,0 +1,29 @@
+{
+  "name": "@mako-ai/harness-core",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "typecheck": "tsc -p tsconfig.json --noEmit"
+  },
+  "dependencies": {
+    "@ai-sdk/anthropic": "^1.0.0",
+    "@ai-sdk/openai": "^1.0.0",
+    "@ai-sdk/openai-compatible": "^0.1.0",
+    "@mako-ai/config": "workspace:*",
+    "@mako-ai/contracts": "workspace:*",
+    "@mako-ai/harness-contracts": "workspace:*",
+    "@mako-ai/harness-tools": "workspace:*",
+    "@mako-ai/logger": "workspace:*",
+    "@mako-ai/store": "workspace:*",
+    "@mako-ai/tools": "workspace:*",
+    "@napi-rs/keyring": "^1.1.5",
+    "@types/picomatch": "^4.0.3",
+    "ai": "^4.0.0",
+    "picomatch": "^4.0.4",
+    "zod": "^3.25.76"
+  }
+}

@@ -1,0 +1,26 @@
+{
+  "name": "@mako-ai/harness",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "start": "node ./dist/index.js"
+  },
+  "dependencies": {
+    "@mako-ai/config": "workspace:*",
+    "@mako-ai/contracts": "workspace:*",
+    "@mako-ai/extension-lmstudio": "workspace:*",
+    "@mako-ai/extension-ollama": "workspace:*",
+    "@mako-ai/harness-contracts": "workspace:*",
+    "@mako-ai/harness-core": "workspace:*",
+    "@mako-ai/harness-tools": "workspace:*",
+    "@mako-ai/logger": "workspace:*",
+    "@mako-ai/store": "workspace:*",
+    "@mako-ai/tools": "workspace:*",
+    "path-to-regexp": "^8.4.2"
+  }
+}

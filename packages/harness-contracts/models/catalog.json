@@ -1,0 +1,119 @@
+{
+  "version": "1",
+  "generatedAt": "2026-04-16",
+  "note": "Bundled snapshot of known providers and models. Refreshable via POST /api/v1/models/refresh. Cost hints are illustrative; treat as stale and refresh when accuracy matters.",
+  "providers": [
+    {
+      "id": "anthropic",
+      "name": "Anthropic",
+      "kind": "chat",
+      "transport": "anthropic",
+      "auth": "api-key",
+      "tier": "cloud",
+      "envVarHints": ["MAKO_ANTHROPIC_API_KEY", "ANTHROPIC_API_KEY"],
+      "models": [
+        { "id": "claude-opus-4-6", "displayName": "Claude Opus 4.6", "contextWindow": 200000, "supportsTools": true, "supportsVision": true, "supportsReasoning": true, "tier": "cloud" },
+        { "id": "claude-sonnet-4-6", "displayName": "Claude Sonnet 4.6", "contextWindow": 200000, "supportsTools": true, "supportsVision": true, "supportsReasoning": true, "tier": "cloud" },
+        { "id": "claude-haiku-4-5-20251001", "displayName": "Claude Haiku 4.5", "contextWindow": 200000, "supportsTools": true, "supportsVision": true, "supportsReasoning": false, "tier": "cloud" }
+      ]
+    },
+    {
+      "id": "openai",
+      "name": "OpenAI",
+      "kind": "both",
+      "transport": "openai",
+      "auth": "api-key",
+      "tier": "cloud",
+      "envVarHints": ["MAKO_OPENAI_API_KEY", "OPENAI_API_KEY"],
+      "models": [
+        { "id": "gpt-4o", "displayName": "GPT-4o", "contextWindow": 128000, "supportsTools": true, "supportsVision": true, "supportsReasoning": false, "tier": "cloud" },
+        { "id": "gpt-4o-mini", "displayName": "GPT-4o mini", "contextWindow": 128000, "supportsTools": true, "supportsVision": true, "supportsReasoning": false, "tier": "cloud" },
+        { "id": "o1", "displayName": "OpenAI o1", "contextWindow": 200000, "supportsTools": true, "supportsVision": false, "supportsReasoning": true, "tier": "cloud" },
+        { "id": "o1-mini", "displayName": "OpenAI o1-mini", "contextWindow": 128000, "supportsTools": false, "supportsVision": false, "supportsReasoning": true, "tier": "cloud" },
+        { "id": "text-embedding-3-small", "displayName": "Text Embedding 3 Small", "contextWindow": 8192, "supportsTools": false, "supportsVision": false, "supportsReasoning": false, "tier": "cloud" },
+        { "id": "text-embedding-3-large", "displayName": "Text Embedding 3 Large", "contextWindow": 8192, "supportsTools": false, "supportsVision": false, "supportsReasoning": false, "tier": "cloud" }
+      ]
+    },
+    {
+      "id": "moonshot",
+      "name": "Moonshot",
+      "kind": "chat",
+      "transport": "openai-compatible",
+      "baseURL": "https://api.moonshot.ai/v1",
+      "auth": "api-key",
+      "tier": "cloud",
+      "envVarHints": ["MAKO_MOONSHOT_API_KEY", "MOONSHOT_API_KEY"],
+      "models": [
+        { "id": "kimi-k2.5", "displayName": "Kimi K2.5", "contextWindow": 200000, "supportsTools": true, "supportsVision": false, "supportsReasoning": true, "tier": "cloud" },
+        { "id": "kimi-k2-thinking", "displayName": "Kimi K2 Thinking", "contextWindow": 256000, "supportsTools": true, "supportsVision": false, "supportsReasoning": true, "tier": "cloud" },
+        { "id": "moonshot-v1-128k", "displayName": "Moonshot v1 128k", "contextWindow": 128000, "supportsTools": true, "supportsVision": false, "supportsReasoning": false, "tier": "cloud" }
+      ]
+    },
+    {
+      "id": "ollama",
+      "name": "Ollama (local)",
+      "kind": "both",
+      "transport": "ollama",
+      "baseURL": "http://localhost:11434/v1",
+      "auth": "none",
+      "tier": "local",
+      "envVarHints": ["MAKO_OLLAMA_BASE_URL", "OLLAMA_BASE_URL"],
+      "models": [
+        { "id": "gemma4:latest", "displayName": "Gemma 4 (latest)", "contextWindow": 131072, "supportsTools": false, "supportsVision": false, "supportsReasoning": false, "tier": "local" },
+        { "id": "gemma4", "displayName": "Gemma 4", "contextWindow": 131072, "supportsTools": false, "supportsVision": false, "supportsReasoning": false, "tier": "local" },
+        { "id": "qwen3.6:35b-a3b", "displayName": "Qwen 3.6 36B (A3B, tools+thinking)", "contextWindow": 131072, "supportsTools": true, "supportsVision": true, "supportsReasoning": true, "tier": "local" },
+        { "id": "llama3.1", "displayName": "Llama 3.1 8B", "contextWindow": 128000, "supportsTools": true, "supportsVision": false, "supportsReasoning": false, "tier": "local" },
+        { "id": "llama3.1:70b", "displayName": "Llama 3.1 70B", "contextWindow": 128000, "supportsTools": true, "supportsVision": false, "supportsReasoning": false, "tier": "local" },
+        { "id": "qwen2.5-coder:32b", "displayName": "Qwen 2.5 Coder 32B", "contextWindow": 32768, "supportsTools": true, "supportsVision": false, "supportsReasoning": false, "tier": "local" },
+        { "id": "deepseek-r1:70b", "displayName": "DeepSeek R1 70B (reasoning)", "contextWindow": 65536, "supportsTools": false, "supportsVision": false, "supportsReasoning": true, "tier": "local" },
+        { "id": "nomic-embed-text", "displayName": "Nomic Embed Text (embedding)", "contextWindow": 8192, "supportsTools": false, "supportsVision": false, "supportsReasoning": false, "tier": "local" },
+        { "id": "nomic-embed-text:latest", "displayName": "Nomic Embed Text (latest, embedding)", "contextWindow": 8192, "supportsTools": false, "supportsVision": false, "supportsReasoning": false, "tier": "local" },
+        { "id": "mxbai-embed-large", "displayName": "MXBAI Embed Large (embedding)", "contextWindow": 512, "supportsTools": false, "supportsVision": false, "supportsReasoning": false, "tier": "local" },
+        { "id": "mxbai-embed-large:latest", "displayName": "MXBAI Embed Large (latest, embedding)", "contextWindow": 512, "supportsTools": false, "supportsVision": false, "supportsReasoning": false, "tier": "local" }
+      ]
+    },
+    {
+      "id": "ollama-cloud",
+      "name": "Ollama Cloud",
+      "kind": "chat",
+      "transport": "openai-compatible",
+      "baseURL": "https://ollama.com/v1",
+      "auth": "api-key",
+      "tier": "cloud",
+      "envVarHints": ["MAKO_OLLAMA_CLOUD_API_KEY", "OLLAMA_CLOUD_API_KEY"],
+      "models": [
+        { "id": "kimi-k2.5:cloud", "displayName": "Kimi K2.5 (cloud)", "contextWindow": 256000, "supportsTools": true, "supportsVision": true, "supportsReasoning": true, "tier": "cloud" },
+        { "id": "kimi-k2.6:cloud", "displayName": "Kimi K2.6 (cloud)", "contextWindow": 256000, "supportsTools": true, "supportsVision": true, "supportsReasoning": true, "tier": "cloud" },
+        { "id": "kimi-k2:1t-cloud", "displayName": "Kimi K2 1T (cloud)", "contextWindow": 256000, "supportsTools": true, "supportsVision": false, "supportsReasoning": true, "tier": "cloud" },
+        { "id": "qwen3-coder:480b-cloud", "displayName": "Qwen3 Coder 480B (cloud)", "contextWindow": 256000, "supportsTools": true, "supportsVision": false, "supportsReasoning": false, "tier": "cloud" },
+        { "id": "deepseek-v3.1:671b-cloud", "displayName": "DeepSeek v3.1 671B (cloud)", "contextWindow": 128000, "supportsTools": true, "supportsVision": false, "supportsReasoning": true, "tier": "cloud" },
+        { "id": "gpt-oss:120b-cloud", "displayName": "GPT-OSS 120B (cloud)", "contextWindow": 128000, "supportsTools": true, "supportsVision": false, "supportsReasoning": false, "tier": "cloud" }
+      ]
+    },
+    {
+      "id": "lmstudio",
+      "name": "LM Studio (local)",
+      "kind": "both",
+      "transport": "openai-compatible",
+      "baseURL": "http://localhost:1234/v1",
+      "auth": "none",
+      "tier": "local",
+      "envVarHints": ["MAKO_LMSTUDIO_BASE_URL", "LMSTUDIO_BASE_URL"],
+      "note": "LM Studio users load both chat and embedding models by ID in the LM Studio UI. The example embedding model below is a common default; override with whatever you have loaded.",
+      "models": [
+        { "id": "text-embedding-nomic-embed-text-v1.5", "displayName": "Nomic Embed Text v1.5 (embedding)", "contextWindow": 8192, "supportsTools": false, "supportsVision": false, "supportsReasoning": false, "tier": "local" }
+      ]
+    },
+    {
+      "id": "openai-compatible",
+      "name": "OpenAI-compatible (custom)",
+      "kind": "chat",
+      "transport": "openai-compatible",
+      "auth": "api-key",
+      "tier": "cloud",
+      "envVarHints": [],
+      "note": "Generic adapter. Configure baseURL and apiKey per-instance via .mako/providers.json or POST /api/v1/providers.",
+      "models": []
+    }
+  ]
+}

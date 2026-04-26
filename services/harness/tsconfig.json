@@ -1,0 +1,21 @@
+{
+  "extends": "../../tsconfig.base.json",
+  "compilerOptions": {
+    "composite": true,
+    "rootDir": "src",
+    "outDir": "dist"
+  },
+  "include": ["src/**/*.ts"],
+  "references": [
+    { "path": "../../extensions/lmstudio" },
+    { "path": "../../extensions/ollama" },
+    { "path": "../../packages/config" },
+    { "path": "../../packages/contracts" },
+    { "path": "../../packages/harness-contracts" },
+    { "path": "../../packages/harness-core" },
+    { "path": "../../packages/harness-tools" },
+    { "path": "../../packages/logger" },
+    { "path": "../../packages/store" },
+    { "path": "../../packages/tools" }
+  ]
+}

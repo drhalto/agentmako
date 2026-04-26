@@ -1,0 +1,7 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32" width="32" height="32">
+  <rect width="32" height="32" rx="6" fill="oklch(14% 0.015 220)"/>
+  <!-- Depth line: three segments, decreasing opacity — suggests a sonar reading / depth gauge. Never a shark. -->
+  <rect x="14" y="6"  width="4" height="6"  rx="1" fill="oklch(78% 0.15 195)"/>
+  <rect x="14" y="14" width="4" height="6"  rx="1" fill="oklch(78% 0.15 195)" opacity="0.55"/>
+  <rect x="14" y="22" width="4" height="4"  rx="1" fill="oklch(78% 0.15 195)" opacity="0.25"/>
+</svg>

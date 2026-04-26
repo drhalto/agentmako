@@ -1,0 +1,14 @@
+{
+  "extends": "../tsconfig.base.json",
+  "compilerOptions": {
+    "baseUrl": "..",
+    "noEmit": true,
+    "allowImportingTsExtensions": true,
+    // Web smokes (test/smoke/web-*.ts) pass callbacks into Playwright's
+    // `page.evaluate` / `page.waitForFunction`, which run in the browser
+    // context. Including DOM types lets the typechecker see `document` and
+    // `window` without blocking node-only smokes.
+    "lib": ["ES2022", "DOM"]
+  },
+  "include": ["**/*.ts"]
+}

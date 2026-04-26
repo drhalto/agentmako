@@ -1,0 +1,9 @@
+{
+  "name": "mako-ai",
+  "version": "0.1.0",
+  "description": "Project intelligence tools and guidance for Claude Code via the mako-ai MCP server.",
+  "author": {
+    "name": "mako-ai"
+  },
+  "keywords": ["mcp", "code-intel", "project-intelligence", "mako"]
+}

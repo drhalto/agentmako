@@ -1,0 +1,16 @@
+export const API_ROUTE_DEFINITIONS = {
+  health: { method: "GET", path: "/health" },
+  dashboardRestartHarness: { method: "POST", path: "/api/v1/dashboard/restart-harness" },
+  projectsList: { method: "GET", path: "/api/v1/projects" },
+  projectsAttach: { method: "POST", path: "/api/v1/projects/attach" },
+  projectsDetach: { method: "POST", path: "/api/v1/projects/detach" },
+  projectsIndex: { method: "POST", path: "/api/v1/projects/index" },
+  projectsStatus: { method: "GET", path: "/api/v1/projects/status" },
+  projectsFavicon: { method: "GET", path: "/api/v1/projects/:projectId/favicon" },
+  projectsReveal: { method: "POST", path: "/api/v1/projects/:projectId/reveal" },
+  toolsList: { method: "GET", path: "/api/v1/tools" },
+  toolsInvoke: { method: "POST", path: "/api/v1/tools/:name" },
+  answerAsk: { method: "POST", path: "/api/v1/answers" },
+  workflowPacketsGenerate: { method: "POST", path: "/api/v1/workflow-packets" },
+  mcp: { method: "ALL", path: "/mcp" },
+} as const;

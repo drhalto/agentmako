@@ -1,0 +1,235 @@
+/**
+ * Mako design tokens — neutral slate ramp with full light + dark themes.
+ *
+ * The same `--color-mk-*` tokens drive both themes. Tailwind v4 mints
+ * utility classes (`bg-mk-depth`, `text-mk-crest`, `border-mk-current`)
+ * from the values inside `@theme`; per-theme overrides live in the
+ * `:root[data-theme="…"]` blocks below, so utilities pick up whichever
+ * theme is currently active without needing build-time variants.
+ *
+ * Light is the default to match operator expectations of an inspection
+ * console; dark is opt-in via the TopBar toggle (or `prefers-color-scheme`).
+ *
+ * Naming kept from the earlier "depth ramp" iteration so existing
+ * components don't need a class-by-class rename — only the values move.
+ */
+
+@import "tailwindcss";
+
+@theme {
+  /* The values below are the LIGHT-theme defaults. Dark overrides live
+   * in `:root[data-theme="dark"]`. Tailwind v4 reads these declarations
+   * to mint utility classes; the actual value at runtime comes from
+   * whichever `data-theme` selector matches. */
+
+  --color-mk-abyss:   oklch(99% 0.001 240);  /* page background */
+  --color-mk-depth:   oklch(100% 0 0);       /* card / surface */
+  --color-mk-ridge:   oklch(96% 0.003 240);  /* hover surface */
+  --color-mk-current: oklch(91% 0.005 240);  /* hairline borders */
+  --color-mk-tide:    oklch(54% 0.012 240);  /* muted text, captions */
+  --color-mk-surface: oklch(38% 0.010 240);  /* secondary text */
+  --color-mk-crest:   oklch(15% 0.005 240);  /* primary text */
+
+  /* Accent — restrained indigo, used for active indicator, focus ring,
+   * link colour, and the streaming cursor. Primary action buttons do
+   * NOT use the accent; they invert via `bg-mk-crest text-mk-abyss`. */
+  --color-mk-signal:     oklch(53% 0.18 255);
+  --color-mk-signal-dim: oklch(75% 0.10 255);
+
+  /* Status — desaturated, status-only, never decorative */
+  --color-mk-warn:   oklch(62% 0.16 65);
+  --color-mk-danger: oklch(55% 0.21 27);
+  --color-mk-ok:     oklch(56% 0.16 145);
+
+  /* Fonts */
+  --font-sans: "Inter", "IBM Plex Sans", ui-sans-serif, system-ui, sans-serif;
+  --font-mono: "IBM Plex Mono", ui-monospace, "Cascadia Code", monospace;
+
+  /* Radii — Vercel-ish: slightly larger so cards feel softer */
+  --radius-xs: 4px;
+  --radius-sm: 6px;
+  --radius-md: 8px;
+
+  /* Typography scale */
+  --text-meta: 11px;
+  --text-ui:   13px;
+  --text-base: 14px;
+  --text-lg:   16px;
+  --text-xl:   20px;
+  --text-2xl:  28px;
+}
+
+:root[data-theme="dark"] {
+  --color-mk-abyss:   oklch(13% 0.004 240);
+  --color-mk-depth:   oklch(17% 0.005 240);
+  --color-mk-ridge:   oklch(22% 0.006 240);
+  --color-mk-current: oklch(28% 0.007 240);
+  --color-mk-tide:    oklch(58% 0.010 240);
+  --color-mk-surface: oklch(78% 0.008 240);
+  --color-mk-crest:   oklch(96% 0.003 240);
+  --color-mk-signal:     oklch(70% 0.15 255);
+  --color-mk-signal-dim: oklch(50% 0.10 255);
+  --color-mk-warn:   oklch(72% 0.13 70);
+  --color-mk-danger: oklch(64% 0.18 27);
+  --color-mk-ok:     oklch(70% 0.13 150);
+}
+
+/* -----------------------------------------------------------------------------
+ * Base layer
+ * -------------------------------------------------------------------------- */
+
+@layer base {
+  :root {
+    color-scheme: light;
+    font-family: var(--font-sans);
+    font-feature-settings: "ss01", "cv01";
+    font-variant-ligatures: contextual;
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+    text-rendering: optimizeLegibility;
+  }
+
+  :root[data-theme="dark"] {
+    color-scheme: dark;
+  }
+
+  html, body, #root {
+    height: 100%;
+    margin: 0;
+    padding: 0;
+    background: var(--color-mk-abyss);
+    color: var(--color-mk-crest);
+  }
+
+  body {
+    overflow: hidden; /* the shell manages scroll regions, not the window */
+  }
+
+  ::selection {
+    background: color-mix(in oklch, var(--color-mk-signal) 25%, transparent);
+    color: var(--color-mk-crest);
+  }
+
+  *:focus-visible {
+    outline: 2px solid var(--color-mk-signal);
+    outline-offset: 2px;
+    border-radius: var(--radius-xs);
+  }
+
+  input:focus-visible,
+  textarea:focus-visible {
+    outline-offset: 0;
+    outline-width: 1px;
+  }
+
+  button {
+    font-family: inherit;
+    cursor: pointer;
+  }
+
+  /* Scrollbars — thin, monochrome */
+  ::-webkit-scrollbar { width: 10px; height: 10px; }
+  ::-webkit-scrollbar-track { background: transparent; }
+  ::-webkit-scrollbar-thumb {
+    background: var(--color-mk-current);
+    border-radius: 10px;
+    border: 2px solid transparent;
+    background-clip: padding-box;
+  }
+  ::-webkit-scrollbar-thumb:hover { background: var(--color-mk-tide); background-clip: padding-box; }
+
+  /* Firefox */
+  * { scrollbar-width: thin; scrollbar-color: var(--color-mk-current) transparent; }
+}
+
+/* -----------------------------------------------------------------------------
+ * Mako primitives — small reusable classes for things Tailwind alone doesn't
+ * express compactly. Keep this list tight.
+ * -------------------------------------------------------------------------- */
+
+@layer components {
+  /* Small-caps metadata label used throughout the app. */
+  .mk-label {
+    font-family: var(--font-mono);
+    font-size: var(--text-meta);
+    font-weight: 500;
+    letter-spacing: 0.04em;
+    text-transform: uppercase;
+    color: var(--color-mk-tide);
+  }
+
+  /* Hairline horizontal divider. */
+  .mk-rule {
+    height: 1px;
+    background: var(--color-mk-current);
+    border: 0;
+  }
+
+  /* Active row indicator — left rail accent stripe + tinted bg. */
+  .mk-active {
+    background: color-mix(in oklch, var(--color-mk-signal) 8%, var(--color-mk-ridge));
+    box-shadow: inset 2px 0 0 var(--color-mk-signal);
+    color: var(--color-mk-crest);
+  }
+  :root[data-theme="dark"] .mk-active {
+    background: color-mix(in oklch, var(--color-mk-signal) 12%, var(--color-mk-ridge));
+  }
+
+  /* Streaming cursor — narrow block, appears at the tail of live text. */
+  .mk-cursor {
+    display: inline-block;
+    width: 2px;
+    height: 0.95em;
+    margin-left: 1px;
+    background: var(--color-mk-signal);
+    vertical-align: text-bottom;
+    animation: mk-cursor-fade 1200ms ease-in-out infinite;
+  }
+  @keyframes mk-cursor-fade {
+    0%, 100% { opacity: 0.55; }
+    50%      { opacity: 1; }
+  }
+
+  /* Sonar — slow-pulsing dot used as the harness liveness indicator. */
+  .mk-sonar {
+    display: inline-block;
+    width: 6px;
+    height: 6px;
+    border-radius: 9999px;
+    background: var(--color-mk-ok);
+    animation: mk-sonar 2400ms ease-in-out infinite;
+  }
+  @keyframes mk-sonar {
+    0%, 100% { opacity: 0.45; transform: scale(0.92); }
+    50%      { opacity: 1;    transform: scale(1); }
+  }
+  .mk-sonar[data-offline="true"] {
+    background: var(--color-mk-tide);
+    animation: none;
+  }
+
+  /* Wordmark — used for the brand mark only. */
+  .mk-wordmark {
+    font-family: var(--font-sans);
+    font-weight: 600;
+    letter-spacing: -0.01em;
+    color: var(--color-mk-crest);
+  }
+  .mk-wordmark[data-size="hero"] {
+    font-size: 36px;
+  }
+
+  /* Soft elevation card — replaces heavy borders on top-level surfaces. */
+  .mk-card {
+    background: var(--color-mk-depth);
+    border: 1px solid var(--color-mk-current);
+    border-radius: var(--radius-md);
+  }
+  :root[data-theme="light"] .mk-card,
+  :root:not([data-theme="dark"]) .mk-card {
+    box-shadow: 0 1px 0 0 color-mix(in oklch, var(--color-mk-current) 40%, transparent);
+  }
+}
+
+/* Utility — vertical-align fix for `mk-cursor` inside flex */
+.mk-cursor-host { display: inline-flex; align-items: baseline; }

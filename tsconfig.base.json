@@ -1,0 +1,35 @@
+{
+  "compilerOptions": {
+    "target": "ES2022",
+    "module": "NodeNext",
+    "moduleResolution": "NodeNext",
+    "lib": ["ES2022"],
+    "strict": true,
+    "noEmitOnError": true,
+    "declaration": true,
+    "declarationMap": true,
+    "sourceMap": true,
+    "resolveJsonModule": true,
+    "esModuleInterop": true,
+    "forceConsistentCasingInFileNames": true,
+    "skipLibCheck": true,
+    "types": ["node"],
+    "baseUrl": ".",
+    "paths": {
+      "@mako-ai/contracts": ["packages/contracts/src/index.ts"],
+      "@mako-ai/config": ["packages/config/src/index.ts"],
+      "@mako-ai/logger": ["packages/logger/src/index.ts"],
+      "@mako-ai/store": ["packages/store/src/index.ts"],
+      "@mako-ai/tools": ["packages/tools/src/index.ts"],
+      "@mako-ai/sdk": ["packages/sdk/src/index.ts"],
+      "@mako-ai/harness-contracts": ["packages/harness-contracts/src/index.ts"],
+      "@mako-ai/harness-tools": ["packages/harness-tools/src/index.ts"],
+      "@mako-ai/harness-core": ["packages/harness-core/src/index.ts"],
+      "@mako-ai/engine": ["services/engine/src/index.ts"],
+      "@mako-ai/indexer": ["services/indexer/src/index.ts"],
+      "@mako-ai/api": ["services/api/src/index.ts"],
+      "@mako-ai/harness": ["services/harness/src/index.ts"],
+      "@mako-ai/worker": ["services/worker/src/index.ts"]
+    }
+  }
+}
