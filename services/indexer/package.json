@@ -22,7 +22,7 @@
     "pgsql-parser": "^17.9.15",
     "remark": "^15.0.1",
     "tree-sitter-typescript": "^0.23.2",
-    "typescript": "^5.9.3",
-    "web-tree-sitter": "^0.25.8"
+    "typescript": "^6.0.3",
+    "web-tree-sitter": "^0.26.8"
   }
 }

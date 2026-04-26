@@ -10,7 +10,7 @@
     "typecheck": "tsc -p tsconfig.json --noEmit"
   },
   "dependencies": {
-    "@ast-grep/napi": "^0.39.5",
+    "@ast-grep/napi": "^0.42.1",
     "@mako-ai/config": "workspace:*",
     "@mako-ai/contracts": "workspace:*",
     "@mako-ai/engine": "workspace:*",
@@ -21,9 +21,9 @@
     "@napi-rs/keyring": "^1.1.5",
     "@vscode/ripgrep": "^1.17.1",
     "picomatch": "^4.0.4",
-    "typescript": "^5.8.3",
+    "typescript": "^6.0.3",
     "yaml": "^2.8.3",
-    "zod": "^3.25.76",
+    "zod": "^4.3.6",
     "zod-to-json-schema": "^3.24.6"
   },
   "devDependencies": {

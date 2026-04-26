@@ -20,7 +20,7 @@
     "@mako-ai/indexer": "workspace:*",
     "@mako-ai/store": "workspace:*",
     "@modelcontextprotocol/sdk": "^1.17.4",
-    "chokidar": "^4.0.3",
-    "zod": "^3.25.76"
+    "chokidar": "^5.0.0",
+    "zod": "^4.3.6"
   }
 }
