@@ -8,7 +8,14 @@ import {
 } from "../../packages/tools/src/agent-clients/index.js";
 import { MAKO_TOOL_NAMES } from "../../packages/contracts/src/tool-registry.js";
 
-const ALWAYS_LOAD_TOOLS = new Set(["tool_search", "ask", "repo_map", "context_packet", "table_neighborhood"]);
+const ALWAYS_LOAD_TOOLS = new Set([
+  "tool_search",
+  "ask",
+  "repo_map",
+  "context_packet",
+  "reef_scout",
+  "table_neighborhood",
+]);
 
 function hintWordCount(hint: string): number {
   return hint.trim().split(/\s+/).filter(Boolean).length;
