@@ -4,6 +4,11 @@
 
 # agentmako
 
+[![npm version](https://img.shields.io/npm/v/agentmako.svg?logo=npm)](https://www.npmjs.com/package/agentmako)
+[![Smoke Tests](https://github.com/drhalto/agentmako/actions/workflows/smoke.yml/badge.svg)](https://github.com/drhalto/agentmako/actions/workflows/smoke.yml)
+[![License: Apache 2.0](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](./LICENSE)
+[![Node.js >=20](https://img.shields.io/badge/node-%3E%3D20-brightgreen.svg)](https://nodejs.org/)
+
 agentmako is a local-first codebase intelligence engine for AI coding
 tools.
 
@@ -35,45 +40,29 @@ Mako is built for the first mile of coding-agent work:
 
 Everything important runs locally. No hosted service is required.
 
-## Happy Path Setup
+## Install
 
-This is the recommended setup while agentmako is pre-1.0 and being run from
-source.
-
-### 1. Install prerequisites
-
-Install:
-
-- Node.js 20 or newer
-- Git
-- Corepack, included with modern Node.js
-
-Enable Corepack if needed:
+Requires **Node.js 20 or newer**.
 
 ```bash
-corepack enable
-```
-
-### 2. Clone and build agentmako
-
-```bash
-git clone https://github.com/drhalto/agentmako.git
-cd agentmako
-corepack pnpm install
-corepack pnpm run build
-npm link ./apps/cli
+npm install -g agentmako
 ```
 
 Confirm the CLI is available:
 
 ```bash
-agentmako --help
+agentmako doctor
 ```
 
-`npm link ./apps/cli` makes the local source-built CLI available as
-`agentmako`. Re-run `corepack pnpm run build` after pulling changes.
+You should see green checks for configuration and the local API service.
 
-### 3. Attach your real project
+> Prefer to build from source (e.g. to contribute)?  See
+> [Develop From Source](#develop-from-source) at the bottom of this
+> file.
+
+## Happy Path Setup
+
+### 1. Attach your real project
 
 Go to the project you want Mako to understand:
 
@@ -90,7 +79,7 @@ agentmako connect . --no-db
 Use `--no-db` for the first run. It gets the code intelligence path
 working before adding database scope.
 
-### 4. Confirm Mako sees the project
+### 2. Confirm Mako sees the project
 
 ```bash
 agentmako status .
@@ -106,7 +95,7 @@ agentmako --json tool call . reef_scout "{\"query\":\"where should I inspect aut
 If that returns ranked candidates, facts, or findings, the core setup is
 working.
 
-### 5. Configure your MCP client
+### 3. Configure your MCP client
 
 Add this to your MCP client config:
 
@@ -130,7 +119,7 @@ In the agent, start with one of these tools:
 - `reef_scout` when you want ranked project facts/findings/history
 - `ask` when you have a natural-language repo question
 
-### 6. Optional: use the Claude Code plugin
+### 4. Optional: use the Claude Code plugin
 
 Plain MCP works with Claude Code, but the bundled plugin adds Mako-specific
 Claude skills and includes the same `agentmako mcp` wiring in
@@ -165,7 +154,7 @@ The plugin exposes these skills:
 Use the plugin when you want Claude Code to load Mako-specific guidance for
 which tools to call and how to interpret their results.
 
-### 7. Optional: launch the dashboard
+### 5. Optional: launch the dashboard
 
 From your target project:
 
@@ -175,7 +164,7 @@ agentmako dashboard .
 
 This starts the local API, harness service, and web dashboard.
 
-### 8. Optional: add Supabase/Postgres awareness
+### 6. Optional: add Supabase/Postgres awareness
 
 Mako works without a database. Add this only after code intelligence is
 working.
@@ -225,20 +214,32 @@ For database review notes:
 agentmako --json tool call . db_review_comment "{\"objectType\":\"replication\",\"objectName\":\"supabase_database_replication\",\"category\":\"review\",\"comment\":\"Check publication coverage before relying on realtime events.\",\"tags\":[\"supabase\",\"replication\"]}"
 ```
 
-## When Published To npm
+## Develop From Source
 
-After `agentmako` is published, replace the source checkout and
-`npm link ./apps/cli` step with:
+If you want to hack on Mako itself, clone and build instead of installing
+from npm.
+
+Prerequisites:
+
+- Node.js 20 or newer
+- Git
+- Corepack (`corepack enable`, included with modern Node.js)
 
 ```bash
-npm install -g agentmako
+git clone https://github.com/drhalto/agentmako.git
+cd agentmako
+corepack pnpm install
+corepack pnpm run build
+npm link ./apps/cli
 ```
 
-All commands and the MCP config stay the same.
+`npm link ./apps/cli` makes the source-built CLI available as
+`agentmako` on your `PATH`, replacing any global npm install. Re-run
+`corepack pnpm run build` after pulling changes.
 
-## Development Checks
+To go back to the published version: `npm install -g agentmako`.
 
-From the agentmako repo:
+### Development Checks
 
 ```bash
 corepack pnpm run typecheck
@@ -257,20 +258,28 @@ corepack pnpm test
 
 ```text
 apps/
-  cli/        agentmako CLI and MCP entrypoint
-  web/        local dashboard
+  cli/              agentmako CLI and MCP entrypoint (the published package)
+  web/              local dashboard
 packages/
-  contracts/  public TypeScript contracts and tool schemas
-  store/      SQLite stores, migrations, and query helpers
-  tools/      shared tool implementations
-  harness-*   local agent harness contracts/runtime/action tools
+  contracts/        public TypeScript contracts and tool schemas
+  config/           shared config helpers
+  logger/           shared logger
+  sdk/              programmatic SDK
+  store/            SQLite stores, migrations, and query helpers
+  tools/            shared tool implementations
+  harness-core/     local agent harness runtime
+  harness-tools/    action tools available to the harness
+  harness-contracts/ harness contracts and provider catalog
 services/
-  api/        local API and MCP transports
-  harness/    local harness HTTP service
-  indexer/    repo and schema indexing logic
-extensions/   provider and integration packages
-test/smoke/   smoke coverage
-devdocs/      roadmap and design records
+  api/              local API and MCP transports
+  engine/           Reef Engine fact/finding pipeline
+  harness/          local harness HTTP service
+  indexer/          repo and schema indexing logic
+  worker/           background worker
+extensions/         provider and integration packages
+storage/            schema migrations, models, queries
+test/smoke/         smoke coverage
+mako-ai-claude-plugin/ Claude Code plugin with Mako skills
 ```
 
 ## More Docs

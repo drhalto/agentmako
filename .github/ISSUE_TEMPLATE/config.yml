@@ -1,0 +1,8 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Question or discussion
+    url: https://github.com/drhalto/agentmako/discussions
+    about: For usage questions, design discussion, or anything that isn't a bug report or feature request, please open a Discussion instead.
+  - name: Security disclosure
+    url: https://github.com/drhalto/agentmako/security/advisories/new
+    about: Use GitHub's private vulnerability reporting for security issues. Do not file public issues for vulnerabilities.

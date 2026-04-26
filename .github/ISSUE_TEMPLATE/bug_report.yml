@@ -1,0 +1,83 @@
+name: Bug report
+description: Something in agentmako is broken or behaves unexpectedly.
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for taking the time to file a bug report! Please fill in
+        the sections below so the issue is easy to reproduce.
+
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened?
+      description: A clear description of the bug, including what you expected to happen instead.
+      placeholder: When I run `agentmako ...`, I expect X but I get Y.
+    validations:
+      required: true
+
+  - type: textarea
+    id: reproduction
+    attributes:
+      label: Steps to reproduce
+      description: Minimal commands or actions that trigger the bug. Include any project / repo characteristics that matter (size, language mix, attached database, etc.).
+      placeholder: |
+        1. `agentmako connect . --no-db`
+        2. `agentmako tool call . context_packet '{"query":"..."}'`
+        3. Observe the error / wrong output.
+    validations:
+      required: true
+
+  - type: textarea
+    id: logs
+    attributes:
+      label: Relevant logs / output
+      description: Paste relevant CLI output, MCP transport logs, or stack traces. Use code fences. Redact any secrets.
+      render: shell
+
+  - type: input
+    id: agentmako-version
+    attributes:
+      label: agentmako version
+      description: Output of `agentmako doctor` or the published npm version.
+      placeholder: "0.1.0"
+    validations:
+      required: true
+
+  - type: input
+    id: node-version
+    attributes:
+      label: Node.js version
+      placeholder: "v20.11.0"
+    validations:
+      required: true
+
+  - type: dropdown
+    id: os
+    attributes:
+      label: Operating system
+      options:
+        - macOS
+        - Linux
+        - Windows
+        - Other
+    validations:
+      required: true
+
+  - type: input
+    id: client
+    attributes:
+      label: MCP client (if relevant)
+      description: e.g. Claude Code, Cursor, Codex, custom client. Skip if the bug is in the CLI itself.
+      placeholder: Claude Code 1.x
+
+  - type: checkboxes
+    id: secrets-check
+    attributes:
+      label: Pre-submission checklist
+      options:
+        - label: I have removed any database URLs, API keys, or other secrets from the report.
+          required: true
+        - label: I have searched existing issues and this is not a duplicate.
+          required: true
