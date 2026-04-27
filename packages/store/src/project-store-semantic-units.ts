@@ -117,7 +117,7 @@ export function replaceSemanticUnitsImpl(
   units: SemanticUnitInput[],
 ): number {
   const insert = db.prepare(`
-    INSERT INTO harness_semantic_units(
+    INSERT OR IGNORE INTO harness_semantic_units(
       unit_id,
       project_id,
       unit_kind,
@@ -176,7 +176,7 @@ export function replaceSemanticUnitsForFilesImpl(
   }
 
   const insert = db.prepare(`
-    INSERT INTO harness_semantic_units(
+    INSERT OR IGNORE INTO harness_semantic_units(
       unit_id,
       project_id,
       unit_kind,

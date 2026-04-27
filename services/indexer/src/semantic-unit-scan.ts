@@ -100,5 +100,15 @@ export function buildSemanticUnits(
     }
   }
 
-  return units;
+  // Deduplicate by unitId. Duplicate ids can arise when the snapshot
+  // contains the same file path more than once (e.g. overlapping include
+  // directories or auto-detected entry points that were already indexed).
+  // A plain INSERT then fails with a UNIQUE constraint and rolls back the
+  // entire index run, leaving the project permanently unindexable.
+  const seen = new Set<string>();
+  return units.filter((u) => {
+    if (seen.has(u.unitId)) return false;
+    seen.add(u.unitId);
+    return true;
+  });
 }
