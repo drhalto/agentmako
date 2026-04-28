@@ -316,8 +316,8 @@ function FolderIcon() {
 
 /**
  * Shorten a canonical path for display. Keeps the final two segments
- * plus a leading ellipsis so "c:/Users/Dustin/work/apps/forgebench"
- * renders as "…/apps/forgebench" when the raw form would overflow.
+ * plus a leading ellipsis so "c:/work/apps/example-app"
+ * renders as "…/apps/example-app" when the raw form would overflow.
  */
 function formatPath(path: string): string {
   const normalized = path.replace(/\\/g, "/");

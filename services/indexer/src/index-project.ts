@@ -6,14 +6,36 @@ import { collectProfileDepth } from "./profile-depth.js";
 import { updateProjectManifestCapabilities } from "./project-manifest.js";
 import { buildSemanticUnits } from "./semantic-unit-scan.js";
 import { buildSchemaSnapshot, toSchemaSnapshotSummary } from "./schema-snapshot.js";
-import type { IndexProjectResult, IndexerOptions } from "./types.js";
+import {
+  materializeReefIndexerStructuralArtifacts,
+  type ReefStructuralArtifactMaterializationResult,
+} from "./reef-calculation-nodes.js";
+import type { AttachProjectResult, IndexProjectResult, IndexerOptions } from "./types.js";
 import { durationMs, withGlobalStore, withProjectStore } from "./utils.js";
+import { withReefRootWriterLock } from "./reef-writer-lock.js";
 
 const indexLogger = createLogger("mako-indexer", { component: "index-project" });
 
 export async function indexProject(projectRoot: string, options: IndexerOptions = {}): Promise<IndexProjectResult> {
   const attached = attachProject(projectRoot, options, { logLifecycleEvent: false });
 
+  if (!options.skipReefWriterLock) {
+    return withReefRootWriterLock({
+      configOverrides: options.configOverrides,
+      projectId: attached.project.projectId,
+      canonicalRoot: attached.resolvedRootPath,
+      analysisHostId: "index-project",
+      acquireTimeoutMs: options.reefWriterLockAcquireTimeoutMs,
+    }, () => indexAttachedProject(attached, options));
+  }
+
+  return indexAttachedProject(attached, options);
+}
+
+async function indexAttachedProject(
+  attached: AttachProjectResult,
+  options: IndexerOptions,
+): Promise<IndexProjectResult> {
   return withGlobalStore(options, ({ config, globalStore }) =>
     withProjectStore(attached.resolvedRootPath, config, async (projectStore) => {
       const triggerSource = options.triggerSource ?? "manual";
@@ -25,6 +47,7 @@ export async function indexProject(projectRoot: string, options: IndexerOptions 
       let schemaSnapshotWarnings: IndexProjectResult["schemaSnapshotWarnings"] = [];
       let finalizedRun: IndexProjectResult["run"] | undefined;
       let semanticUnitCount = 0;
+      let structuralArtifactResult: ReefStructuralArtifactMaterializationResult | undefined;
       let profileManifest = attached.manifest;
       let profile = attached.profile;
 
@@ -42,6 +65,13 @@ export async function indexProject(projectRoot: string, options: IndexerOptions 
           ...stats,
           semanticUnits: semanticUnitCount,
         };
+        structuralArtifactResult = await materializeReefIndexerStructuralArtifacts(projectStore, {
+          projectId: attached.project.projectId,
+          root: attached.project.canonicalPath,
+          snapshot,
+          fullRefresh: true,
+          revision: options.reefRevision,
+        });
 
         // Phase 3.3: re-derive serverOnlyModules and authGuardSymbols from the now-indexed
         // import graph and exported-symbol table. At attach time these are empty because
@@ -194,6 +224,7 @@ export async function indexProject(projectRoot: string, options: IndexerOptions 
               stats: (stats ?? null) as unknown as JsonValue,
               schemaSnapshotState: schemaSnapshotSummary?.state ?? null,
               schemaSnapshotWarningCount: schemaSnapshotWarnings.length,
+              structuralArtifactMaterialization: (structuralArtifactResult ?? null) as unknown as JsonValue,
             },
             errorText: lifecycleError instanceof Error ? lifecycleError.message : lifecycleError ? String(lifecycleError) : undefined,
           });

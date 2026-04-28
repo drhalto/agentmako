@@ -252,8 +252,14 @@ import type {
   ReefInstructionsToolOutput,
   ReefInspectToolInput,
   ReefInspectToolOutput,
+  ReefAgentStatusToolInput,
+  ReefAgentStatusToolOutput,
+  ReefKnownIssuesToolInput,
+  ReefKnownIssuesToolOutput,
   ReefScoutToolInput,
   ReefScoutToolOutput,
+  ReefWhereUsedToolInput,
+  ReefWhereUsedToolOutput,
   RulePackValidateToolInput,
   RulePackValidateToolOutput,
   RuleMemoryToolInput,
@@ -312,6 +318,7 @@ export * from "./tool-project-index-schemas.js";
 export * from "./tool-context-packet-schemas.js";
 export * from "./tool-batch-schemas.js";
 export * from "./tool-typescript-diagnostics-schemas.js";
+export * from "./tool-reef-execution-schemas.js";
 export * from "./tool-reef-schemas.js";
 
 function isToolOutputRecord(value: unknown): value is Record<string, unknown> {
@@ -516,12 +523,15 @@ export type ToolInput =
   | ProjectDiagnosticRunsToolInput
   | ReefScoutToolInput
   | ReefInspectToolInput
+  | ReefWhereUsedToolInput
   | ProjectOpenLoopsToolInput
   | VerificationStateToolInput
   | ProjectConventionsToolInput
   | RuleMemoryToolInput
   | EvidenceConfidenceToolInput
-  | EvidenceConflictsToolInput;
+  | EvidenceConflictsToolInput
+  | ReefKnownIssuesToolInput
+  | ReefAgentStatusToolInput;
 
 export type ToolOutput =
   | TaskPreflightArtifactToolOutput
@@ -603,11 +613,14 @@ export type ToolOutput =
   | ProjectDiagnosticRunsToolOutput
   | ReefScoutToolOutput
   | ReefInspectToolOutput
+  | ReefWhereUsedToolOutput
   | ProjectOpenLoopsToolOutput
   | VerificationStateToolOutput
   | ProjectConventionsToolOutput
   | RuleMemoryToolOutput
   | EvidenceConfidenceToolOutput
-  | EvidenceConflictsToolOutput;
+  | EvidenceConflictsToolOutput
+  | ReefKnownIssuesToolOutput
+  | ReefAgentStatusToolOutput;
 
 export type AnswerToolQueryKind = Extract<QueryKind, AnswerToolName>;

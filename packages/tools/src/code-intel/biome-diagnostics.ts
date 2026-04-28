@@ -171,9 +171,11 @@ export async function biomeDiagnosticsTool(
     if (requestedFiles.length !== input.files.length) {
       warnings.push("one or more requested files were outside the project root and ignored");
     }
+    const inputRevision = projectStore.loadReefAnalysisState(project.projectId, project.canonicalPath)?.currentRevision;
 
     const finish = (args: Omit<BiomeDiagnosticsToolOutput, "toolName" | "projectId" | "projectRoot" | "durationMs" | "requestedFiles" | "warnings">): BiomeDiagnosticsToolOutput => {
       const durationMs = Math.max(0, Date.now() - startedMs);
+      const outputRevision = projectStore.loadReefAnalysisState(project.projectId, project.canonicalPath)?.currentRevision;
       projectStore.saveReefDiagnosticRun({
         projectId: project.projectId,
         source: BIOME_SOURCE,
@@ -189,6 +191,9 @@ export async function biomeDiagnosticsTool(
         cwd: projectRoot,
         errorText: args.errorText,
         metadata: {
+          sourceKind: "lint",
+          ...(inputRevision !== undefined ? { inputRevision } : {}),
+          ...(outputRevision !== undefined ? { outputRevision } : {}),
           reporter: "gitlab",
           requestedFiles,
           requestedFileCount: requestedFiles.length,
@@ -247,6 +252,7 @@ export async function biomeDiagnosticsTool(
       encoding: "utf8",
       timeout: BIOME_TIMEOUT_MS,
       windowsHide: true,
+      ...(runner.shell ? { shell: true } : {}),
     });
 
     const stdout = typeof result.stdout === "string" ? result.stdout.trim() : "";

@@ -41,6 +41,7 @@ const COMMON_TENANT_CONTEXT_PATTERNS = [
 ];
 
 const TENANT_LEAK_AUDIT_ROLLOUT_STAGE = "opt_in" as const;
+const DEFAULT_RESULT_SECTION_LIMIT = 100;
 
 interface ProtectedTableRecord {
   table: SchemaTable;
@@ -70,7 +71,10 @@ export async function tenantLeakAuditTool(
       freshen: input.freshen ?? true,
       toolOptions: options,
     });
-    const result = await buildTenantLeakAuditResult(profile, projectStore, options.progressReporter);
+    const result = truncateTenantLeakAuditResult(
+      await buildTenantLeakAuditResult(profile, projectStore, options.progressReporter),
+      input,
+    );
     result.warnings = [...freshness.warnings, ...result.warnings];
     return {
       toolName: "tenant_leak_audit",
@@ -78,6 +82,39 @@ export async function tenantLeakAuditTool(
       result,
     };
   });
+}
+
+function truncateTenantLeakAuditResult(
+  result: TenantLeakAuditResult,
+  input: TenantLeakAuditToolInput,
+): TenantLeakAuditResult {
+  if (input.includeFullResults) {
+    return result;
+  }
+
+  const limit = input.maxPerSection ?? DEFAULT_RESULT_SECTION_LIMIT;
+  const warnings = [...result.warnings];
+  const protectedTables = result.protectedTables.slice(0, limit);
+  const findings = result.findings.slice(0, limit);
+  const reviewedSurfaces = result.reviewedSurfaces.slice(0, limit);
+
+  if (protectedTables.length < result.protectedTables.length) {
+    warnings.push(`protectedTables truncated to ${limit} of ${result.protectedTables.length}; set includeFullResults for the full payload.`);
+  }
+  if (findings.length < result.findings.length) {
+    warnings.push(`findings truncated to ${limit} of ${result.findings.length}; set includeFullResults for the full payload.`);
+  }
+  if (reviewedSurfaces.length < result.reviewedSurfaces.length) {
+    warnings.push(`reviewedSurfaces truncated to ${limit} of ${result.reviewedSurfaces.length}; set includeFullResults for the full payload.`);
+  }
+
+  return {
+    ...result,
+    protectedTables,
+    findings,
+    reviewedSurfaces,
+    warnings,
+  };
 }
 
 export async function buildTenantLeakAuditResult(

@@ -4,6 +4,8 @@ import type { ProjectLocatorInput } from "@mako-ai/contracts";
 import {
   normalizePath,
   openProjectStore,
+  listSchemaSnapshotObjects,
+  schemaSnapshotObjectIdentifiers,
   toRelativePath,
   type ProjectStore,
   type ResolvedRouteRecord,
@@ -106,18 +108,15 @@ export function collectExactSchemaObjectCandidates(
   }
 
   const normalizedSchema = schema?.trim().toLowerCase();
-  const matches = projectStore.listSchemaObjects().filter((object) => {
+  const matches = [
+    ...projectStore.listSchemaObjects(),
+    ...listSchemaSnapshotObjects(projectStore.loadSchemaSnapshot()),
+  ].filter((object) => {
     if (normalizedSchema && object.schemaName.toLowerCase() !== normalizedSchema) {
       return false;
     }
 
-    const identifiers = [
-      object.objectName,
-      `${object.schemaName}.${object.objectName}`,
-      ...(object.parentObjectName
-        ? [`${object.parentObjectName}.${object.objectName}`, `${object.schemaName}.${object.parentObjectName}.${object.objectName}`]
-        : []),
-    ].map((identifier) => identifier.toLowerCase());
+    const identifiers = schemaSnapshotObjectIdentifiers(object);
 
     if (normalizedSchema) {
       return identifiers.includes(normalizedQuery) || object.objectName.toLowerCase() === normalizedQuery;

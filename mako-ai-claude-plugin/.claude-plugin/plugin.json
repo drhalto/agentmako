@@ -1,26 +1,9 @@
 {
   "name": "mako-ai",
   "version": "0.1.0",
-  "description": "Project intelligence tools and guidance for Claude Code via the mako-ai MCP server. Skills teach Claude when to use Mako's typed MCP tools (context_packet, reef_scout, cross_search, ast_find_pattern, route_trace, table_neighborhood, db_rls, etc.) instead of grep-walking the repo.",
-  "license": "Apache-2.0",
-  "homepage": "https://github.com/drhalto/agentmako/tree/main/mako-ai-claude-plugin",
-  "repository": {
-    "type": "git",
-    "url": "git+https://github.com/drhalto/agentmako.git",
-    "directory": "mako-ai-claude-plugin"
-  },
+  "description": "Project intelligence tools and guidance for Claude Code via the mako-ai MCP server.",
   "author": {
-    "name": "Dustin Hightower",
-    "url": "https://github.com/drhalto"
+    "name": "mako-ai"
   },
-  "keywords": [
-    "mcp",
-    "code-intelligence",
-    "project-intelligence",
-    "claude-code",
-    "coding-agents",
-    "local-first",
-    "mako",
-    "agentmako"
-  ]
+  "keywords": ["mcp", "code-intel", "project-intelligence", "mako"]
 }

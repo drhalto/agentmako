@@ -6,6 +6,8 @@ import type { ProjectFinding } from "./reef.js";
 import { ProjectFindingSchema } from "./reef.js";
 import { ToolNameSchema, type ToolName } from "./tool-registry.js";
 import { ProjectLocatorInputObjectSchema, type ProjectLocatorInput } from "./tool-project-locator.js";
+import type { ReefToolExecution } from "./tool-reef-execution-schemas.js";
+import { ReefToolExecutionSchema } from "./tool-reef-execution-schemas.js";
 
 const JsonObjectSchema = z.record(z.unknown()) as z.ZodType<JsonObject>;
 
@@ -299,6 +301,7 @@ export interface ContextPacketToolOutput {
   recommendedHarnessPattern: string[];
   expandableTools: ContextPacketExpandableTool[];
   indexFreshness?: IndexFreshnessSummary;
+  reefExecution: ReefToolExecution;
   limits: ContextPacketLimits;
   warnings: string[];
 }
@@ -320,6 +323,7 @@ export const ContextPacketToolOutputSchema = z.object({
   recommendedHarnessPattern: z.array(z.string().min(1)),
   expandableTools: z.array(ContextPacketExpandableToolSchema),
   indexFreshness: IndexFreshnessSummarySchema.optional(),
+  reefExecution: ReefToolExecutionSchema,
   limits: ContextPacketLimitsSchema,
   warnings: z.array(z.string().min(1)),
 }) satisfies z.ZodType<ContextPacketToolOutput>;

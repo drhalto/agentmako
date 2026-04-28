@@ -15,12 +15,17 @@ import { indexProject } from "./index-project.js";
 import { buildSemanticUnits } from "./semantic-unit-scan.js";
 import { toSchemaSnapshotSummary } from "./schema-snapshot.js";
 import {
+  materializeReefIndexerStructuralArtifacts,
+  type ReefStructuralArtifactMaterializationResult,
+} from "./reef-calculation-nodes.js";
+import {
   isWatchableProjectPath,
   MAX_INDEXED_FILE_SIZE_BYTES,
   toProjectIndexRelativePath,
 } from "./project-index-scope.js";
 import type { IndexerOptions, RefreshProjectPathsResult } from "./types.js";
 import { durationMs, withGlobalStore, withProjectStore } from "./utils.js";
+import { withReefRootWriterLock } from "./reef-writer-lock.js";
 
 const pathRefreshLogger = createLogger("mako-indexer", { component: "path-refresh" });
 
@@ -159,6 +164,20 @@ export async function refreshProjectPaths(
   options: IndexerOptions = {},
 ): Promise<RefreshProjectPathsResult> {
   const attached = attachProject(projectRoot, options, { logLifecycleEvent: false });
+
+  if (!options.skipReefWriterLock) {
+    return withReefRootWriterLock({
+      configOverrides: options.configOverrides,
+      projectId: attached.project.projectId,
+      canonicalRoot: attached.resolvedRootPath,
+      analysisHostId: "path-refresh",
+      acquireTimeoutMs: options.reefWriterLockAcquireTimeoutMs,
+    }, () => refreshProjectPaths(attached.resolvedRootPath, changedPaths, {
+      ...options,
+      skipReefWriterLock: true,
+    }));
+  }
+
   const triggerSource = options.triggerSource ?? "mcp_refresh_paths";
   const fallbackToFull = async (reason: string, paths: string[], deletedPaths: string[]) => {
     pathRefreshLogger.info("path-refresh.full-fallback", {
@@ -168,6 +187,7 @@ export async function refreshProjectPaths(
     });
     const full = await indexProject(attached.resolvedRootPath, {
       ...options,
+      skipReefWriterLock: true,
       triggerSource,
     });
     return {
@@ -259,6 +279,14 @@ export async function refreshProjectPaths(
       let finalizedRun = run;
       let stats = projectStore.getScanStats();
       let semanticUnitCount = projectStore.countSemanticUnits();
+      let structuralArtifactResult: ReefStructuralArtifactMaterializationResult | undefined;
+      const priorFileContents = new Map<string, string>();
+      for (const filePath of plan.existingPaths) {
+        const priorContent = projectStore.getFileContent(filePath);
+        if (priorContent != null) {
+          priorFileContents.set(filePath, priorContent);
+        }
+      }
       try {
         stats = projectStore.replaceFileIndexRows({
           files: snapshot.files,
@@ -282,6 +310,15 @@ export async function refreshProjectPaths(
           ...stats,
           semanticUnits: semanticUnitCount,
         };
+        structuralArtifactResult = await materializeReefIndexerStructuralArtifacts(projectStore, {
+          projectId: attached.project.projectId,
+          root: attached.project.canonicalPath,
+          snapshot,
+          paths: plan.paths,
+          deletedPaths: plan.deletedPaths,
+          priorFileContents,
+          revision: options.reefRevision,
+        });
         finalizedRun = projectStore.finishIndexRun(run.runId, "succeeded", {
           filesIndexed: stats.files,
           chunksIndexed: stats.chunks,
@@ -349,6 +386,7 @@ export async function refreshProjectPaths(
               deletedPathCount: plan.deletedPaths.length,
               paths: plan.paths.slice(0, 50) as unknown as JsonValue,
               stats: (stats ?? null) as unknown as JsonValue,
+              structuralArtifactMaterialization: (structuralArtifactResult ?? null) as unknown as JsonValue,
             },
             errorText: lifecycleError instanceof Error ? lifecycleError.message : lifecycleError ? String(lifecycleError) : undefined,
           });

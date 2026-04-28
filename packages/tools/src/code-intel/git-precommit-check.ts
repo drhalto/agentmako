@@ -6,6 +6,7 @@ import type {
   GitPrecommitCheckToolOutput,
   GitPrecommitFinding,
   GitPrecommitStagedChange,
+  ProjectProfile,
   ProjectFinding,
   ReefRuleDescriptor,
 } from "@mako-ai/contracts";
@@ -80,6 +81,19 @@ interface StagedFile {
   projectPath: string;
   gitPath: string;
   content: string;
+}
+
+export interface GitGuardSourceFile {
+  projectPath: string;
+  content: string;
+}
+
+export interface GitGuardAnalysisResult {
+  checkedFiles: string[];
+  skippedFiles: string[];
+  findings: GitPrecommitFinding[];
+  warnings: string[];
+  policy: GitPrecommitCheckToolOutput["policy"];
 }
 
 interface RawStagedChange {
@@ -522,6 +536,81 @@ function checkStagedFile(args: {
   }
 
   return findings;
+}
+
+export function analyzeGitGuardSourceFiles(args: {
+  projectRoot: string;
+  projectStore: ProjectStore;
+  profile: ProjectProfile | null;
+  files: readonly GitGuardSourceFile[];
+  includeExtensions?: readonly string[];
+  authGuardSymbols?: readonly string[];
+  publicRouteGlobs?: readonly string[];
+  serverOnlyModules?: readonly string[];
+}): GitGuardAnalysisResult {
+  const includeExtensions = args.includeExtensions ?? [...DEFAULT_INCLUDE_EXTENSIONS];
+  const config = loadGitGuardConfig(args.projectRoot);
+  const warnings = [...config.warnings];
+  const knownFiles = new Set(args.projectStore.listFiles().map((file) => normalizePathForGlob(file.path)));
+  const authGuardSymbols = uniqueSorted([
+    ...DEFAULT_AUTH_GUARDS,
+    ...(args.profile?.authGuardSymbols ?? []),
+    ...config.authGuardSymbols,
+    ...(args.authGuardSymbols ?? []),
+  ]);
+  const publicRouteGlobs = uniqueSorted([
+    ...config.publicRouteGlobs,
+    ...(args.publicRouteGlobs ?? []),
+  ]);
+  const serverOnlyModules = uniqueSorted([
+    ...(args.profile?.serverOnlyModules ?? []),
+    ...config.serverOnlyModules,
+    ...(args.serverOnlyModules ?? []),
+  ]).map(normalizePathForGlob);
+
+  if (args.profile == null) {
+    warnings.push("project profile is missing; using only default and input-provided guard policy.");
+  }
+
+  const checkedFiles: string[] = [];
+  const skippedFiles: string[] = [];
+  const sourceFiles: StagedFile[] = [];
+  for (const file of args.files) {
+    if (!includeExtensions.includes(extname(file.projectPath))) {
+      skippedFiles.push(file.projectPath);
+      continue;
+    }
+    checkedFiles.push(file.projectPath);
+    sourceFiles.push({
+      projectPath: file.projectPath,
+      gitPath: file.projectPath,
+      content: file.content,
+    });
+  }
+
+  return {
+    checkedFiles,
+    skippedFiles,
+    findings: sourceFiles.flatMap((file) =>
+      checkStagedFile({
+        file,
+        projectRoot: args.projectRoot,
+        authGuards: new Set(authGuardSymbols),
+        publicRouteGlobs,
+        serverOnlyModules: new Set(serverOnlyModules),
+        knownFiles: new Set([...knownFiles, ...serverOnlyModules]),
+        pathAliases: args.profile?.pathAliases ?? {},
+      })
+    ),
+    warnings,
+    policy: {
+      publicRouteGlobs,
+      authGuardSymbols,
+      serverOnlyModules,
+      includeExtensions: [...includeExtensions],
+      configSources: config.configSources,
+    },
+  };
 }
 
 export async function gitPrecommitCheckTool(

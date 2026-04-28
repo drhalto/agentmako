@@ -17,6 +17,8 @@ async function main(): Promise<void> {
 
   mkdirSync(stateHome, { recursive: true });
   mkdirSync(path.join(projectRoot, "app", "api", "events"), { recursive: true });
+  mkdirSync(path.join(projectRoot, "app", "dashboard", "manager", "endorsements"), { recursive: true });
+  mkdirSync(path.join(projectRoot, "lib", "auth"), { recursive: true });
 
   process.env.MAKO_STATE_HOME = stateHome;
   delete process.env.MAKO_STATE_DIRNAME;
@@ -32,12 +34,32 @@ async function main(): Promise<void> {
     "  return Response.json(normalizeEvents());",
     "}",
   ].join("\n");
+  const dalBody = [
+    "import { loadAuthBundle } from './unified-auth-types';",
+    "export function getSession() { return loadAuthBundle; }",
+    "",
+  ].join("\n");
+  const authTypesBody = [
+    "export async function loadAuthBundle(supabase: { rpc(name: string): Promise<unknown> }) {",
+    "  return supabase.rpc('get_auth_bundle');",
+    "}",
+    "",
+  ].join("\n");
+  const pageBodyWithoutImport = "export default function Page() { return null; }\n";
+  const pageBodyWithImport = [
+    "import { getSession } from '../../../../lib/auth/dal';",
+    "export default function Page() { getSession(); return null; }",
+    "",
+  ].join("\n");
 
   writeFileSync(
     path.join(projectRoot, "package.json"),
     JSON.stringify({ name: "graph-workflows-smoke", version: "0.0.0" }),
   );
   writeFileSync(path.join(projectRoot, "app", "api", "events", "route.ts"), routeBody);
+  writeFileSync(path.join(projectRoot, "lib", "auth", "dal.ts"), dalBody);
+  writeFileSync(path.join(projectRoot, "lib", "auth", "unified-auth-types.ts"), authTypesBody);
+  writeFileSync(path.join(projectRoot, "app", "dashboard", "manager", "endorsements", "page.tsx"), pageBodyWithoutImport);
 
   const projectId = randomUUID();
 
@@ -107,6 +129,87 @@ async function main(): Promise<void> {
               },
             ],
           },
+          {
+            path: "lib/auth/dal.ts",
+            sha256: "dal",
+            language: "typescript",
+            sizeBytes: dalBody.length,
+            lineCount: dalBody.split("\n").filter(Boolean).length,
+            chunks: [
+              {
+                chunkKind: "file",
+                name: "lib/auth/dal.ts",
+                lineStart: 1,
+                lineEnd: 1,
+                content: dalBody,
+              },
+            ],
+            symbols: [
+              {
+                name: "getSession",
+                kind: "function",
+                exportName: "getSession",
+                lineStart: 2,
+                lineEnd: 2,
+              },
+            ],
+            imports: [
+              {
+                targetPath: "lib/auth/unified-auth-types.ts",
+                specifier: "./unified-auth-types",
+                importKind: "value",
+                isTypeOnly: false,
+                line: 1,
+              },
+            ],
+            routes: [],
+          },
+          {
+            path: "lib/auth/unified-auth-types.ts",
+            sha256: "auth-types",
+            language: "typescript",
+            sizeBytes: authTypesBody.length,
+            lineCount: authTypesBody.split("\n").filter(Boolean).length,
+            chunks: [
+              {
+                chunkKind: "file",
+                name: "lib/auth/unified-auth-types.ts",
+                lineStart: 1,
+                lineEnd: authTypesBody.split("\n").filter(Boolean).length,
+                content: authTypesBody,
+              },
+            ],
+            symbols: [
+              {
+                name: "loadAuthBundle",
+                kind: "function",
+                exportName: "loadAuthBundle",
+                lineStart: 1,
+                lineEnd: 3,
+              },
+            ],
+            imports: [],
+            routes: [],
+          },
+          {
+            path: "app/dashboard/manager/endorsements/page.tsx",
+            sha256: "page-without-import",
+            language: "typescriptreact",
+            sizeBytes: pageBodyWithoutImport.length,
+            lineCount: pageBodyWithoutImport.split("\n").filter(Boolean).length,
+            chunks: [
+              {
+                chunkKind: "file",
+                name: "app/dashboard/manager/endorsements/page.tsx",
+                lineStart: 1,
+                lineEnd: 1,
+                content: pageBodyWithoutImport,
+              },
+            ],
+            symbols: [],
+            imports: [],
+            routes: [],
+          },
         ],
         schemaObjects: [
           {
@@ -114,6 +217,12 @@ async function main(): Promise<void> {
             objectType: "rpc",
             schemaName: "public",
             objectName: "refresh_events",
+          },
+          {
+            objectKey: "public.get_auth_bundle",
+            objectType: "rpc",
+            schemaName: "public",
+            objectName: "get_auth_bundle",
           },
         ],
         schemaUsages: [
@@ -123,6 +232,13 @@ async function main(): Promise<void> {
             usageKind: "rpc_call",
             line: 7,
             excerpt: "supabase.rpc('refresh_events')",
+          },
+          {
+            objectKey: "public.get_auth_bundle",
+            filePath: "lib/auth/unified-auth-types.ts",
+            usageKind: "rpc_call",
+            line: 2,
+            excerpt: "supabase.rpc('get_auth_bundle')",
           },
         ],
       });
@@ -189,6 +305,18 @@ async function main(): Promise<void> {
                   ],
                   sources: [{ kind: "sql_migration", path: "supabase/migrations/0001_events.sql", line: 1 }],
                 },
+                {
+                  name: "user_roles",
+                  schema: "public",
+                  columns: [],
+                  rls: {
+                    rlsEnabled: true,
+                    forceRls: false,
+                    policies: [],
+                  },
+                  triggers: [],
+                  sources: [{ kind: "sql_migration", path: "supabase/migrations/0003_user_roles.sql", line: 1 }],
+                },
               ],
               views: [],
               enums: [],
@@ -199,6 +327,13 @@ async function main(): Promise<void> {
                   argTypes: [],
                   sources: [{ kind: "sql_migration", path: "supabase/migrations/0002_refresh.sql", line: 1 }],
                   bodyText: "BEGIN UPDATE public.events SET updated_at = now(); END;",
+                },
+                {
+                  name: "get_auth_bundle",
+                  schema: "public",
+                  argTypes: [],
+                  sources: [{ kind: "sql_migration", path: "supabase/migrations/0004_auth_bundle.sql", line: 1 }],
+                  bodyText: "BEGIN SELECT * FROM public.user_roles; END;",
                 },
               ],
             },
@@ -216,10 +351,10 @@ async function main(): Promise<void> {
         targetEntity: { kind: "table", key: "public.events" },
         direction: "both",
         traversalDepth: 4,
-        includeHeuristicEdges: true,
       }),
     );
     assert.equal(flowMap.result.pathFound, true);
+    assert.equal(flowMap.result.includeHeuristicEdges, true);
     assert.deepEqual(
       flowMap.result.steps.map((step) => step.node.kind),
       ["route", "file", "rpc", "table"],
@@ -229,6 +364,110 @@ async function main(): Promise<void> {
       ["serves_route", "calls_rpc", "touches_table"],
     );
     assert.deepEqual(flowMap.result.majorBoundaryKinds, ["entry", "file", "rpc", "data"]);
+
+    const fileToTableFlowMap = FlowMapToolOutputSchema.parse(
+      await invokeTool("flow_map", {
+        projectId,
+        startEntity: { kind: "file", key: "lib/auth/dal.ts" },
+        targetEntity: { kind: "table", key: "public.user_roles" },
+        direction: "both",
+        traversalDepth: 4,
+      }),
+    );
+    assert.equal(fileToTableFlowMap.result.pathFound, true);
+    assert.deepEqual(
+      fileToTableFlowMap.result.steps.map((step) => step.node.kind),
+      ["file", "file", "rpc", "table"],
+    );
+    assert.deepEqual(
+      fileToTableFlowMap.result.transitions.map((transition) => transition.hop.edge.kind),
+      ["imports", "calls_rpc", "touches_table"],
+    );
+
+    const fileToTableChangePlan = ChangePlanToolOutputSchema.parse(
+      await invokeTool("change_plan", {
+        projectId,
+        startEntity: { kind: "file", key: "lib/auth/dal.ts" },
+        targetEntity: { kind: "table", key: "public.user_roles" },
+        direction: "both",
+        traversalDepth: 4,
+      }),
+    );
+    assert.equal(fileToTableChangePlan.result.pathFound, true);
+    assert.deepEqual(
+      fileToTableChangePlan.result.directSurfaces.map((surface) => surface.node.kind),
+      ["file", "file", "rpc", "table"],
+    );
+    assert.deepEqual(
+      fileToTableChangePlan.result.directSurfaces.slice(1).map((surface) => surface.via.at(-1)?.edge.kind),
+      ["imports", "calls_rpc", "touches_table"],
+    );
+
+    const noImportChangePlan = ChangePlanToolOutputSchema.parse(
+      await invokeTool("change_plan", {
+        projectId,
+        startEntity: { kind: "file", key: "lib/auth/dal.ts" },
+        targetEntity: { kind: "file", key: "app/dashboard/manager/endorsements/page.tsx" },
+        direction: "both",
+        traversalDepth: 2,
+      }),
+    );
+    assert.equal(noImportChangePlan.result.pathFound, false);
+
+    writeFileSync(path.join(projectRoot, "app", "dashboard", "manager", "endorsements", "page.tsx"), pageBodyWithImport);
+    const updateStore = openProjectStore({ projectRoot });
+    try {
+      updateStore.replaceFileIndexRows({
+        deletedPaths: [],
+        files: [
+          {
+            path: "app/dashboard/manager/endorsements/page.tsx",
+            sha256: "page-with-import",
+            language: "typescriptreact",
+            sizeBytes: pageBodyWithImport.length,
+            lineCount: pageBodyWithImport.split("\n").filter(Boolean).length,
+            chunks: [
+              {
+                chunkKind: "file",
+                name: "app/dashboard/manager/endorsements/page.tsx",
+                lineStart: 1,
+                lineEnd: 2,
+                content: pageBodyWithImport,
+              },
+            ],
+            symbols: [],
+            imports: [
+              {
+                targetPath: "lib/auth/dal.ts",
+                specifier: "../../../../lib/auth/dal",
+                importKind: "value",
+                isTypeOnly: false,
+                line: 1,
+              },
+            ],
+            routes: [],
+          },
+        ],
+      });
+    } finally {
+      updateStore.close();
+    }
+
+    const importChangePlan = ChangePlanToolOutputSchema.parse(
+      await invokeTool("change_plan", {
+        projectId,
+        startEntity: { kind: "file", key: "lib/auth/dal.ts" },
+        targetEntity: { kind: "file", key: "app/dashboard/manager/endorsements/page.tsx" },
+        direction: "both",
+        traversalDepth: 2,
+      }),
+    );
+    assert.equal(importChangePlan.result.pathFound, true);
+    assert.deepEqual(
+      importChangePlan.result.directSurfaces.map((surface) => surface.node.key),
+      ["lib/auth/dal.ts", "app/dashboard/manager/endorsements/page.tsx"],
+    );
+    assert.equal(importChangePlan.result.directSurfaces[1]?.via[0]?.edge.kind, "imports");
 
     const exactOnlyFlowMap = FlowMapToolOutputSchema.parse(
       await invokeTool("flow_map", {
@@ -252,10 +491,10 @@ async function main(): Promise<void> {
         targetEntity: { kind: "table", key: "public.events" },
         direction: "both",
         traversalDepth: 4,
-        includeHeuristicEdges: true,
       }),
     );
     assert.equal(changePlan.result.pathFound, true);
+    assert.equal(changePlan.result.includeHeuristicEdges, true);
     assert.deepEqual(
       changePlan.result.directSurfaces.map((surface) => surface.node.kind),
       ["route", "file", "rpc", "table"],

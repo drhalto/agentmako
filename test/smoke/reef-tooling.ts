@@ -10,13 +10,15 @@ import type {
   FindingAckBatchToolOutput,
   ProjectFact,
   ProjectFactsToolOutput,
+  ProjectFindingsToolOutput,
   ReefInstructionsToolOutput,
   ReefOverlayDiffToolOutput,
   ReefScoutToolOutput,
   RulePackValidateToolOutput,
+  SchemaUsageToolOutput,
   ToolBatchToolOutput,
 } from "../../packages/contracts/src/index.ts";
-import { ToolBatchInputSchema } from "../../packages/contracts/src/index.ts";
+import { REEF_SCHEMA_LIVE_SNAPSHOT_MAX_AGE_MS, ToolBatchInputSchema } from "../../packages/contracts/src/index.ts";
 import { openGlobalStore } from "../../packages/store/src/index.ts";
 import { createToolService } from "../../packages/tools/src/index.ts";
 import { seedReefProject } from "../fixtures/reef/index.ts";
@@ -78,6 +80,20 @@ async function main(): Promise<void> {
       lastSeenPath: projectRoot,
       supportTarget: "best_effort",
     });
+    seeded.store.saveProjectProfile({
+      name: "reef-tooling-smoke",
+      rootPath: projectRoot,
+      framework: "unknown",
+      orm: "supabase",
+      srcRoot: ".",
+      entryPoints: [],
+      pathAliases: {},
+      middlewareFiles: [],
+      serverOnlyModules: [],
+      authGuardSymbols: [],
+      supportLevel: "best_effort",
+      detectedAt: now(),
+    });
 
     const subject = { kind: "file" as const, path: "src/index.ts" };
     const subjectFingerprint = seeded.store.computeReefSubjectFingerprint(subject);
@@ -132,6 +148,17 @@ async function main(): Promise<void> {
     assert.equal(diff.summary.changed, 1);
     assert.equal(diff.entries[0]?.status, "changed");
     assert.ok(diff.entries[0]?.changedDataKeys.includes("data.sha256"));
+    assert.equal(diff.entries[0]?.leftFact, undefined);
+    assert.equal(diff.entries[0]?.rightFact, undefined);
+
+    const diffWithFacts = await toolService.callTool("reef_overlay_diff", {
+      projectId: seeded.projectId,
+      filePath: subject.path,
+      kind: "file_snapshot",
+      includeFacts: true,
+    }) as ReefOverlayDiffToolOutput;
+    assert.equal(diffWithFacts.entries[0]?.leftFact?.source, "indexer");
+    assert.equal(diffWithFacts.entries[0]?.rightFact?.source, "working_tree_overlay");
 
     const instructions = await toolService.callTool("reef_instructions", {
       projectId: seeded.projectId,
@@ -312,6 +339,7 @@ async function main(): Promise<void> {
     const dbReef = await toolService.callTool("db_reef_refresh", {
       projectId: seeded.projectId,
       includeFacts: true,
+      factsLimit: 500,
     }) as DbReefRefreshToolOutput;
     assert.equal(dbReef.toolName, "db_reef_refresh");
     assert.equal(dbReef.summary.tableCount, 1);
@@ -323,7 +351,39 @@ async function main(): Promise<void> {
     assert.equal(dbReef.summary.enumCount, 1);
     assert.equal(dbReef.summary.rpcCount, 1);
     assert.ok(dbReef.summary.functionTableRefCount >= 1);
+    assert.equal(dbReef.schemaFreshness.state, "fresh");
+    assert.equal(dbReef.schemaFreshness.sourceFreshness, "fresh");
+    assert.equal(dbReef.schemaFreshness.liveDbFreshness, "not_bound");
+    assert.equal(dbReef.schemaFreshness.liveDbBound, false);
+    assert.equal(dbReef.schemaFreshness.lastSnapshotAt, schemaNow);
+    assert.equal(dbReef.factsTruncated, false);
     assert.ok(dbReef.facts?.some((fact) => fact.kind === "db_index" && fact.source === "db_reef_refresh"));
+    assert.ok(dbReef.facts?.some((fact) => fact.provenance.metadata?.sourceFreshness === "fresh"));
+
+    const snapshotOnlySchemaUsage = await toolService.callTool("schema_usage", {
+      projectId: seeded.projectId,
+      schema: "public",
+      object: "active_users",
+    }) as SchemaUsageToolOutput;
+    assert.equal(snapshotOnlySchemaUsage.toolName, "schema_usage");
+    assert.ok((snapshotOnlySchemaUsage.result.answer ?? "").includes("active_users"));
+
+    const missingSchemaUsage = await toolService.answerQuestion(
+      { projectId: seeded.projectId },
+      "schema_usage",
+      "public.user_roles",
+    );
+    assert.equal(missingSchemaUsage.evidenceStatus, "partial");
+    assert.ok((missingSchemaUsage.answer ?? "").includes('No indexed schema object matched "public.user_roles"'));
+    assert.ok(!(missingSchemaUsage.answer ?? "").includes("handle_new_user"));
+
+    const cappedDbReef = await toolService.callTool("db_reef_refresh", {
+      projectId: seeded.projectId,
+      includeFacts: true,
+      factsLimit: 2,
+    }) as DbReefRefreshToolOutput;
+    assert.equal(cappedDbReef.facts?.length, 2);
+    assert.equal(cappedDbReef.factsTruncated, true);
 
     const dbIndexFacts = await toolService.callTool("project_facts", {
       projectId: seeded.projectId,
@@ -333,6 +393,113 @@ async function main(): Promise<void> {
     assert.equal(dbIndexFacts.toolName, "project_facts");
     assert.equal(dbIndexFacts.totalReturned, 2);
     assert.ok(dbIndexFacts.facts.some((fact) => fact.data?.indexName === "idx_users_team_id"));
+
+    const currentSchemaSnapshot = seeded.store.loadSchemaSnapshot();
+    assert.ok(currentSchemaSnapshot);
+    writeFileSync(path.join(projectRoot, ".mako", "project.json"), JSON.stringify({
+      version: "2.0.0",
+      projectId: seeded.projectId,
+      root: ".",
+      displayName: "reef-tooling-smoke",
+      frameworks: ["unknown"],
+      languages: ["typescript", "sql"],
+      packageManager: "unknown",
+      database: {
+        kind: "supabase",
+        mode: "live_refresh_enabled",
+        schemaSources: [],
+        generatedTypePaths: [],
+        edgeFunctionPaths: [],
+        liveBinding: {
+          strategy: "env_var_ref",
+          ref: "MAKO_REEF_TOOLING_DB_URL",
+          enabled: true,
+        },
+      },
+      indexing: {
+        include: ["src"],
+        exclude: [".mako", "node_modules"],
+      },
+      capabilities: {
+        supportLevel: "best_effort",
+        entryPoints: [],
+        middlewareFiles: [],
+        serverOnlyModules: [],
+        authGuardSymbols: [],
+      },
+    }, null, 2), "utf8");
+    const oldSnapshotAt = new Date(Date.now() - REEF_SCHEMA_LIVE_SNAPSHOT_MAX_AGE_MS - 1_000).toISOString();
+    seeded.store.saveSchemaSnapshot({
+      ...currentSchemaSnapshot,
+      snapshotId: `reef-db-live-stale-${oldSnapshotAt}`,
+      sourceMode: "live_refresh_enabled",
+      generatedAt: oldSnapshotAt,
+      refreshedAt: oldSnapshotAt,
+      sources: [],
+    });
+
+    const staleLiveDbReef = await toolService.callTool("db_reef_refresh", {
+      projectId: seeded.projectId,
+      includeFacts: true,
+      freshen: false,
+    }) as DbReefRefreshToolOutput;
+    assert.equal(staleLiveDbReef.schemaFreshness.state, "stale");
+    assert.equal(staleLiveDbReef.schemaFreshness.sourceFreshness, "fresh");
+    assert.equal(staleLiveDbReef.schemaFreshness.liveDbFreshness, "stale");
+    assert.equal(staleLiveDbReef.schemaFreshness.liveDbBound, true);
+    assert.equal(staleLiveDbReef.schemaFreshness.lastSnapshotAt, oldSnapshotAt);
+    assert.equal(staleLiveDbReef.schemaFreshness.liveSnapshotMaxAgeMs, REEF_SCHEMA_LIVE_SNAPSHOT_MAX_AGE_MS);
+    assert.ok((staleLiveDbReef.schemaFreshness.snapshotAgeMs ?? 0) > REEF_SCHEMA_LIVE_SNAPSHOT_MAX_AGE_MS);
+    assert.ok(staleLiveDbReef.facts?.some((fact) => fact.freshness.state === "stale"));
+    assert.ok(staleLiveDbReef.facts?.some((fact) => fact.provenance.metadata?.liveDbFreshness === "stale"));
+
+    const staleSchemaProgrammatic = await toolService.callTool("diagnostic_refresh", {
+      projectId: seeded.projectId,
+      sources: ["programmatic_findings"],
+      includeFindings: true,
+    }) as DiagnosticRefreshToolOutput;
+    assert.equal(staleSchemaProgrammatic.results[0]?.source, "programmatic_findings");
+    assert.equal(staleSchemaProgrammatic.results[0]?.status, "succeeded");
+    assert.ok(staleSchemaProgrammatic.findings?.some((finding) =>
+      finding.ruleId === "schema_usage.stale_evidence" && finding.freshness.state === "stale"
+    ));
+
+    mkdirSync(path.join(projectRoot, "app", "api", "smoke"), { recursive: true });
+    const routePath = path.join(projectRoot, "app", "api", "smoke", "route.ts");
+    writeFileSync(routePath, [
+      "export async function GET() {",
+      "  await auth.getUser();",
+      "  return Response.json({ ok: true });",
+      "}",
+      "",
+    ].join("\n"), "utf8");
+    const cleanProgrammatic = await toolService.callTool("diagnostic_refresh", {
+      projectId: seeded.projectId,
+      sources: ["programmatic_findings"],
+      files: ["app/api/smoke/route.ts"],
+      includeFindings: true,
+    }) as DiagnosticRefreshToolOutput;
+    assert.equal(cleanProgrammatic.results[0]?.totalFindings, 0);
+    writeFileSync(routePath, [
+      "export async function GET() {",
+      "  return Response.json({ ok: true });",
+      "}",
+      "",
+    ].join("\n"), "utf8");
+    const routeProgrammatic = await toolService.callTool("diagnostic_refresh", {
+      projectId: seeded.projectId,
+      sources: ["programmatic_findings"],
+      files: ["app/api/smoke/route.ts"],
+      includeFindings: true,
+    }) as DiagnosticRefreshToolOutput;
+    assert.ok(routeProgrammatic.findings?.some((finding) => finding.ruleId === "git.unprotected_route"));
+    const programmaticFindings = await toolService.callTool("project_findings", {
+      projectId: seeded.projectId,
+      source: "programmatic_findings",
+    }) as ProjectFindingsToolOutput;
+    assert.ok(programmaticFindings.findings.some((finding) =>
+      finding.ruleId === "git.unprotected_route" && finding.filePath === "app/api/smoke/route.ts"
+    ));
 
     const replicationComment = await toolService.callTool("db_review_comment", {
       projectId: seeded.projectId,

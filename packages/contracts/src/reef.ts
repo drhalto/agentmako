@@ -78,14 +78,299 @@ export type ReefCalculationDependency =
   | { kind: "file"; path: string }
   | { kind: "glob"; pattern: string }
   | { kind: "fact_kind"; factKind: string }
-  | { kind: "config"; path: string };
+  | { kind: "config"; path: string }
+  | { kind: "artifact_kind"; artifactKind: string; extractorVersion?: string }
+  | { kind: "diagnostic_source"; source: string }
+  | { kind: "schema_snapshot"; source?: string }
+  | { kind: "git_index" };
 
 export const ReefCalculationDependencySchema = z.discriminatedUnion("kind", [
   z.object({ kind: z.literal("file"), path: z.string().min(1) }),
   z.object({ kind: z.literal("glob"), pattern: z.string().min(1) }),
   z.object({ kind: z.literal("fact_kind"), factKind: z.string().min(1) }),
   z.object({ kind: z.literal("config"), path: z.string().min(1) }),
+  z.object({
+    kind: z.literal("artifact_kind"),
+    artifactKind: z.string().min(1),
+    extractorVersion: z.string().min(1).optional(),
+  }),
+  z.object({ kind: z.literal("diagnostic_source"), source: z.string().min(1) }),
+  z.object({ kind: z.literal("schema_snapshot"), source: z.string().min(1).optional() }),
+  z.object({ kind: z.literal("git_index") }),
 ]) satisfies z.ZodType<ReefCalculationDependency>;
+
+export const REEF_CALCULATION_NODE_KINDS = [
+  "input",
+  "derived_query",
+  "fact_writer",
+  "artifact_writer",
+] as const;
+export type ReefCalculationNodeKind = (typeof REEF_CALCULATION_NODE_KINDS)[number];
+export const ReefCalculationNodeKindSchema = z.enum(REEF_CALCULATION_NODE_KINDS);
+
+export const REEF_CALCULATION_REFRESH_SCOPES = [
+  "path_scoped",
+  "source_scoped",
+  "project_scoped",
+] as const;
+export type ReefCalculationRefreshScope = (typeof REEF_CALCULATION_REFRESH_SCOPES)[number];
+export const ReefCalculationRefreshScopeSchema = z.enum(REEF_CALCULATION_REFRESH_SCOPES);
+
+export const REEF_CALCULATION_FALLBACKS = [
+  "drop",
+  "mark_stale",
+  "full_refresh",
+] as const;
+export type ReefCalculationFallback = (typeof REEF_CALCULATION_FALLBACKS)[number];
+export const ReefCalculationFallbackSchema = z.enum(REEF_CALCULATION_FALLBACKS);
+
+export const REEF_CALCULATION_DURABILITY_TIERS = ["high", "low"] as const;
+export type ReefCalculationDurabilityTier = (typeof REEF_CALCULATION_DURABILITY_TIERS)[number];
+export const ReefCalculationDurabilityTierSchema = z.enum(REEF_CALCULATION_DURABILITY_TIERS);
+
+export type ReefCalculationOutput =
+  | { kind: "fact"; factKind: string }
+  | { kind: "finding"; source: string }
+  | { kind: "artifact"; artifactKind: string; extractorVersion: string }
+  | { kind: "query"; queryKind: string };
+
+export const ReefCalculationOutputSchema = z.discriminatedUnion("kind", [
+  z.object({ kind: z.literal("fact"), factKind: z.string().min(1) }),
+  z.object({ kind: z.literal("finding"), source: z.string().min(1) }),
+  z.object({
+    kind: z.literal("artifact"),
+    artifactKind: z.string().min(1),
+    extractorVersion: z.string().min(1),
+  }),
+  z.object({ kind: z.literal("query"), queryKind: z.string().min(1) }),
+]) satisfies z.ZodType<ReefCalculationOutput>;
+
+export type ReefCalculationBackdating =
+  | { strategy: "none" }
+  | { strategy: "output_fingerprint"; equalityKeys?: string[] }
+  | {
+      strategy: "structural_changed_ranges";
+      relevantRangeKinds: string[];
+      equalityKeys?: string[];
+    };
+
+export const ReefCalculationBackdatingSchema = z.discriminatedUnion("strategy", [
+  z.object({ strategy: z.literal("none") }),
+  z.object({
+    strategy: z.literal("output_fingerprint"),
+    equalityKeys: z.array(z.string().min(1)).optional(),
+  }),
+  z.object({
+    strategy: z.literal("structural_changed_ranges"),
+    relevantRangeKinds: z.array(z.string().min(1)).min(1),
+    equalityKeys: z.array(z.string().min(1)).optional(),
+  }),
+]) satisfies z.ZodType<ReefCalculationBackdating>;
+
+export interface ReefCalculationNode {
+  id: string;
+  kind: ReefCalculationNodeKind;
+  version?: string;
+  description?: string;
+  outputs: ReefCalculationOutput[];
+  dependsOn: ReefCalculationDependency[];
+  refreshScope: ReefCalculationRefreshScope;
+  fallback: ReefCalculationFallback;
+  durability: ReefCalculationDurabilityTier;
+  backdating: ReefCalculationBackdating;
+}
+
+export const ReefCalculationNodeSchema = z
+  .object({
+    id: z.string().min(1),
+    kind: ReefCalculationNodeKindSchema,
+    version: z.string().min(1).optional(),
+    description: z.string().min(1).optional(),
+    outputs: z.array(ReefCalculationOutputSchema).min(1),
+    dependsOn: z.array(ReefCalculationDependencySchema),
+    refreshScope: ReefCalculationRefreshScopeSchema,
+    fallback: ReefCalculationFallbackSchema,
+    durability: ReefCalculationDurabilityTierSchema,
+    backdating: ReefCalculationBackdatingSchema,
+  })
+  .superRefine((node, ctx) => {
+    if (node.kind !== "input" && node.dependsOn.length === 0) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["dependsOn"],
+        message: "non-input calculation nodes must declare at least one dependency",
+      });
+    }
+
+    if (
+      node.kind === "artifact_writer" &&
+      !node.outputs.some((output) => output.kind === "artifact")
+    ) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["outputs"],
+        message: "artifact_writer nodes must produce at least one artifact output",
+      });
+    }
+
+    if (
+      node.refreshScope === "path_scoped" &&
+      !node.dependsOn.some((dependency) => dependency.kind === "file" || dependency.kind === "glob")
+    ) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["dependsOn"],
+        message: "path_scoped calculation nodes must declare a file or glob dependency",
+      });
+    }
+
+    if (
+      node.backdating.strategy === "structural_changed_ranges" &&
+      !node.dependsOn.some((dependency) => dependency.kind === "file" || dependency.kind === "glob")
+    ) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["backdating"],
+        message: "structural changed-range backdating requires a file or glob dependency",
+      });
+    }
+  }) satisfies z.ZodType<ReefCalculationNode>;
+
+export function reefCalculationDependencyKey(dependency: ReefCalculationDependency): string {
+  switch (dependency.kind) {
+    case "file":
+      return `file:${dependency.path}`;
+    case "glob":
+      return `glob:${dependency.pattern}`;
+    case "fact_kind":
+      return `fact:${dependency.factKind}`;
+    case "config":
+      return `config:${dependency.path}`;
+    case "artifact_kind":
+      return `artifact:${dependency.artifactKind}:${dependency.extractorVersion ?? ""}`;
+    case "diagnostic_source":
+      return `diagnostic:${dependency.source}`;
+    case "schema_snapshot":
+      return `schema_snapshot:${dependency.source ?? ""}`;
+    case "git_index":
+      return "git_index";
+  }
+}
+
+export function reefCalculationOutputKey(output: ReefCalculationOutput): string {
+  switch (output.kind) {
+    case "fact":
+      return `fact:${output.factKind}`;
+    case "finding":
+      return `finding:${output.source}`;
+    case "artifact":
+      return `artifact:${output.artifactKind}:${output.extractorVersion}`;
+    case "query":
+      return `query:${output.queryKind}`;
+  }
+}
+
+export class ReefCalculationRegistry {
+  private readonly nodesById = new Map<string, ReefCalculationNode>();
+  private readonly nodeIdsByOutput = new Map<string, string>();
+  private readonly nodeIdsByDependency = new Map<string, Set<string>>();
+
+  constructor(nodes: ReefCalculationNode[] = []) {
+    for (const node of nodes) {
+      this.register(node);
+    }
+  }
+
+  register(input: ReefCalculationNode): ReefCalculationNode {
+    const node = ReefCalculationNodeSchema.parse(input);
+    if (this.nodesById.has(node.id)) {
+      throw new Error(`Reef calculation node already registered: ${node.id}`);
+    }
+
+    for (const output of node.outputs) {
+      const outputKey = reefCalculationOutputKey(output);
+      const existingNodeId = this.nodeIdsByOutput.get(outputKey);
+      if (existingNodeId) {
+        throw new Error(
+          `Reef calculation output ${outputKey} is already produced by ${existingNodeId}`,
+        );
+      }
+    }
+
+    this.nodesById.set(node.id, node);
+    for (const output of node.outputs) {
+      this.nodeIdsByOutput.set(reefCalculationOutputKey(output), node.id);
+    }
+    for (const dependency of node.dependsOn) {
+      const dependencyKey = reefCalculationDependencyKey(dependency);
+      const nodeIds = this.nodeIdsByDependency.get(dependencyKey) ?? new Set<string>();
+      nodeIds.add(node.id);
+      this.nodeIdsByDependency.set(dependencyKey, nodeIds);
+    }
+    return node;
+  }
+
+  get(nodeId: string): ReefCalculationNode | undefined {
+    return this.nodesById.get(nodeId);
+  }
+
+  list(): ReefCalculationNode[] {
+    return [...this.nodesById.values()];
+  }
+
+  findProducer(output: ReefCalculationOutput): ReefCalculationNode | undefined {
+    const nodeId = this.nodeIdsByOutput.get(reefCalculationOutputKey(output));
+    return nodeId ? this.nodesById.get(nodeId) : undefined;
+  }
+
+  findDependents(dependency: ReefCalculationDependency): ReefCalculationNode[] {
+    const nodeIds = this.nodeIdsByDependency.get(reefCalculationDependencyKey(dependency));
+    if (!nodeIds) {
+      return [];
+    }
+    return [...nodeIds]
+      .map((nodeId) => this.nodesById.get(nodeId))
+      .filter((node): node is ReefCalculationNode => node != null);
+  }
+}
+
+export interface ReefCalculationExecutionNode {
+  nodeId: string;
+  kind: ReefCalculationNodeKind;
+  refreshScope: ReefCalculationRefreshScope;
+  fallback: ReefCalculationFallback;
+  durability: ReefCalculationDurabilityTier;
+  dependencyKeys: string[];
+  outputKeys: string[];
+}
+
+export const ReefCalculationExecutionNodeSchema = z.object({
+  nodeId: z.string().min(1),
+  kind: ReefCalculationNodeKindSchema,
+  refreshScope: ReefCalculationRefreshScopeSchema,
+  fallback: ReefCalculationFallbackSchema,
+  durability: ReefCalculationDurabilityTierSchema,
+  dependencyKeys: z.array(z.string().min(1)),
+  outputKeys: z.array(z.string().min(1)),
+}) satisfies z.ZodType<ReefCalculationExecutionNode>;
+
+export interface ReefCalculationExecutionPlan {
+  refreshMode: "path_scoped" | "full";
+  decisionReason: string;
+  fallbackReason?: string;
+  inputDependencyKeys: string[];
+  changedPaths: string[];
+  affectedNodes: ReefCalculationExecutionNode[];
+}
+
+export const ReefCalculationExecutionPlanSchema = z.object({
+  refreshMode: z.enum(["path_scoped", "full"]),
+  decisionReason: z.string().min(1),
+  fallbackReason: z.string().min(1).optional(),
+  inputDependencyKeys: z.array(z.string().min(1)),
+  changedPaths: z.array(z.string().min(1)),
+  affectedNodes: z.array(ReefCalculationExecutionNodeSchema),
+}) satisfies z.ZodType<ReefCalculationExecutionPlan>;
 
 export interface FactProvenance {
   source: string;

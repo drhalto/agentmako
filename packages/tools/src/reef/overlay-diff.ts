@@ -55,6 +55,7 @@ export async function reefOverlayDiffTool(
         rightOverlay,
         leftFact,
         rightFact,
+        includeFacts: input.includeFacts ?? false,
       });
     }).sort(compareDiffEntries);
     const filteredEntries = input.includeEqual
@@ -106,6 +107,7 @@ function diffEntry(args: {
   rightOverlay: ProjectFact["overlay"];
   leftFact?: ProjectFact;
   rightFact?: ProjectFact;
+  includeFacts: boolean;
 }): ReefOverlayDiffEntry {
   const leftFact = args.leftFact;
   const rightFact = args.rightFact;
@@ -123,8 +125,10 @@ function diffEntry(args: {
     leftOverlay: args.leftOverlay,
     rightOverlay: args.rightOverlay,
     status,
-    ...(leftFact ? { leftSource: leftFact.source, leftFact } : {}),
-    ...(rightFact ? { rightSource: rightFact.source, rightFact } : {}),
+    ...(leftFact ? { leftSource: leftFact.source } : {}),
+    ...(rightFact ? { rightSource: rightFact.source } : {}),
+    ...(args.includeFacts && leftFact ? { leftFact } : {}),
+    ...(args.includeFacts && rightFact ? { rightFact } : {}),
     changedDataKeys: status === "changed" && leftFact && rightFact
       ? changedKeys(leftFact, rightFact)
       : [],

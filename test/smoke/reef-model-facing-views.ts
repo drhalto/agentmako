@@ -20,6 +20,7 @@ import type {
 } from "../../packages/contracts/src/index.ts";
 import { createToolService } from "../../packages/tools/src/index.ts";
 import { openGlobalStore } from "../../packages/store/src/index.ts";
+import { readReefOperations } from "../../services/indexer/src/reef-operation-log.ts";
 import { seedReefProject } from "../fixtures/reef/index.ts";
 
 function now(): string {
@@ -291,6 +292,34 @@ async function main(): Promise<void> {
       cwd: projectRoot,
       errorText: "fixture typecheck failure",
     });
+    seeded.store.saveReefDiagnosticRun({
+      projectId: seeded.projectId,
+      source: "lint_files",
+      overlay: "working_tree",
+      status: "succeeded",
+      startedAt: secondsAgo(120),
+      finishedAt: secondsAgo(110),
+      durationMs: 20,
+      checkedFileCount: 1,
+      findingCount: 0,
+      persistedFindingCount: 0,
+      command: "fixture stale lint",
+      cwd: projectRoot,
+    });
+    seeded.store.saveReefDiagnosticRun({
+      projectId: seeded.projectId,
+      source: "lint_files",
+      overlay: "working_tree",
+      status: "succeeded",
+      startedAt: now(),
+      finishedAt: now(),
+      durationMs: 20,
+      checkedFileCount: 1,
+      findingCount: 0,
+      persistedFindingCount: 0,
+      command: "fixture fresh lint",
+      cwd: projectRoot,
+    });
 
     const scout = await toolService.callTool("reef_scout", {
       projectId: seeded.projectId,
@@ -299,6 +328,7 @@ async function main(): Promise<void> {
     }) as ReefScoutToolOutput;
     assert.equal(scout.toolName, "reef_scout");
     assert.ok(scout.candidates.some((candidate) => candidate.filePath === routePath));
+    assertReefExecution(scout.reefExecution, "reef_scout", "allow_stale_labeled");
 
     const inspect = await toolService.callTool("reef_inspect", {
       projectId: seeded.projectId,
@@ -307,6 +337,7 @@ async function main(): Promise<void> {
     assert.equal(inspect.toolName, "reef_inspect");
     assert.ok(inspect.summary.factCount >= 4);
     assert.ok(inspect.summary.findingCount >= 2);
+    assertReefExecution(inspect.reefExecution, "reef_inspect", "allow_stale_labeled");
 
     const loops = await toolService.callTool("project_open_loops", {
       projectId: seeded.projectId,
@@ -315,6 +346,14 @@ async function main(): Promise<void> {
     assert.ok(loops.loops.some((loop) => loop.kind === "stale_fact"));
     assert.ok(loops.loops.some((loop) => loop.kind === "failed_diagnostic_run"));
     assert.ok(loops.loops.some((loop) => loop.kind === "active_finding"));
+    assert.ok(!loops.loops.some((loop) => loop.kind === "stale_diagnostic_run" && loop.source === "lint_files"));
+    assertReefExecution(loops.reefExecution, "project_open_loops", "allow_stale_labeled");
+    const loopsWithStringLimit = await toolService.callTool("project_open_loops", {
+      projectId: seeded.projectId,
+      limit: "3",
+      cacheStalenessMs: "30000",
+    }) as ProjectOpenLoopsToolOutput;
+    assert.equal(loopsWithStringLimit.loops.length, 3);
     const loopsWithAcknowledged = await toolService.callTool("project_open_loops", {
       projectId: seeded.projectId,
       includeAcknowledged: true,
@@ -330,6 +369,7 @@ async function main(): Promise<void> {
     assert.equal(verification.toolName, "verification_state");
     assert.equal(verification.status, "failed");
     assert.ok(verification.changedFiles.some((file) => file.filePath === routePath && file.staleForSources.includes("eslint")));
+    assertReefExecution(verification.reefExecution, "verification_state", "allow_stale_labeled");
 
     const conventions = await toolService.callTool("project_conventions", {
       projectId: seeded.projectId,
@@ -342,6 +382,7 @@ async function main(): Promise<void> {
       request: "fix auth route verifySession",
       focusFiles: [routePath],
     }) as ContextPacketToolOutput;
+    assertReefExecution(contextPacket.reefExecution, "context_packet", "allow_stale_labeled");
     assert.ok(contextPacket.limits.providersRun.includes("reef_convention"));
     assert.ok([...contextPacket.primaryContext, ...contextPacket.relatedContext].some((candidate) =>
       candidate.source === "reef_convention"
@@ -364,6 +405,7 @@ async function main(): Promise<void> {
     assert.ok(confidence.items.some((item) => item.confidenceLabel === "verified_live"));
     assert.ok(confidence.items.some((item) => item.confidenceLabel === "stale_indexed"));
     assert.ok(confidence.items.some((item) => item.confidenceLabel === "contradicted"));
+    assertReefExecution(confidence.reefExecution, "evidence_confidence", "allow_stale_labeled");
 
     const conflicts = await toolService.callTool("evidence_conflicts", {
       projectId: seeded.projectId,
@@ -371,6 +413,7 @@ async function main(): Promise<void> {
     }) as EvidenceConflictsToolOutput;
     assert.ok(conflicts.conflicts.some((conflict) => conflict.conflictKind === "stale_indexed_evidence"));
     assert.ok(conflicts.conflicts.some((conflict) => conflict.conflictKind === "phantom_line"));
+    assertReefExecution(conflicts.reefExecution, "evidence_conflicts", "allow_stale_labeled");
 
     const batch = await toolService.callTool("tool_batch", {
       projectId: seeded.projectId,
@@ -384,6 +427,20 @@ async function main(): Promise<void> {
     assert.equal(batch.summary.executedOps, 3);
     assert.equal(batch.summary.succeededOps, 3);
 
+    const queryPathOperations = await readReefOperations({}, {
+      projectId: seeded.projectId,
+      kind: "query_path",
+      limit: 50,
+    });
+    const loggedTools = new Set(queryPathOperations.map((operation) => operation.data?.toolName));
+    assert.ok(loggedTools.has("reef_scout"));
+    assert.ok(loggedTools.has("reef_inspect"));
+    assert.ok(loggedTools.has("context_packet"));
+    assert.ok(loggedTools.has("project_open_loops"));
+    assert.ok(loggedTools.has("verification_state"));
+    assert.ok(loggedTools.has("evidence_confidence"));
+    assert.ok(loggedTools.has("evidence_conflicts"));
+
     console.log("reef-model-facing-views: PASS");
   } finally {
     toolService.close();
@@ -396,6 +453,19 @@ async function main(): Promise<void> {
     }
     rmSync(tmp, { recursive: true, force: true });
   }
+}
+
+function assertReefExecution(
+  reefExecution: ReefScoutToolOutput["reefExecution"],
+  toolName: string,
+  freshnessPolicy: ReefScoutToolOutput["reefExecution"]["freshnessPolicy"],
+): void {
+  assert.equal(reefExecution.reefMode, "auto", `${toolName} should use auto mode by default`);
+  assert.equal(reefExecution.serviceMode, "direct", `${toolName} should report direct store read without a service`);
+  assert.equal(reefExecution.queryPath, "reef_materialized_view");
+  assert.equal(reefExecution.freshnessPolicy, freshnessPolicy);
+  assert.equal(reefExecution.fallback?.used, true);
+  assert.ok(reefExecution.operationId, `${toolName} should record a query-path operation`);
 }
 
 function groupBy<T>(items: T[], keyFor: (item: T) => string): Map<string, T[]> {

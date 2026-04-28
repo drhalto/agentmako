@@ -3,6 +3,7 @@ import type {
   RouteContextToolOutput,
 } from "@mako-ai/contracts";
 import { collectExactRouteCandidates, withProjectContext, type ToolServiceOptions } from "../runtime.js";
+import { buildReefToolExecution } from "../reef/tool-execution.js";
 import {
   appendTruncationWarning,
   collectRlsPolicies,
@@ -21,10 +22,14 @@ import {
   uniqueBy,
 } from "./shared.js";
 
+const ANALYSIS_IMPORT_DEPTH = 3;
+const ANALYSIS_FILE_LIMIT = 80;
+
 export async function routeContextTool(
   input: RouteContextToolInput,
   options: ToolServiceOptions = {},
 ): Promise<RouteContextToolOutput> {
+  const startedAtMs = Date.now();
   const generatedAt = new Date().toISOString();
   const max = normalizeMaxPerSection(input.maxPerSection);
 
@@ -55,15 +60,15 @@ export async function routeContextTool(
     const inboundImports = route
       ? projectStore.listDependentsForFile(route.filePath).map(toImportLink)
       : [];
-    const analysisFiles = uniqueBy(
-      [
-        ...(route ? [route.filePath] : []),
-        ...outboundImports
-          .filter((link) => link.targetExists)
-          .map((link) => link.targetPath),
-      ],
-      (filePath) => filePath,
-    );
+    const analysisFileResult = route
+      ? collectOutboundAnalysisFiles(projectStore, route.filePath)
+      : { files: [] as string[], truncated: false };
+    const analysisFiles = analysisFileResult.files;
+    if (analysisFileResult.truncated) {
+      warnings.push(
+        `route_context schema analysis truncated at ${ANALYSIS_FILE_LIMIT} files while walking outbound imports to depth ${ANALYSIS_IMPORT_DEPTH}.`,
+      );
+    }
 
     const usageEntries = collectSchemaUsagesForFiles(projectStore, analysisFiles);
     const directTableTouches = usageEntries
@@ -100,6 +105,25 @@ export async function routeContextTool(
     appendTruncationWarning(warnings, "downstreamTables", tableSection, max);
     appendTruncationWarning(warnings, "downstreamRpcs", rpcSection, max);
     appendTruncationWarning(warnings, "rlsPolicies", rlsSection, max);
+    const evidenceRefs = [
+      `route_trace:${input.route}`,
+      ...(route ? [`file_health:${route.filePath}`, `imports_deps:${route.filePath}`] : []),
+      ...analysisFiles.map((filePath) => `schema_usage:${filePath}`),
+      ...downstreamRpcs.map((rpc) => `trace_rpc:${rpc.schemaName}.${rpc.rpcName}`),
+      ...downstreamTables.map((table) => `db_rls:${table.schemaName}.${table.tableName}`),
+    ];
+    const reefExecution = await buildReefToolExecution({
+      toolName: "route_context",
+      projectId: project.projectId,
+      projectRoot: project.canonicalPath,
+      options,
+      startedAtMs,
+      returnedCount: outboundSection.entries.length
+        + inboundSection.entries.length
+        + tableSection.entries.length
+        + rpcSection.entries.length
+        + rlsSection.entries.length,
+    });
 
     return {
       toolName: "route_context",
@@ -113,15 +137,44 @@ export async function routeContextTool(
       downstreamTables: tableSection,
       downstreamRpcs: rpcSection,
       rlsPolicies: rlsSection,
-      evidenceRefs: [
-        `route_trace:${input.route}`,
-        ...(route ? [`file_health:${route.filePath}`, `imports_deps:${route.filePath}`] : []),
-        ...analysisFiles.map((filePath) => `schema_usage:${filePath}`),
-        ...downstreamRpcs.map((rpc) => `trace_rpc:${rpc.schemaName}.${rpc.rpcName}`),
-        ...downstreamTables.map((table) => `db_rls:${table.schemaName}.${table.tableName}`),
-      ],
+      evidenceRefs,
       trust: null,
+      reefExecution,
       warnings,
     };
   });
+}
+
+function collectOutboundAnalysisFiles(
+  projectStore: { listImportsForFile(filePath: string): Array<{ targetExists: boolean; targetPath: string }> },
+  startFilePath: string,
+): { files: string[]; truncated: boolean } {
+  const files: string[] = [];
+  const seen = new Set<string>();
+  const queue: Array<{ filePath: string; depth: number }> = [{ filePath: startFilePath, depth: 0 }];
+  let truncated = false;
+
+  while (queue.length > 0) {
+    const current = queue.shift()!;
+    if (seen.has(current.filePath)) {
+      continue;
+    }
+    seen.add(current.filePath);
+    files.push(current.filePath);
+    if (files.length >= ANALYSIS_FILE_LIMIT) {
+      truncated = queue.length > 0 || current.depth < ANALYSIS_IMPORT_DEPTH;
+      break;
+    }
+    if (current.depth >= ANALYSIS_IMPORT_DEPTH) {
+      continue;
+    }
+    for (const link of projectStore.listImportsForFile(current.filePath)) {
+      if (!link.targetExists || seen.has(link.targetPath)) {
+        continue;
+      }
+      queue.push({ filePath: link.targetPath, depth: current.depth + 1 });
+    }
+  }
+
+  return { files, truncated };
 }

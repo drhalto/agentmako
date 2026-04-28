@@ -100,23 +100,23 @@ async function main(): Promise<void> {
     const tLocal = await resolveTier({ providerRegistry: registry });
     assert.equal(tLocal.current, "local-agent", "reachable local provider should promote to local-agent");
 
-    process.env.MAKO_ANTHROPIC_API_KEY = "sk-test-fake-key-only";
+    process.env.MAKO_ANTHROPIC_API_KEY = "test-fake-key-only";
     const t2 = await resolveTier({ providerRegistry: registry });
     assert.equal(t2.current, "cloud-agent", "MAKO_ANTHROPIC_API_KEY should promote to cloud-agent");
     delete process.env.MAKO_ANTHROPIC_API_KEY;
 
-    process.env.MAKO_OPENAI_API_KEY = "sk-mako-canonical";
+    process.env.MAKO_OPENAI_API_KEY = "mako-canonical-test-key";
     const k1 = await registry.resolveApiKey("openai");
-    assert.equal(k1.key, "sk-mako-canonical", "MAKO_<PROV>_API_KEY wins over vendor-standard");
+    assert.equal(k1.key, "mako-canonical-test-key", "MAKO_<PROV>_API_KEY wins over vendor-standard");
     delete process.env.MAKO_OPENAI_API_KEY;
 
-    process.env.OPENAI_API_KEY = "sk-vendor-standard";
+    process.env.OPENAI_API_KEY = "vendor-standard-test-key";
     const k2 = await registry.resolveApiKey("openai");
-    assert.equal(k2.key, "sk-vendor-standard", "vendor-standard env var resolves when MAKO_ is unset");
+    assert.equal(k2.key, "vendor-standard-test-key", "vendor-standard env var resolves when MAKO_ is unset");
     delete process.env.OPENAI_API_KEY;
 
-    const k3 = await registry.resolveApiKey("openai", { override: "sk-explicit" });
-    assert.equal(k3.key, "sk-explicit", "explicit override beats env");
+    const k3 = await registry.resolveApiKey("openai", { override: "explicit-test-key" });
+    assert.equal(k3.key, "explicit-test-key", "explicit override beats env");
 
     process.env.MAKO_TEST_SECRET = "secret-from-env-indirection";
     const k4 = await registry.resolveApiKey("openai", {
@@ -163,7 +163,7 @@ async function main(): Promise<void> {
       assert.equal(custom.source, "project-config", "custom provider source should be project-config");
       assert.equal(custom.spec.baseURL, "http://localhost:1234/v1");
 
-      process.env.MAKO_PROJECT_PROVIDER_KEY = "sk-project-provider";
+      process.env.MAKO_PROJECT_PROVIDER_KEY = "project-provider-test-key";
       await projReg.upsertPersistent({
         id: "persisted-openai-compatible",
         name: "Persisted OpenAI-Compatible",
@@ -191,7 +191,7 @@ async function main(): Promise<void> {
       assert.ok(persisted, "persisted provider should survive reload");
       assert.equal(persisted?.source, "project-config");
       const persistedKey = await reloaded.resolveApiKey("persisted-openai-compatible");
-      assert.equal(persistedKey.key, "sk-project-provider");
+      assert.equal(persistedKey.key, "project-provider-test-key");
       assert.equal(persistedKey.source, "project-config");
       const removed = await reloaded.removePersistent("persisted-openai-compatible");
       assert.equal(removed, true, "removePersistent should delete custom provider");

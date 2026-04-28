@@ -12,6 +12,7 @@ import type {
 } from "@mako-ai/contracts";
 import type { FileImportLink } from "@mako-ai/store";
 import { withProjectContext, resolveIndexedFilePath, type ToolServiceOptions } from "../runtime.js";
+import { buildReefToolExecution } from "../reef/tool-execution.js";
 
 function uniqueInternalEdges(edges: FileImportLink[]): FileImportLink[] {
   const seen = new Set<string>();
@@ -49,10 +50,20 @@ function normalizeCycle(cycle: string[]): string[] {
 }
 
 export async function importsDepsTool(input: ImportsDepsToolInput, options: ToolServiceOptions = {}): Promise<ImportsDepsToolOutput> {
-  return withProjectContext(input, options, ({ project, projectStore }) => {
+  return withProjectContext(input, options, async ({ project, projectStore }) => {
+    const startedAtMs = Date.now();
     const resolvedFilePath = resolveIndexedFilePath(project.canonicalPath, projectStore, input.file);
 
     const imports = projectStore.listImportsForFile(resolvedFilePath);
+    const reefExecution = await buildReefToolExecution({
+      toolName: "imports_deps",
+      projectId: project.projectId,
+      projectRoot: project.canonicalPath,
+      options,
+      startedAtMs,
+      returnedCount: imports.length,
+    });
+
     return {
       toolName: "imports_deps",
       projectId: project.projectId,
@@ -60,13 +71,15 @@ export async function importsDepsTool(input: ImportsDepsToolInput, options: Tool
       resolvedFilePath,
       imports,
       unresolved: imports.filter((edge) => !edge.targetExists),
+      reefExecution,
       warnings: [],
     };
   });
 }
 
 export async function importsImpactTool(input: ImportsImpactToolInput, options: ToolServiceOptions = {}): Promise<ImportsImpactToolOutput> {
-  return withProjectContext(input, options, ({ project, projectStore }) => {
+  return withProjectContext(input, options, async ({ project, projectStore }) => {
+    const startedAtMs = Date.now();
     const resolvedFilePath = resolveIndexedFilePath(project.canonicalPath, projectStore, input.file);
 
     const maxDepth = input.depth ?? 2;
@@ -107,6 +120,15 @@ export async function importsImpactTool(input: ImportsImpactToolInput, options: 
       return left.filePath.localeCompare(right.filePath);
     });
 
+    const reefExecution = await buildReefToolExecution({
+      toolName: "imports_impact",
+      projectId: project.projectId,
+      projectRoot: project.canonicalPath,
+      options,
+      startedAtMs,
+      returnedCount: impactedFiles.length,
+    });
+
     return {
       toolName: "imports_impact",
       projectId: project.projectId,
@@ -114,13 +136,15 @@ export async function importsImpactTool(input: ImportsImpactToolInput, options: 
       resolvedFilePath,
       depth: maxDepth,
       impactedFiles,
+      reefExecution,
       warnings: [],
     };
   });
 }
 
 export async function importsHotspotsTool(input: ImportsHotspotsToolInput, options: ToolServiceOptions = {}): Promise<ImportsHotspotsToolOutput> {
-  return withProjectContext(input, options, ({ project, projectStore }) => {
+  return withProjectContext(input, options, async ({ project, projectStore }) => {
+    const startedAtMs = Date.now();
     const limit = input.limit ?? 10;
     const filePaths = projectStore.listFiles().map((file) => file.path);
     const inboundCounts = new Map<string, number>(filePaths.map((filePath) => [filePath, 0]));
@@ -156,17 +180,28 @@ export async function importsHotspotsTool(input: ImportsHotspotsToolInput, optio
       })
       .slice(0, limit);
 
+    const reefExecution = await buildReefToolExecution({
+      toolName: "imports_hotspots",
+      projectId: project.projectId,
+      projectRoot: project.canonicalPath,
+      options,
+      startedAtMs,
+      returnedCount: hotspots.length,
+    });
+
     return {
       toolName: "imports_hotspots",
       projectId: project.projectId,
       limit,
       hotspots,
+      reefExecution,
     };
   });
 }
 
 export async function importsCyclesTool(input: ImportsCyclesToolInput, options: ToolServiceOptions = {}): Promise<ImportsCyclesToolOutput> {
-  return withProjectContext(input, options, ({ project, projectStore }) => {
+  return withProjectContext(input, options, async ({ project, projectStore }) => {
+    const startedAtMs = Date.now();
     const adjacency = new Map<string, string[]>();
     for (const edge of uniqueInternalEdges(projectStore.listAllImportEdges())) {
       const current = adjacency.get(edge.sourcePath) ?? [];
@@ -233,10 +268,20 @@ export async function importsCyclesTool(input: ImportsCyclesToolInput, options: 
       return left.join("\u0000").localeCompare(right.join("\u0000"));
     });
 
+    const reefExecution = await buildReefToolExecution({
+      toolName: "imports_cycles",
+      projectId: project.projectId,
+      projectRoot: project.canonicalPath,
+      options,
+      startedAtMs,
+      returnedCount: cycles.length,
+    });
+
     return {
       toolName: "imports_cycles",
       projectId: project.projectId,
       cycles,
+      reefExecution,
     };
   });
 }

@@ -1,8 +1,10 @@
 import type {
   AttachedProject,
   JsonObject,
+  ProjectIndexWatchCatchUpResult,
   ProjectIndexWatchState,
   ProjectProfile,
+  ReefService,
 } from "@mako-ai/contracts";
 import type {
   GlobalStore,
@@ -15,6 +17,7 @@ import type { HotIndexCache } from "./hot-index/index.js";
 
 export interface ProjectIndexWatchStateProvider {
   getWatchState(projectId?: string): ProjectIndexWatchState | undefined;
+  waitForCatchUp?(projectId: string, options?: { maxWaitMs?: number; reason?: string }): Promise<ProjectIndexWatchCatchUpResult>;
 }
 
 export interface ToolServiceOptions {
@@ -33,6 +36,7 @@ export interface ToolServiceOptions {
   projectStoreCache?: ProjectStoreCache;
   hotIndexCache?: HotIndexCache;
   indexRefreshCoordinator?: ProjectIndexWatchStateProvider;
+  reefService?: Pick<ReefService, "getProjectStatus" | "requestRefresh">;
   progressReporter?: ProgressReporter;
 }
 

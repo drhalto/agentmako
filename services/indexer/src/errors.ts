@@ -8,7 +8,9 @@ export type ProjectCommandErrorCode =
   | "project_manifest_invalid"
   | "project_not_attached"
   | "purge_failed"
-  | "snapshot_build_failed";
+  | "query_restart_exhausted"
+  | "snapshot_build_failed"
+  | "stale_base_revision";
 
 export class ProjectCommandError extends Error {
   constructor(

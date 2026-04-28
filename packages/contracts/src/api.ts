@@ -33,10 +33,12 @@ export type ApiErrorCode =
   | "project_manifest_invalid"
   | "project_not_found"
   | "purge_failed"
+  | "query_restart_exhausted"
   | "request_failed"
   | "request_too_large"
   | "route_not_found"
   | "snapshot_build_failed"
+  | "stale_base_revision"
   | "tool_not_found";
 
 export interface ApiErrorPayload {

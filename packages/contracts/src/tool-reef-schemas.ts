@@ -27,6 +27,18 @@ import {
   type ReefSeverity,
   type ReefRuleDescriptor,
 } from "./reef.js";
+import {
+  ReefProjectSchemaStatusSchema,
+  type ReefProjectSchemaStatus,
+} from "./reef-service.js";
+import {
+  ReefFreshnessPolicySchema,
+  type ReefFreshnessPolicy,
+} from "./index-freshness.js";
+import {
+  ReefToolExecutionSchema,
+  type ReefToolExecution,
+} from "./tool-reef-execution-schemas.js";
 import type { JsonObject } from "./common.js";
 import {
   AnswerSurfaceIssueCategorySchema,
@@ -45,6 +57,7 @@ export interface ProjectFindingsToolInput extends ProjectLocatorInput {
   source?: string;
   status?: ProjectFindingStatus;
   includeResolved?: boolean;
+  freshnessPolicy?: ReefFreshnessPolicy;
   limit?: number;
 }
 
@@ -53,6 +66,7 @@ export const ProjectFindingsToolInputSchema = ProjectLocatorInputObjectSchema.ex
   source: z.string().min(1).optional(),
   status: ProjectFindingStatusSchema.optional(),
   includeResolved: z.boolean().optional(),
+  freshnessPolicy: ReefFreshnessPolicySchema.optional(),
   limit: z.number().int().min(1).max(500).optional(),
 }) satisfies z.ZodType<ProjectFindingsToolInput>;
 
@@ -62,6 +76,7 @@ export interface ProjectFindingsToolOutput {
   projectRoot: string;
   findings: ProjectFinding[];
   totalReturned: number;
+  reefExecution: ReefToolExecution;
   filters: {
     overlay?: ProjectOverlay;
     source?: string;
@@ -77,6 +92,7 @@ export const ProjectFindingsToolOutputSchema = z.object({
   projectRoot: z.string().min(1),
   findings: z.array(ProjectFindingSchema),
   totalReturned: z.number().int().nonnegative(),
+  reefExecution: ReefToolExecutionSchema,
   filters: z.object({
     overlay: ProjectOverlaySchema.optional(),
     source: z.string().min(1).optional(),
@@ -92,6 +108,7 @@ export interface FileFindingsToolInput extends ProjectLocatorInput {
   source?: string;
   status?: ProjectFindingStatus;
   includeResolved?: boolean;
+  freshnessPolicy?: ReefFreshnessPolicy;
   limit?: number;
 }
 
@@ -101,6 +118,7 @@ export const FileFindingsToolInputSchema = ProjectLocatorInputObjectSchema.exten
   source: z.string().min(1).optional(),
   status: ProjectFindingStatusSchema.optional(),
   includeResolved: z.boolean().optional(),
+  freshnessPolicy: ReefFreshnessPolicySchema.optional(),
   limit: z.number().int().min(1).max(500).optional(),
 }) satisfies z.ZodType<FileFindingsToolInput>;
 
@@ -111,6 +129,7 @@ export interface FileFindingsToolOutput {
   filePath: string;
   findings: ProjectFinding[];
   totalReturned: number;
+  reefExecution: ReefToolExecution;
   filters: {
     overlay?: ProjectOverlay;
     source?: string;
@@ -127,6 +146,7 @@ export const FileFindingsToolOutputSchema = z.object({
   filePath: z.string().min(1),
   findings: z.array(ProjectFindingSchema),
   totalReturned: z.number().int().nonnegative(),
+  reefExecution: ReefToolExecutionSchema,
   filters: z.object({
     overlay: ProjectOverlaySchema.optional(),
     source: z.string().min(1).optional(),
@@ -141,6 +161,7 @@ export interface ProjectFactsToolInput extends ProjectLocatorInput {
   source?: string;
   kind?: string;
   subjectFingerprint?: string;
+  freshnessPolicy?: ReefFreshnessPolicy;
   limit?: number;
 }
 
@@ -149,6 +170,7 @@ export const ProjectFactsToolInputSchema = ProjectLocatorInputObjectSchema.exten
   source: z.string().min(1).optional(),
   kind: z.string().min(1).optional(),
   subjectFingerprint: z.string().min(1).optional(),
+  freshnessPolicy: ReefFreshnessPolicySchema.optional(),
   limit: z.number().int().min(1).max(500).optional(),
 }) satisfies z.ZodType<ProjectFactsToolInput>;
 
@@ -158,6 +180,7 @@ export interface ProjectFactsToolOutput {
   projectRoot: string;
   facts: ProjectFact[];
   totalReturned: number;
+  reefExecution: ReefToolExecution;
   filters: {
     overlay?: ProjectOverlay;
     source?: string;
@@ -173,6 +196,7 @@ export const ProjectFactsToolOutputSchema = z.object({
   projectRoot: z.string().min(1),
   facts: z.array(ProjectFactSchema),
   totalReturned: z.number().int().nonnegative(),
+  reefExecution: ReefToolExecutionSchema,
   filters: z.object({
     overlay: ProjectOverlaySchema.optional(),
     source: z.string().min(1).optional(),
@@ -187,6 +211,7 @@ export interface FileFactsToolInput extends ProjectLocatorInput {
   overlay?: ProjectOverlay;
   source?: string;
   kind?: string;
+  freshnessPolicy?: ReefFreshnessPolicy;
   limit?: number;
 }
 
@@ -195,6 +220,7 @@ export const FileFactsToolInputSchema = ProjectLocatorInputObjectSchema.extend({
   overlay: ProjectOverlaySchema.optional(),
   source: z.string().min(1).optional(),
   kind: z.string().min(1).optional(),
+  freshnessPolicy: ReefFreshnessPolicySchema.optional(),
   limit: z.number().int().min(1).max(500).optional(),
 }) satisfies z.ZodType<FileFactsToolInput>;
 
@@ -205,6 +231,7 @@ export interface FileFactsToolOutput {
   filePath: string;
   facts: ProjectFact[];
   totalReturned: number;
+  reefExecution: ReefToolExecution;
   filters: {
     overlay?: ProjectOverlay;
     source?: string;
@@ -220,6 +247,7 @@ export const FileFactsToolOutputSchema = z.object({
   filePath: z.string().min(1),
   facts: z.array(ProjectFactSchema),
   totalReturned: z.number().int().nonnegative(),
+  reefExecution: ReefToolExecutionSchema,
   filters: z.object({
     overlay: ProjectOverlaySchema.optional(),
     source: z.string().min(1).optional(),
@@ -287,6 +315,7 @@ export interface ReefOverlayDiffToolInput extends ProjectLocatorInput {
   kind?: string;
   source?: string;
   includeEqual?: boolean;
+  includeFacts?: boolean;
   limit?: number;
 }
 
@@ -297,6 +326,7 @@ export const ReefOverlayDiffToolInputSchema = ProjectLocatorInputObjectSchema.ex
   kind: z.string().trim().min(1).optional(),
   source: z.string().trim().min(1).optional(),
   includeEqual: z.boolean().optional(),
+  includeFacts: z.boolean().optional(),
   limit: z.number().int().min(1).max(1000).optional(),
 }).strict() satisfies z.ZodType<ReefOverlayDiffToolInput>;
 
@@ -566,11 +596,13 @@ export const RulePackValidateToolOutputSchema = z.object({
 
 export const DiagnosticRefreshSourceSchema = z.enum([
   "lint_files",
+  "typescript_syntax",
   "typescript",
   "eslint",
   "oxlint",
   "biome",
   "git_precommit_check",
+  "programmatic_findings",
 ]);
 export type DiagnosticRefreshSource = z.infer<typeof DiagnosticRefreshSourceSchema>;
 
@@ -603,7 +635,7 @@ export interface DiagnosticRefreshToolInput extends ProjectLocatorInput {
 }
 
 export const DiagnosticRefreshToolInputSchema = ProjectLocatorInputObjectSchema.extend({
-  sources: z.array(DiagnosticRefreshSourceSchema).min(1).max(6).optional(),
+  sources: z.array(DiagnosticRefreshSourceSchema).min(1).max(8).optional(),
   files: z.array(z.string().trim().min(1)).min(1).max(200).optional(),
   maxFindings: z.number().int().positive().max(1000).optional(),
   tsconfigPath: z.string().trim().min(1).optional(),
@@ -681,11 +713,15 @@ export const DiagnosticRefreshToolOutputSchema = z.object({
 export interface DbReefRefreshToolInput extends ProjectLocatorInput {
   includeAppUsage?: boolean;
   includeFacts?: boolean;
+  factsLimit?: number;
+  freshen?: boolean;
 }
 
 export const DbReefRefreshToolInputSchema = ProjectLocatorInputObjectSchema.extend({
   includeAppUsage: z.boolean().optional(),
   includeFacts: z.boolean().optional(),
+  factsLimit: z.number().int().min(1).max(500).optional(),
+  freshen: z.boolean().optional(),
 }).strict() satisfies z.ZodType<DbReefRefreshToolInput>;
 
 export interface DbReefRefreshToolOutput {
@@ -693,6 +729,8 @@ export interface DbReefRefreshToolOutput {
   projectId: string;
   projectRoot: string;
   facts?: ProjectFact[];
+  factsTruncated?: boolean;
+  schemaFreshness: ReefProjectSchemaStatus;
   summary: {
     factCount: number;
     byKind: Record<string, number>;
@@ -717,6 +755,8 @@ export const DbReefRefreshToolOutputSchema = z.object({
   projectId: z.string().min(1),
   projectRoot: z.string().min(1),
   facts: z.array(ProjectFactSchema).optional(),
+  factsTruncated: z.boolean().optional(),
+  schemaFreshness: ReefProjectSchemaStatusSchema,
   summary: z.object({
     factCount: z.number().int().nonnegative(),
     byKind: z.record(z.number().int().nonnegative()),
@@ -913,6 +953,7 @@ export interface ReefScoutToolOutput {
   candidates: ReefCandidate[];
   facts?: ProjectFact[];
   findings?: ProjectFinding[];
+  reefExecution: ReefToolExecution;
   suggestedActions: string[];
   warnings: string[];
 }
@@ -925,6 +966,7 @@ export const ReefScoutToolOutputSchema = z.object({
   candidates: z.array(ReefCandidateSchema),
   facts: z.array(ProjectFactSchema).optional(),
   findings: z.array(ProjectFindingSchema).optional(),
+  reefExecution: ReefToolExecutionSchema,
   suggestedActions: z.array(z.string().min(1)),
   warnings: z.array(z.string().min(1)),
 }) satisfies z.ZodType<ReefScoutToolOutput>;
@@ -956,6 +998,7 @@ export interface ReefInspectToolOutput {
     activeFindingCount: number;
     staleFactCount: number;
   };
+  reefExecution: ReefToolExecution;
   warnings: string[];
 }
 
@@ -974,8 +1017,102 @@ export const ReefInspectToolOutputSchema = z.object({
     activeFindingCount: z.number().int().nonnegative(),
     staleFactCount: z.number().int().nonnegative(),
   }),
+  reefExecution: ReefToolExecutionSchema,
   warnings: z.array(z.string().min(1)),
 }) satisfies z.ZodType<ReefInspectToolOutput>;
+
+export const ReefStructuralTargetKindSchema = z.enum(["symbol", "file", "route", "component", "pattern"]);
+export type ReefStructuralTargetKind = z.infer<typeof ReefStructuralTargetKindSchema>;
+
+export interface ReefWhereUsedToolInput extends ProjectLocatorInput {
+  query: string;
+  targetKind?: ReefStructuralTargetKind;
+  freshnessPolicy?: ReefFreshnessPolicy;
+  limit?: number;
+}
+
+export const ReefWhereUsedToolInputSchema = ProjectLocatorInputObjectSchema.extend({
+  query: z.string().trim().min(1),
+  targetKind: ReefStructuralTargetKindSchema.optional(),
+  freshnessPolicy: ReefFreshnessPolicySchema.optional(),
+  limit: z.number().int().min(1).max(200).optional(),
+}) satisfies z.ZodType<ReefWhereUsedToolInput>;
+
+export interface ReefStructuralDefinition {
+  filePath: string;
+  name: string;
+  kind: string;
+  source: "symbol_index" | "route_index" | "file_index";
+  lineStart?: number;
+  lineEnd?: number;
+  metadata?: JsonObject;
+}
+
+export const ReefStructuralDefinitionSchema = z.object({
+  filePath: z.string().min(1),
+  name: z.string().min(1),
+  kind: z.string().min(1),
+  source: z.enum(["symbol_index", "route_index", "file_index"]),
+  lineStart: z.number().int().positive().optional(),
+  lineEnd: z.number().int().positive().optional(),
+  metadata: JsonObjectSchema.optional(),
+}) satisfies z.ZodType<ReefStructuralDefinition>;
+
+export interface ReefStructuralUsage {
+  filePath: string;
+  usageKind: "import" | "dependent" | "route_owner" | "definition";
+  targetPath?: string;
+  specifier?: string;
+  line?: number;
+  reason: string;
+  provenance: {
+    source: "maintained_reef_state";
+    producer: string;
+    revision?: number;
+  };
+}
+
+export const ReefStructuralUsageSchema = z.object({
+  filePath: z.string().min(1),
+  usageKind: z.enum(["import", "dependent", "route_owner", "definition"]),
+  targetPath: z.string().min(1).optional(),
+  specifier: z.string().min(1).optional(),
+  line: z.number().int().positive().optional(),
+  reason: z.string().min(1),
+  provenance: z.object({
+    source: z.literal("maintained_reef_state"),
+    producer: z.string().min(1),
+    revision: z.number().int().nonnegative().optional(),
+  }),
+}) satisfies z.ZodType<ReefStructuralUsage>;
+
+export interface ReefWhereUsedToolOutput {
+  toolName: "reef_where_used";
+  projectId: string;
+  projectRoot: string;
+  query: string;
+  targetKind?: ReefStructuralTargetKind;
+  definitions: ReefStructuralDefinition[];
+  usages: ReefStructuralUsage[];
+  totalReturned: number;
+  reefExecution: ReefToolExecution;
+  fallbackRecommendation?: string;
+  warnings: string[];
+}
+
+export const ReefWhereUsedToolOutputSchema = z.object({
+  toolName: z.literal("reef_where_used"),
+  projectId: z.string().min(1),
+  projectRoot: z.string().min(1),
+  query: z.string().min(1),
+  targetKind: ReefStructuralTargetKindSchema.optional(),
+  definitions: z.array(ReefStructuralDefinitionSchema),
+  usages: z.array(ReefStructuralUsageSchema),
+  totalReturned: z.number().int().nonnegative(),
+  reefExecution: ReefToolExecutionSchema,
+  fallbackRecommendation: z.string().min(1).optional(),
+  warnings: z.array(z.string().min(1)),
+}) satisfies z.ZodType<ReefWhereUsedToolOutput>;
 
 export const ReefOpenLoopKindSchema = z.enum([
   "active_finding",
@@ -1039,6 +1176,7 @@ export interface ProjectOpenLoopsToolOutput {
     warnings: number;
     infos: number;
   };
+  reefExecution: ReefToolExecution;
   warnings: string[];
 }
 
@@ -1054,6 +1192,7 @@ export const ProjectOpenLoopsToolOutputSchema = z.object({
     warnings: z.number().int().nonnegative(),
     infos: z.number().int().nonnegative(),
   }),
+  reefExecution: ReefToolExecutionSchema,
   warnings: z.array(z.string().min(1)),
 }) satisfies z.ZodType<ProjectOpenLoopsToolOutput>;
 
@@ -1107,6 +1246,7 @@ export interface VerificationStateToolOutput {
   sources: VerificationSourceState[];
   changedFiles: VerificationChangedFile[];
   suggestedActions: string[];
+  reefExecution: ReefToolExecution;
   warnings: string[];
 }
 
@@ -1118,6 +1258,7 @@ export const VerificationStateToolOutputSchema = z.object({
   sources: z.array(VerificationSourceStateSchema),
   changedFiles: z.array(VerificationChangedFileSchema),
   suggestedActions: z.array(z.string().min(1)),
+  reefExecution: ReefToolExecutionSchema,
   warnings: z.array(z.string().min(1)),
 }) satisfies z.ZodType<VerificationStateToolOutput>;
 
@@ -1287,6 +1428,7 @@ export interface EvidenceConfidenceToolOutput {
   projectRoot: string;
   items: EvidenceConfidenceItem[];
   summary: Record<ReefEvidenceConfidenceLabel, number>;
+  reefExecution: ReefToolExecution;
   warnings: string[];
 }
 
@@ -1306,6 +1448,7 @@ export const EvidenceConfidenceToolOutputSchema = z.object({
   projectRoot: z.string().min(1),
   items: z.array(EvidenceConfidenceItemSchema),
   summary: EvidenceConfidenceSummarySchema,
+  reefExecution: ReefToolExecutionSchema,
   warnings: z.array(z.string().min(1)),
 }) satisfies z.ZodType<EvidenceConfidenceToolOutput>;
 
@@ -1359,6 +1502,7 @@ export interface EvidenceConflictsToolOutput {
   projectRoot: string;
   conflicts: EvidenceConflict[];
   totalReturned: number;
+  reefExecution: ReefToolExecution;
   warnings: string[];
 }
 
@@ -1368,5 +1512,118 @@ export const EvidenceConflictsToolOutputSchema = z.object({
   projectRoot: z.string().min(1),
   conflicts: z.array(EvidenceConflictSchema),
   totalReturned: z.number().int().nonnegative(),
+  reefExecution: ReefToolExecutionSchema,
   warnings: z.array(z.string().min(1)),
 }) satisfies z.ZodType<EvidenceConflictsToolOutput>;
+
+export interface ReefKnownIssuesToolInput extends ProjectLocatorInput {
+  files?: string[];
+  sources?: string[];
+  severities?: ReefSeverity[];
+  includeAcknowledged?: boolean;
+  freshnessPolicy?: ReefFreshnessPolicy;
+  limit?: number;
+}
+
+export const ReefKnownIssuesToolInputSchema = ProjectLocatorInputObjectSchema.extend({
+  files: z.array(z.string().min(1)).min(1).max(200).optional(),
+  sources: z.array(z.string().min(1)).min(1).max(50).optional(),
+  severities: z.array(ReefSeveritySchema).min(1).max(3).optional(),
+  includeAcknowledged: z.boolean().optional(),
+  freshnessPolicy: ReefFreshnessPolicySchema.optional(),
+  limit: z.number().int().min(1).max(500).optional(),
+}) satisfies z.ZodType<ReefKnownIssuesToolInput>;
+
+export interface ReefKnownIssuesToolOutput {
+  toolName: "reef_known_issues";
+  projectId: string;
+  projectRoot: string;
+  issues: ProjectFinding[];
+  summary: {
+    total: number;
+    errors: number;
+    warnings: number;
+    infos: number;
+    staleSources: number;
+    failedSources: number;
+    unavailableSources: number;
+    unknownSources: number;
+  };
+  reefExecution: ReefToolExecution;
+  suggestedActions: string[];
+  warnings: string[];
+}
+
+export const ReefKnownIssuesToolOutputSchema = z.object({
+  toolName: z.literal("reef_known_issues"),
+  projectId: z.string().min(1),
+  projectRoot: z.string().min(1),
+  issues: z.array(ProjectFindingSchema),
+  summary: z.object({
+    total: z.number().int().nonnegative(),
+    errors: z.number().int().nonnegative(),
+    warnings: z.number().int().nonnegative(),
+    infos: z.number().int().nonnegative(),
+    staleSources: z.number().int().nonnegative(),
+    failedSources: z.number().int().nonnegative(),
+    unavailableSources: z.number().int().nonnegative(),
+    unknownSources: z.number().int().nonnegative(),
+  }),
+  reefExecution: ReefToolExecutionSchema,
+  suggestedActions: z.array(z.string().min(1)),
+  warnings: z.array(z.string().min(1)),
+}) satisfies z.ZodType<ReefKnownIssuesToolOutput>;
+
+export interface ReefAgentStatusToolInput extends ProjectLocatorInput {
+  focusFiles?: string[];
+  freshnessPolicy?: ReefFreshnessPolicy;
+  limit?: number;
+}
+
+export const ReefAgentStatusToolInputSchema = ProjectLocatorInputObjectSchema.extend({
+  focusFiles: z.array(z.string().min(1)).min(1).max(100).optional(),
+  freshnessPolicy: ReefFreshnessPolicySchema.optional(),
+  limit: z.number().int().min(1).max(200).optional(),
+}) satisfies z.ZodType<ReefAgentStatusToolInput>;
+
+export interface ReefAgentStatusToolOutput {
+  toolName: "reef_agent_status";
+  projectId: string;
+  projectRoot: string;
+  state: "fresh" | "refreshing" | "dirty" | "stale" | "unknown" | "disabled" | "error";
+  knownIssues: ProjectFinding[];
+  changedFiles: VerificationChangedFile[];
+  staleSources: VerificationSourceState[];
+  schema?: ReefProjectSchemaStatus;
+  summary: {
+    knownIssueCount: number;
+    changedFileCount: number;
+    staleSourceCount: number;
+    watcherDegraded: boolean;
+    backgroundQueue: "idle" | "running" | "queued";
+  };
+  reefExecution: ReefToolExecution;
+  suggestedActions: string[];
+  warnings: string[];
+}
+
+export const ReefAgentStatusToolOutputSchema = z.object({
+  toolName: z.literal("reef_agent_status"),
+  projectId: z.string().min(1),
+  projectRoot: z.string().min(1),
+  state: z.enum(["fresh", "refreshing", "dirty", "stale", "unknown", "disabled", "error"]),
+  knownIssues: z.array(ProjectFindingSchema),
+  changedFiles: z.array(VerificationChangedFileSchema),
+  staleSources: z.array(VerificationSourceStateSchema),
+  schema: ReefProjectSchemaStatusSchema.optional(),
+  summary: z.object({
+    knownIssueCount: z.number().int().nonnegative(),
+    changedFileCount: z.number().int().nonnegative(),
+    staleSourceCount: z.number().int().nonnegative(),
+    watcherDegraded: z.boolean(),
+    backgroundQueue: z.enum(["idle", "running", "queued"]),
+  }),
+  reefExecution: ReefToolExecutionSchema,
+  suggestedActions: z.array(z.string().min(1)),
+  warnings: z.array(z.string().min(1)),
+}) satisfies z.ZodType<ReefAgentStatusToolOutput>;

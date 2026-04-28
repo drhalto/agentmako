@@ -17,12 +17,14 @@ import {
   verificationStateForSource,
   verificationSuggestedActions,
 } from "./shared.js";
+import { buildReefToolExecution } from "./tool-execution.js";
 
 export async function verificationStateTool(
   input: VerificationStateToolInput,
   options: ToolServiceOptions,
 ): Promise<VerificationStateToolOutput> {
-  return await withProjectContext(input, options, ({ project, projectStore }) => {
+  return await withProjectContext(input, options, async ({ project, projectStore }) => {
+    const startedAtMs = Date.now();
     const cacheStalenessMs = input.cacheStalenessMs ?? REEF_DIAGNOSTIC_CACHE_STALE_AFTER_MS;
     const checkedAtMs = Date.now();
     const checkedAt = new Date(checkedAtMs).toISOString();
@@ -66,14 +68,27 @@ export async function verificationStateTool(
     }
 
     const status = overallVerificationStatus(sourceStates, changedFiles);
+    const returnedChangedFiles = changedFiles.slice(0, input.limit ?? 100);
+    const reefExecution = await buildReefToolExecution({
+      toolName: "verification_state",
+      projectId: project.projectId,
+      projectRoot: project.canonicalPath,
+      options,
+      startedAtMs,
+      freshnessPolicy: "allow_stale_labeled",
+      staleEvidenceLabeled: sourceStates.filter((source) => source.status !== "fresh").length + returnedChangedFiles.length,
+      returnedCount: sourceStates.length + returnedChangedFiles.length,
+    });
+
     return {
       toolName: "verification_state",
       projectId: project.projectId,
       projectRoot: project.canonicalPath,
       status,
       sources: sourceStates,
-      changedFiles: changedFiles.slice(0, input.limit ?? 100),
+      changedFiles: returnedChangedFiles,
       suggestedActions: verificationSuggestedActions(sourceStates, changedFiles),
+      reefExecution,
       warnings: sources.length === 0 ? ["no Reef diagnostic runs are available for this project"] : [],
     };
   });

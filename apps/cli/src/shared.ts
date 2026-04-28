@@ -12,9 +12,15 @@ export const CLI_COMMANDS = [
   "refresh",
   "project list",
   "project attach",
+  "project add",
   "project detach",
+  "project remove",
   "project index",
   "project status",
+  "reef start",
+  "reef stop",
+  "reef status",
+  "reef operations",
   "project db bind",
   "project db unbind",
   "project db test",
@@ -110,9 +116,15 @@ ${color("Advanced / substrate:", COLORS.bright)}
   ${color("agentmako serve", COLORS.yellow)} [port] [host]  Start the HTTP API server
   ${color("agentmako project list", COLORS.yellow)}        List all attached projects
   ${color("agentmako project attach", COLORS.yellow)} [path]   Attach a project for indexing
+  ${color("agentmako project add", COLORS.yellow)} [path]      Alias for project attach
   ${color("agentmako project detach", COLORS.yellow)} [ref] [--purge] [--delete-secrets]
+  ${color("agentmako project remove", COLORS.yellow)} [ref]    Alias for project detach
   ${color("agentmako project index", COLORS.yellow)} [path]    Index a project's codebase
   ${color("agentmako project status", COLORS.yellow)} [ref]    Show project status and stats
+  ${color("agentmako reef start", COLORS.yellow)} [--foreground] Start the local Reef daemon
+  ${color("agentmako reef stop", COLORS.yellow)}               Stop the local Reef daemon
+  ${color("agentmako reef status", COLORS.yellow)} [ref]       Show Reef service boundary status
+  ${color("agentmako reef operations", COLORS.yellow)} [ref] [--kind K] [--severity S] [--since 30m] [--limit N]
   ${color("agentmako project db bind", COLORS.yellow)} [ref] --strategy keychain_ref --url-from-env VAR
   ${color("agentmako project db bind", COLORS.yellow)} [ref] --strategy env_var_ref --ref VAR
   ${color("agentmako project db unbind", COLORS.yellow)} [ref] [--delete-secret]

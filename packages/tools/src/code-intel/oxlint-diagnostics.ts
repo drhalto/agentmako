@@ -187,9 +187,11 @@ export async function oxlintDiagnosticsTool(
     if (requestedFiles.length !== input.files.length) {
       warnings.push("one or more requested files were outside the project root and ignored");
     }
+    const inputRevision = projectStore.loadReefAnalysisState(project.projectId, project.canonicalPath)?.currentRevision;
 
     const finish = (args: Omit<OxlintDiagnosticsToolOutput, "toolName" | "projectId" | "projectRoot" | "durationMs" | "requestedFiles" | "warnings">): OxlintDiagnosticsToolOutput => {
       const durationMs = Math.max(0, Date.now() - startedMs);
+      const outputRevision = projectStore.loadReefAnalysisState(project.projectId, project.canonicalPath)?.currentRevision;
       projectStore.saveReefDiagnosticRun({
         projectId: project.projectId,
         source: OXLINT_SOURCE,
@@ -205,6 +207,9 @@ export async function oxlintDiagnosticsTool(
         cwd: projectRoot,
         errorText: args.errorText,
         metadata: {
+          sourceKind: "lint",
+          ...(inputRevision !== undefined ? { inputRevision } : {}),
+          ...(outputRevision !== undefined ? { outputRevision } : {}),
           requestedFiles,
           requestedFileCount: requestedFiles.length,
           scriptName: input.scriptName ?? null,
@@ -262,6 +267,7 @@ export async function oxlintDiagnosticsTool(
       encoding: "utf8",
       timeout: OXLINT_TIMEOUT_MS,
       windowsHide: true,
+      ...(runner.shell ? { shell: true } : {}),
     });
 
     const stdout = typeof result.stdout === "string" ? result.stdout.trim() : "";

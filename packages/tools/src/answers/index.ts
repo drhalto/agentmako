@@ -30,6 +30,7 @@ import {
   type ToolProjectContext,
   type ToolServiceOptions,
 } from "../runtime.js";
+import { buildReefToolExecutionWithStatus } from "../reef/tool-execution.js";
 
 const answerEngine = createAnswerEngine();
 
@@ -145,12 +146,39 @@ export async function routeTraceTool(input: RouteTraceToolInput, options: ToolSe
 }
 
 export async function schemaUsageTool(input: SchemaUsageToolInput, options: ToolServiceOptions = {}): Promise<SchemaUsageToolOutput> {
-  return runAnswerTool(
-    "schema_usage",
-    input,
-    ({ projectStore }) => resolveSchemaObjectIdentifier(resolveIndexedSchemaObject(projectStore, input.object, input.schema)),
-    options,
-  );
+  return withProjectContext(input, options, async ({ project, profile, projectStore }) => {
+    const startedAtMs = Date.now();
+    const queryText = resolveSchemaObjectIdentifier(resolveIndexedSchemaObject(projectStore, input.object, input.schema));
+    const packet = createFreshAnswerPacket(project.projectId, "schema_usage", queryText, profile?.supportLevel ?? "best_effort");
+    const result = await answerWithStores(
+      packet,
+      profile,
+      {
+        packet,
+        project,
+        profile: profile ?? createFallbackProfile(project),
+        projectStore,
+      },
+      options,
+    );
+    const reefExecutionResult = await buildReefToolExecutionWithStatus({
+      toolName: "schema_usage",
+      projectId: project.projectId,
+      projectRoot: project.canonicalPath,
+      options,
+      startedAtMs,
+      returnedCount: result.candidateActions.length,
+    });
+    const schemaFreshness = reefExecutionResult.projectStatus?.schema;
+
+    return {
+      toolName: "schema_usage",
+      projectId: project.projectId,
+      result,
+      reefExecution: reefExecutionResult.execution,
+      ...(schemaFreshness ? { schemaFreshness } : {}),
+    };
+  });
 }
 
 export async function fileHealthTool(input: FileHealthToolInput, options: ToolServiceOptions = {}): Promise<FileHealthToolOutput> {

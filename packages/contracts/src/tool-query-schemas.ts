@@ -10,6 +10,8 @@ import {
   ProjectLocatorInputObjectSchema,
   ProjectLocatorInputSchema,
 } from "./tool-project-locator.js";
+import { ReefToolExecutionSchema } from "./tool-reef-execution-schemas.js";
+import { ReefProjectSchemaStatusSchema } from "./reef-service.js";
 
 export interface RouteTraceToolInput extends ProjectLocatorInput {
   route: string;
@@ -187,6 +189,8 @@ export const RouteTraceToolOutputSchema = AnswerToolResultBaseSchema.extend({
 
 export const SchemaUsageToolOutputSchema = AnswerToolResultBaseSchema.extend({
   toolName: z.literal("schema_usage"),
+  reefExecution: ReefToolExecutionSchema.optional(),
+  schemaFreshness: ReefProjectSchemaStatusSchema.optional(),
 });
 
 export const FileHealthToolOutputSchema = AnswerToolResultBaseSchema.extend({
@@ -310,6 +314,7 @@ export const ImportsDepsToolOutputSchema = z.object({
   resolvedFilePath: z.string().min(1).nullable(),
   imports: z.array(ToolImportLinkSchema),
   unresolved: z.array(ToolImportLinkSchema),
+  reefExecution: ReefToolExecutionSchema,
   warnings: z.array(z.string()),
 });
 
@@ -322,6 +327,7 @@ export const ImportsImpactToolOutputSchema = z.object({
   resolvedFilePath: z.string().min(1).nullable(),
   depth: z.number().int().min(1),
   impactedFiles: z.array(ImportsImpactEntrySchema),
+  reefExecution: ReefToolExecutionSchema,
   warnings: z.array(z.string()),
 });
 
@@ -332,6 +338,7 @@ export const ImportsHotspotsToolOutputSchema = z.object({
   projectId: z.string().min(1),
   limit: z.number().int().min(1),
   hotspots: z.array(ImportsHotspotEntrySchema),
+  reefExecution: ReefToolExecutionSchema,
 });
 
 export type ImportsHotspotsToolOutput = z.infer<typeof ImportsHotspotsToolOutputSchema>;
@@ -340,6 +347,7 @@ export const ImportsCyclesToolOutputSchema = z.object({
   toolName: z.literal("imports_cycles"),
   projectId: z.string().min(1),
   cycles: z.array(z.array(z.string().min(1))),
+  reefExecution: ReefToolExecutionSchema,
 });
 
 export type ImportsCyclesToolOutput = z.infer<typeof ImportsCyclesToolOutputSchema>;
@@ -350,6 +358,7 @@ export const SymbolsOfToolOutputSchema = z.object({
   file: z.string().min(1),
   resolvedFilePath: z.string().min(1).nullable(),
   symbols: z.array(ToolSymbolSchema),
+  reefExecution: ReefToolExecutionSchema,
   warnings: z.array(z.string()),
 });
 
@@ -361,6 +370,7 @@ export const ExportsOfToolOutputSchema = z.object({
   file: z.string().min(1),
   resolvedFilePath: z.string().min(1).nullable(),
   exports: z.array(ToolSymbolSchema),
+  reefExecution: ReefToolExecutionSchema,
   warnings: z.array(z.string()),
 });
 

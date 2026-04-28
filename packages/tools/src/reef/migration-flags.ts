@@ -14,7 +14,24 @@ function parseList(value: string): Set<string> {
   );
 }
 
+export function getReefModeOverride(): "auto" | "required" | "legacy" | undefined {
+  const raw = process.env.MAKO_REEF_MODE?.trim().toLowerCase();
+  if (!raw) return undefined;
+  if (raw === "legacy") return "legacy";
+  if (raw === "required") return "required";
+  if (raw === "auto") return "auto";
+  return undefined;
+}
+
+export function isReefLegacyModeEnabled(): boolean {
+  return getReefModeOverride() === "legacy";
+}
+
 export function isReefBackedToolViewEnabled(toolName: string): boolean {
+  if (isReefLegacyModeEnabled()) {
+    return false;
+  }
+
   const raw = process.env.MAKO_REEF_BACKED?.trim();
   if (!raw) {
     return DEFAULT_REEF_BACKED_TOOLS.has(toolName);
@@ -30,4 +47,3 @@ export function isReefBackedToolViewEnabled(toolName: string): boolean {
 
   return parseList(raw).has(toolName);
 }
-

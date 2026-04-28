@@ -295,6 +295,10 @@ export function searchSchemaObjectsImpl(
       }
 
       const matchedTokens = searchTokens.filter((token) => haystack.includes(token));
+      if (searchTokens.length > 1 && matchedTokens.length < searchTokens.length) {
+        return { object, score: 0 };
+      }
+
       score += matchedTokens.length * 10;
 
       if (searchTokens.length > 1 && matchedTokens.length === searchTokens.length) {
@@ -371,7 +375,14 @@ export function listSchemaUsagesImpl(db: DatabaseSync, objectId: number): Schema
 }
 
 export function getSchemaObjectDetailImpl(db: DatabaseSync, queryText: string): SchemaObjectDetail | null {
-  const object = searchSchemaObjectsImpl(db, queryText, 1)[0];
+  const normalized = queryText.trim().toLowerCase();
+  if (normalized === "") {
+    return null;
+  }
+
+  const object = listSchemaObjectsImpl(db).find((candidate) =>
+    buildSchemaObjectIdentifiers(candidate).includes(normalized),
+  );
   if (!object) {
     return null;
   }

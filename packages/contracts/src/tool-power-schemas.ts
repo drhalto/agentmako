@@ -171,11 +171,15 @@ export const ChangePlanToolOutputSchema = z.object({
 export interface TenantLeakAuditToolInput extends ProjectLocatorInput {
   acknowledgeAdvisory: true;
   freshen?: boolean;
+  includeFullResults?: boolean;
+  maxPerSection?: number;
 }
 
 export const TenantLeakAuditToolInputSchema = ProjectLocatorInputObjectSchema.extend({
   acknowledgeAdvisory: z.literal(true),
   freshen: z.boolean().optional(),
+  includeFullResults: z.boolean().optional(),
+  maxPerSection: z.number().int().positive().max(500).optional(),
 }).strict() satisfies z.ZodType<TenantLeakAuditToolInput>;
 
 export interface TenantLeakAuditToolOutput {
@@ -301,4 +305,3 @@ export const InvestigateToolOutputSchema = z.object({
   projectId: z.string().min(1),
   result: InvestigateResultSchema,
 }) satisfies z.ZodType<InvestigateToolOutput>;
-

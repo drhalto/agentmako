@@ -1,10 +1,19 @@
 import chokidar, { type FSWatcher } from "chokidar";
+import { randomUUID } from "node:crypto";
+import { rm, writeFile } from "node:fs/promises";
+import path from "node:path";
 import { loadConfig, type MakoConfig } from "@mako-ai/config";
-import type { AttachedProject, ProjectIndexWatchState } from "@mako-ai/contracts";
+import type {
+  AttachedProject,
+  ProjectIndexWatchCatchUpResult,
+  ProjectIndexWatchState,
+  ReefAnalysisHost,
+  ReefProjectEvent,
+} from "@mako-ai/contracts";
 import {
+  createReefClient,
   isIgnoredProjectRelativePath,
   isWatchableProjectPath,
-  refreshProjectPaths,
   toProjectIndexRelativePath,
 } from "@mako-ai/indexer";
 import { createLogger } from "@mako-ai/logger";
@@ -14,7 +23,10 @@ import { workingTreeOverlayTool } from "@mako-ai/tools";
 export const MAKO_INDEX_WATCH_DEBOUNCE_MS = 3000;
 export const MAKO_INDEX_WATCH_MAX_DELAY_MS = 60000;
 export const MAKO_INDEX_WATCH_MAX_FILES = 20000;
+export const MAKO_INDEX_WATCH_CATCH_UP_DEFAULT_MS = 750;
+export const MAKO_INDEX_WATCH_CATCH_UP_MAX_MS = 1500;
 
+const WATCH_CATCH_UP_COOKIE_PREFIX = ".mako-reef-watch-cookie-";
 const WATCH_DIRTY_PATH_LIMIT = 50;
 const OVERLAY_UPDATE_BATCH_SIZE = 500;
 const watchLogger = createLogger("mako-api", { component: "index-refresh-coordinator" });
@@ -22,6 +34,17 @@ const watchLogger = createLogger("mako-api", { component: "index-refresh-coordin
 export interface ProjectIndexRefreshCoordinatorOptions {
   configOverrides?: Partial<MakoConfig>;
   projectStoreCache?: ProjectStoreCache;
+}
+
+interface PendingCatchUpCookie {
+  projectId: string;
+  relativePath: string;
+  maxWaitMs: number;
+  reason: string;
+  startedAt: string;
+  startedAtMs: number;
+  timer: ReturnType<typeof setTimeout>;
+  resolve: (result: ProjectIndexWatchCatchUpResult) => void;
 }
 
 export class ProjectIndexRefreshCoordinator {
@@ -34,10 +57,13 @@ export class ProjectIndexRefreshCoordinator {
   private debounceTimer: ReturnType<typeof setTimeout> | undefined;
   private maxDelayTimer: ReturnType<typeof setTimeout> | undefined;
   private readonly dirtyPaths = new Set<string>();
+  private readonly latestEventKinds = new Map<string, ReefProjectEvent["kind"]>();
   private indexing = false;
   private followUpQueued = false;
   private closed = false;
   private refreshPromise: Promise<void> | undefined;
+  private readonly reefService: ReefAnalysisHost;
+  private readonly pendingCatchUps = new Map<string, PendingCatchUpCookie>();
   private state: ProjectIndexWatchState = {
     mode: "off",
     status: "idle",
@@ -49,6 +75,10 @@ export class ProjectIndexRefreshCoordinator {
     this.debounceMs = envNumber("MAKO_INDEX_WATCH_DEBOUNCE_MS", MAKO_INDEX_WATCH_DEBOUNCE_MS);
     this.maxDelayMs = envNumber("MAKO_INDEX_WATCH_MAX_DELAY_MS", MAKO_INDEX_WATCH_MAX_DELAY_MS);
     this.maxFiles = envNumber("MAKO_INDEX_WATCH_MAX_FILES", MAKO_INDEX_WATCH_MAX_FILES);
+    this.reefService = createReefClient({
+      configOverrides: options.configOverrides,
+      projectStoreCache: options.projectStoreCache,
+    });
   }
 
   getWatchState(projectId?: string): ProjectIndexWatchState | undefined {
@@ -59,6 +89,122 @@ export class ProjectIndexRefreshCoordinator {
       ...this.state,
       dirtyPaths: this.visibleDirtyPaths(),
     };
+  }
+
+  async waitForCatchUp(
+    projectId: string,
+    options: { maxWaitMs?: number; reason?: string } = {},
+  ): Promise<ProjectIndexWatchCatchUpResult> {
+    const startedAt = new Date().toISOString();
+    const startedAtMs = Date.now();
+    const maxWaitMs = clampWaitMs(
+      options.maxWaitMs ?? MAKO_INDEX_WATCH_CATCH_UP_DEFAULT_MS,
+      MAKO_INDEX_WATCH_CATCH_UP_MAX_MS,
+    );
+    const reason = options.reason ?? "wait_for_refresh";
+    const project = this.activeProject;
+
+    if (!project || project.projectId !== projectId) {
+      return {
+        status: "skipped",
+        method: "none",
+        startedAt,
+        finishedAt: new Date().toISOString(),
+        durationMs: Math.max(0, Date.now() - startedAtMs),
+        maxWaitMs,
+        reason: "watcher is not active for the requested project",
+      };
+    }
+    if (!this.watcher || this.state.mode !== "watch") {
+      return this.recordCatchUpResult({
+        status: "skipped",
+        method: "none",
+        startedAt,
+        finishedAt: new Date().toISOString(),
+        durationMs: Math.max(0, Date.now() - startedAtMs),
+        maxWaitMs,
+        reason: "watcher is not active for the requested project",
+      });
+    }
+    if (this.state.status === "disabled" || this.state.status === "failed") {
+      return this.recordCatchUpResult({
+        status: "skipped",
+        method: "none",
+        startedAt,
+        finishedAt: new Date().toISOString(),
+        durationMs: Math.max(0, Date.now() - startedAtMs),
+        maxWaitMs,
+        reason: this.state.lastError ?? this.state.disabledReason ?? "watcher is not healthy",
+        ...(this.state.lastError ? { error: this.state.lastError } : {}),
+      });
+    }
+    if (maxWaitMs === 0) {
+      return this.recordCatchUpResult({
+        status: "skipped",
+        method: "none",
+        startedAt,
+        finishedAt: new Date().toISOString(),
+        durationMs: Math.max(0, Date.now() - startedAtMs),
+        maxWaitMs,
+        reason: "catch-up timeout budget is zero",
+      });
+    }
+
+    const relativePath = `${WATCH_CATCH_UP_COOKIE_PREFIX}${Date.now()}-${randomUUID()}.tmp`;
+    const absolutePath = path.join(project.canonicalPath, relativePath);
+    const result = await new Promise<ProjectIndexWatchCatchUpResult>((resolve) => {
+      const finish = (result: ProjectIndexWatchCatchUpResult): void => {
+        const pending = this.pendingCatchUps.get(relativePath);
+        if (!pending) {
+          return;
+        }
+        clearTimeout(pending.timer);
+        this.pendingCatchUps.delete(relativePath);
+        void rm(absolutePath, { force: true }).catch(() => undefined);
+        resolve(this.recordCatchUpResult(result));
+      };
+      const timer = setTimeout(() => {
+        finish({
+          status: "timed_out",
+          method: "watcher_cookie",
+          startedAt,
+          finishedAt: new Date().toISOString(),
+          durationMs: Math.max(0, Date.now() - startedAtMs),
+          maxWaitMs,
+          reason,
+          cookiePath: relativePath,
+          error: `watcher did not observe catch-up cookie within ${maxWaitMs}ms`,
+        });
+      }, maxWaitMs);
+      timer.unref?.();
+      this.pendingCatchUps.set(relativePath, {
+        projectId,
+        relativePath,
+        maxWaitMs,
+        reason,
+        startedAt,
+        startedAtMs,
+        timer,
+        resolve,
+      });
+      void writeFile(absolutePath, `${startedAt}\n`, "utf8").catch((error) => {
+        finish({
+          status: "skipped",
+          method: "none",
+          startedAt,
+          finishedAt: new Date().toISOString(),
+          durationMs: Math.max(0, Date.now() - startedAtMs),
+          maxWaitMs,
+          reason,
+          cookiePath: relativePath,
+          error: error instanceof Error ? error.message : String(error),
+        });
+      });
+    });
+    if (result.status === "succeeded") {
+      await this.flushObservedDirtyPathsForCatchUp(project, reason);
+    }
+    return result;
   }
 
   async setActiveProject(project: AttachedProject): Promise<void> {
@@ -106,12 +252,27 @@ export class ProjectIndexRefreshCoordinator {
       ignored: (candidatePath, stats) => this.shouldIgnorePath(project, candidatePath, stats),
     });
     this.watcher = watcher;
-    watcher.on("all", (_eventName, candidatePath) => {
-      this.handleFileEvent(project, candidatePath);
+    watcher.on("all", (eventName, candidatePath) => {
+      if (this.handleCatchUpCookieEvent(project, candidatePath)) {
+        return;
+      }
+      this.handleFileEvent(project, eventName, candidatePath);
     });
     watcher.on("error", (error) => {
       const message = error instanceof Error ? error.message : String(error);
+      const repair = this.state.status === "failed" ? "none" : "full_refresh";
       watchLogger.warn("watcher-error", { projectId: project.projectId, error: message });
+      void this.reefService.recordWatcherRecrawl({
+        projectId: project.projectId,
+        reason: "watcher_error",
+        warning: message,
+        repair,
+      }).catch((recrawlError) => {
+        watchLogger.warn("watcher-recrawl-record-failed", {
+          projectId: project.projectId,
+          error: recrawlError instanceof Error ? recrawlError.message : String(recrawlError),
+        });
+      });
       this.setState({
         ...this.state,
         mode: "watch",
@@ -120,6 +281,7 @@ export class ProjectIndexRefreshCoordinator {
         projectRoot: project.canonicalPath,
         lastError: message,
       });
+      this.resolvePendingCatchUps(`watcher error: ${message}`);
     });
 
     await this.waitForWatcherReady(watcher);
@@ -159,6 +321,7 @@ export class ProjectIndexRefreshCoordinator {
       await refreshPromise.catch(() => undefined);
     }
     await this.stopWatcher("stopped");
+    await this.reefService.stop().catch(() => undefined);
     this.activeProject = undefined;
   }
 
@@ -171,6 +334,9 @@ export class ProjectIndexRefreshCoordinator {
     if (!relativePath || relativePath === ".") {
       return false;
     }
+    if (isCatchUpCookiePath(relativePath)) {
+      return false;
+    }
     if (stats?.isDirectory()) {
       return isIgnoredProjectRelativePath(relativePath);
     }
@@ -180,7 +346,48 @@ export class ProjectIndexRefreshCoordinator {
     return isIgnoredProjectRelativePath(relativePath);
   }
 
-  private handleFileEvent(project: AttachedProject, candidatePath: string): void {
+  private handleCatchUpCookieEvent(project: AttachedProject, candidatePath: string): boolean {
+    const relativePath = toProjectIndexRelativePath(project.canonicalPath, candidatePath);
+    if (!relativePath || !isCatchUpCookiePath(relativePath)) {
+      return false;
+    }
+    const pending = this.pendingCatchUps.get(relativePath);
+    if (!pending || pending.projectId !== project.projectId) {
+      return true;
+    }
+    clearTimeout(pending.timer);
+    this.pendingCatchUps.delete(relativePath);
+    void rm(path.join(project.canonicalPath, relativePath), { force: true }).catch(() => undefined);
+    pending.resolve(this.recordCatchUpResult({
+      status: "succeeded",
+      method: "watcher_cookie",
+      startedAt: pending.startedAt,
+      finishedAt: new Date().toISOString(),
+      durationMs: Math.max(0, Date.now() - pending.startedAtMs),
+      maxWaitMs: pending.maxWaitMs,
+      reason: pending.reason,
+      cookiePath: relativePath,
+    }));
+    return true;
+  }
+
+  private async flushObservedDirtyPathsForCatchUp(project: AttachedProject, reason: string): Promise<void> {
+    const triggerSource = `${reason}:catch_up`;
+    for (let attempt = 0; attempt < 3; attempt += 1) {
+      if (this.closed || this.activeProject?.projectId !== project.projectId) {
+        return;
+      }
+      if (this.indexing) {
+        await this.refreshPromise?.catch(() => undefined);
+      }
+      if (this.dirtyPaths.size === 0) {
+        return;
+      }
+      await this.runRefresh(project, triggerSource);
+    }
+  }
+
+  private handleFileEvent(project: AttachedProject, eventName: string, candidatePath: string): void {
     if (this.closed || this.activeProject?.projectId !== project.projectId) {
       return;
     }
@@ -202,6 +409,7 @@ export class ProjectIndexRefreshCoordinator {
       lastEventAt,
     });
 
+    this.latestEventKinds.set(relativePath, reefEventKindForWatcherEvent(eventName));
     if (this.indexing) {
       this.followUpQueued = true;
       return;
@@ -279,12 +487,9 @@ export class ProjectIndexRefreshCoordinator {
     });
 
     try {
-      await this.updateWorkingTreeOverlay(project, dirtyAtStart);
-      const refreshResult = await refreshProjectPaths(project.canonicalPath, dirtyAtStart, {
-        configOverrides: this.options.configOverrides,
-        projectStoreCache: this.options.projectStoreCache,
-        triggerSource,
-      });
+      const overlayResult = await this.updateWorkingTreeOverlay(project, dirtyAtStart);
+      await this.reefService.submitEvent(this.createWatcherEvent(project, dirtyAtStart, triggerSource, startedAt));
+      const refreshSummary = await this.latestRefreshSummary(project.projectId);
       const finishedAt = new Date().toISOString();
       this.indexing = false;
       this.setState({
@@ -295,10 +500,10 @@ export class ProjectIndexRefreshCoordinator {
         projectRoot: project.canonicalPath,
         dirtyPaths: this.visibleDirtyPaths(),
         lastRefreshFinishedAt: finishedAt,
-        lastRefreshMode: refreshResult.mode,
-        lastRefreshFallbackReason: refreshResult.fallbackReason,
-        lastRefreshPathCount: refreshResult.refreshedPaths.length,
-        lastRefreshDeletedPathCount: refreshResult.deletedPaths.length,
+        lastRefreshMode: refreshSummary.refreshMode ?? "paths",
+        lastRefreshFallbackReason: refreshSummary.fallbackReason,
+        lastRefreshPathCount: refreshSummary.refreshedPathCount ?? dirtyAtStart.length,
+        lastRefreshDeletedPathCount: refreshSummary.deletedPathCount ?? overlayResult.deletedFileCount,
       });
       if (this.dirtyPaths.size > 0 || this.followUpQueued) {
         this.scheduleRefresh(project);
@@ -325,8 +530,8 @@ export class ProjectIndexRefreshCoordinator {
   private async updateWorkingTreeOverlay(
     project: AttachedProject,
     dirtyPaths: string[],
-  ): Promise<void> {
-    if (dirtyPaths.length === 0) return;
+  ): Promise<{ deletedFileCount: number }> {
+    if (dirtyPaths.length === 0) return { deletedFileCount: 0 };
 
     const startedAtMs = Date.now();
     try {
@@ -360,6 +565,9 @@ export class ProjectIndexRefreshCoordinator {
         lastOverlayFactDurationMs: Math.max(0, Date.now() - startedAtMs),
         lastOverlayFactError: undefined,
       });
+      return {
+        deletedFileCount: deletedFiles.length,
+      };
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       watchLogger.warn("overlay-fact-update-failed", {
@@ -370,7 +578,60 @@ export class ProjectIndexRefreshCoordinator {
         ...this.state,
         lastOverlayFactError: message,
       });
+      return { deletedFileCount: 0 };
     }
+  }
+
+  private createWatcherEvent(
+    project: AttachedProject,
+    dirtyPaths: string[],
+    triggerSource: string,
+    observedAt: string,
+  ): ReefProjectEvent {
+    const eventKinds = new Set(dirtyPaths.map((filePath) => this.latestEventKinds.get(filePath)));
+    const kind = eventKinds.size === 1 && eventKinds.has("reef.file.deleted")
+      ? "reef.file.deleted"
+      : "reef.file.changed";
+    for (const dirtyPath of dirtyPaths) {
+      this.latestEventKinds.delete(dirtyPath);
+    }
+    return {
+      eventId: `reef_watch_${Date.now()}_${Math.random().toString(16).slice(2)}`,
+      projectId: project.projectId,
+      root: project.canonicalPath,
+      kind,
+      paths: dirtyPaths,
+      observedAt,
+      data: {
+        producer: "project_watcher",
+        triggerSource,
+        flushImmediately: true,
+      },
+    };
+  }
+
+  private async latestRefreshSummary(projectId: string): Promise<{
+    refreshMode?: "paths" | "full";
+    fallbackReason?: string;
+    refreshedPathCount?: number;
+    deletedPathCount?: number;
+  }> {
+    const [operation] = await this.reefService.listOperations({
+      projectId,
+      kind: "refresh_completed",
+      limit: 1,
+    }).catch(() => []);
+    const data = operation?.data;
+    const refreshMode = data?.refreshMode === "full" ? "full" : data?.refreshMode === "path_scoped" ? "paths" : undefined;
+    const fallbackReason = typeof data?.fallbackReason === "string" ? data.fallbackReason : undefined;
+    const refreshedPathCount = typeof data?.refreshedPathCount === "number" ? data.refreshedPathCount : undefined;
+    const deletedPathCount = typeof data?.deletedPathCount === "number" ? data.deletedPathCount : undefined;
+    return {
+      ...(refreshMode ? { refreshMode } : {}),
+      ...(fallbackReason ? { fallbackReason } : {}),
+      ...(refreshedPathCount != null ? { refreshedPathCount } : {}),
+      ...(deletedPathCount != null ? { deletedPathCount } : {}),
+    };
   }
 
   private resolveDeletedReefFindings(
@@ -404,7 +665,9 @@ export class ProjectIndexRefreshCoordinator {
 
   private async stopWatcher(transition: ProjectIndexWatchState["transition"]): Promise<void> {
     this.clearTimers();
+    this.resolvePendingCatchUps("watcher stopped before catch-up completed");
     this.dirtyPaths.clear();
+    this.latestEventKinds.clear();
     this.indexing = false;
     this.followUpQueued = false;
 
@@ -460,6 +723,42 @@ export class ProjectIndexRefreshCoordinator {
     return [...this.dirtyPaths].slice(0, WATCH_DIRTY_PATH_LIMIT);
   }
 
+  private recordCatchUpResult(result: ProjectIndexWatchCatchUpResult): ProjectIndexWatchCatchUpResult {
+    this.setState({
+      ...this.state,
+      lastCatchUpAt: result.finishedAt,
+      lastCatchUpStatus: result.status,
+      lastCatchUpMethod: result.method,
+      lastCatchUpDurationMs: result.durationMs,
+      lastCatchUpReason: result.reason,
+      lastCatchUpError: result.error,
+    });
+    return result;
+  }
+
+  private resolvePendingCatchUps(error: string): void {
+    const projectRoot = this.activeProject?.canonicalPath;
+    for (const pending of [...this.pendingCatchUps.values()]) {
+      clearTimeout(pending.timer);
+      this.pendingCatchUps.delete(pending.relativePath);
+      if (projectRoot) {
+        void rm(path.join(projectRoot, pending.relativePath), { force: true }).catch(() => undefined);
+      }
+      const finishedAt = new Date().toISOString();
+      pending.resolve(this.recordCatchUpResult({
+        status: "skipped",
+        method: "none",
+        startedAt: pending.startedAt,
+        finishedAt,
+        durationMs: Math.max(0, Date.now() - pending.startedAtMs),
+        maxWaitMs: pending.maxWaitMs,
+        reason: pending.reason,
+        cookiePath: pending.relativePath,
+        error,
+      }));
+    }
+  }
+
   private clearTimers(): void {
     this.clearDebounceTimer();
     if (this.maxDelayTimer) {
@@ -491,4 +790,26 @@ function envBoolean(name: string, fallback: boolean): boolean {
 function envNumber(name: string, fallback: number): number {
   const value = Number(process.env[name]);
   return Number.isFinite(value) && value >= 0 ? value : fallback;
+}
+
+function isCatchUpCookiePath(relativePath: string): boolean {
+  const normalized = relativePath.replace(/\\/g, "/");
+  return !normalized.includes("/") && normalized.startsWith(WATCH_CATCH_UP_COOKIE_PREFIX);
+}
+
+function clampWaitMs(value: number, maxValue: number): number {
+  if (!Number.isFinite(value) || value < 0) {
+    return MAKO_INDEX_WATCH_CATCH_UP_DEFAULT_MS;
+  }
+  return Math.min(Math.floor(value), maxValue);
+}
+
+function reefEventKindForWatcherEvent(eventName: string): ReefProjectEvent["kind"] {
+  if (eventName === "add") {
+    return "reef.file.added";
+  }
+  if (eventName === "unlink") {
+    return "reef.file.deleted";
+  }
+  return "reef.file.changed";
 }

@@ -56,6 +56,7 @@ import {
 import { runTopLevelRefresh, runTopLevelStatus, runTopLevelVerify } from "./commands/status.js";
 import { runDashboardCommand } from "./commands/dashboard.js";
 import { runDoctorCommand, runServeCommand } from "./commands/system.js";
+import { runReefCommand } from "./commands/reef.js";
 import { runAnswerAskCommand, runToolCallCommand, runToolListCommand } from "./commands/tools.js";
 import { runWorkflowPacketCommand } from "./commands/workflow.js";
 import {
@@ -137,12 +138,12 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<void
       return;
     }
 
-    if (cmd[0] === "project" && cmd[1] === "attach") {
+    if (cmd[0] === "project" && (cmd[1] === "attach" || cmd[1] === "add")) {
       await runProjectAttachCommand(api, cmd.slice(2), options);
       return;
     }
 
-    if (cmd[0] === "project" && cmd[1] === "detach") {
+    if (cmd[0] === "project" && (cmd[1] === "detach" || cmd[1] === "remove")) {
       await runProjectDetachCommand(api, cmd.slice(2), options);
       return;
     }
@@ -154,6 +155,11 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<void
 
     if (cmd[0] === "project" && cmd[1] === "status") {
       await runProjectStatusCommand(api, cmd.slice(2), options);
+      return;
+    }
+
+    if (cmd[0] === "reef") {
+      await runReefCommand(api, cmd.slice(1), options);
       return;
     }
 

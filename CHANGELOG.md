@@ -7,6 +7,45 @@ it reaches 1.0.
 
 ## [Unreleased]
 
+## [0.2.0] - 2026-04-28
+
+### Added
+
+- Reef Engine v2 runtime with revisioned change sets, daemon lifecycle,
+  root writer locking, catch-up cookies, recrawl reporting, calculation
+  nodes, structural artifact backdating, and persisted operation logs.
+- Durable Reef model-facing tools for agent loops, including
+  `reef_agent_status`, `reef_known_issues`, `reef_where_used`,
+  `reef_inspect`, `project_open_loops`, `verification_state`,
+  `rule_memory`, `evidence_confidence`, and `evidence_conflicts`.
+- Warm diagnostic ingestion and freshness tracking for TypeScript,
+  ESLint, Oxlint, Biome, lint-file checks, schema-derived findings, and
+  programmatic findings.
+- Maintained structural/search knowledge for routes, imports, schema
+  usage, RPC/table relationships, graph flows, change planning, and
+  working-tree overlays.
+
+### Changed
+
+- `schema_usage` now fails closed to exact schema-object matches and
+  documents that it reports direct app-code references only; use
+  `trace_rpc`, `route_context`, `table_neighborhood`, or `flow_map` for
+  RPC-mediated/transitive schema paths.
+- `change_plan` now shares the same graph path behavior as `flow_map`
+  for file-import-to-RPC-to-table paths and includes regression coverage.
+- MCP/tool metadata and Claude guidance now describe the expanded
+  Reef-backed workflow and direct-vs-transitive evidence semantics.
+
+### Fixed
+
+- Runtime telemetry smoke tests no longer register temporary projects in
+  the real global project registry.
+- Database refresh summaries now count indexes, foreign keys, triggers,
+  RLS policies, enums, RPCs, and function table references consistently
+  with the persisted facts.
+- Stale diagnostic open loops are superseded by newer successful runs
+  for the same source.
+
 ## [0.1.0] - 2026-04-25
 
 Initial public release of `agentmako` under Apache-2.0.
@@ -31,5 +70,6 @@ Initial public release of `agentmako` under Apache-2.0.
 - `mako-ai-claude-plugin` with Mako-specific Claude Code skills and
   bundled MCP wiring.
 
-[Unreleased]: https://github.com/drhalto/agentmako/compare/beta-v0.1.0...HEAD
-[0.1.0]: https://github.com/drhalto/agentmako/releases/tag/beta-v0.1.0
+[Unreleased]: https://github.com/drhalto/agentmako/compare/v0.2.0...HEAD
+[0.2.0]: https://github.com/drhalto/agentmako/compare/v0.1.0...v0.2.0
+[0.1.0]: https://github.com/drhalto/agentmako/releases/tag/v0.1.0

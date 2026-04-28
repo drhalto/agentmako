@@ -43,7 +43,12 @@ export function buildSemanticUnits(
         continue;
       }
       const sourceHash = hashText(chunk.content);
-      const ownerRef = `code:${file.path}:${chunk.lineStart ?? 0}:${chunk.lineEnd ?? 0}:${chunk.name ?? ""}`;
+      // Byte offsets disambiguate multiple declarations that share a line and
+      // name — common in minified bundles where e.g. `let t=Pr(); ...; let t=Pr();`
+      // appears twice on a single long line. Without them the resulting unitIds
+      // collide and the UNIQUE constraint on harness_semantic_units rolls back
+      // the entire index run.
+      const ownerRef = `code:${file.path}:${chunk.lineStart ?? 0}:${chunk.lineEnd ?? 0}:${chunk.startIndex ?? 0}:${chunk.endIndex ?? 0}:${chunk.name ?? ""}`;
       const metadata: JsonObject = {
         language: file.language,
         symbolName: chunk.name ?? null,
@@ -76,7 +81,10 @@ export function buildSemanticUnits(
     const markdownChunks = chunkMarkdownDocument(file.path, content);
     for (const chunk of markdownChunks) {
       const sourceHash = hashText(chunk.text);
-      const ownerRef = `doc:${file.path}:${chunk.lineStart}:${chunk.lineEnd}`;
+      // chunkId is a content-derived hash that uniquely identifies the
+      // markdown chunk within its file; including it in ownerRef makes the
+      // resulting unitId lossless even if two chunks ever share a line range.
+      const ownerRef = `doc:${file.path}:${chunk.lineStart}:${chunk.lineEnd}:${chunk.chunkId}`;
       const metadata: JsonObject = {
         headingPath: chunk.headingPath,
         chunkId: chunk.chunkId,

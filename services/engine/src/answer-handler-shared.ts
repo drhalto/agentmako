@@ -9,6 +9,8 @@ import type {
 } from "@mako-ai/contracts";
 import {
   createId,
+  getSchemaSnapshotObjectDetail,
+  searchSchemaSnapshotObjects,
   type FileDetailRecord,
   type FileSearchMatch,
   type ProjectStore,
@@ -200,6 +202,10 @@ function expandEntityTerms(queryText: string, seedTerms: readonly string[] = [])
   }
 
   return [...expanded].filter((term) => term.length >= 2);
+}
+
+function isSchemaQualifiedIdentifier(queryText: string): boolean {
+  return /^[A-Za-z_][A-Za-z0-9_]*(?:\.[A-Za-z_][A-Za-z0-9_]*){1,2}$/.test(normalizeQueryText(queryText));
 }
 
 export function buildWeakEvidenceResult(
@@ -412,10 +418,24 @@ export function resolveSchemaDetailFromQuery(projectStore: ProjectStore, queryTe
     return direct;
   }
 
+  const snapshot = projectStore.loadSchemaSnapshot();
+  const directSnapshot = getSchemaSnapshotObjectDetail(snapshot, queryText);
+  if (directSnapshot) {
+    return directSnapshot;
+  }
+
+  if (isSchemaQualifiedIdentifier(queryText)) {
+    return null;
+  }
+
   for (const term of expandEntityTerms(queryText)) {
     const detail = projectStore.getSchemaObjectDetail(term);
     if (detail) {
       return detail;
+    }
+    const snapshotDetail = getSchemaSnapshotObjectDetail(snapshot, term);
+    if (snapshotDetail) {
+      return snapshotDetail;
     }
   }
 
@@ -428,9 +448,16 @@ export function resolveSchemaCandidates(
   limit = 4,
   seedTerms: readonly string[] = [],
 ): ResolvedSchemaObjectRecord[] {
+  const snapshot = projectStore.loadSchemaSnapshot();
+  const terms = isSchemaQualifiedIdentifier(queryText)
+    ? [queryText]
+    : expandEntityTerms(queryText, seedTerms);
   return dedupeBy(
-    expandEntityTerms(queryText, seedTerms)
-      .flatMap((term) => projectStore.searchSchemaObjects(term, Math.max(limit, 2)))
+    terms
+      .flatMap((term) => [
+        ...projectStore.searchSchemaObjects(term, Math.max(limit, 2)),
+        ...searchSchemaSnapshotObjects(snapshot, term, Math.max(limit, 2)),
+      ])
       .slice(0, limit * 3),
     (item) => `${item.objectType}:${item.schemaName}:${item.parentObjectName ?? ""}:${item.objectName}`,
   ).slice(0, limit);

@@ -559,7 +559,7 @@ async function main(): Promise<void> {
     const unsupportedSuggest = SuggestToolOutputSchema.parse(
       await invokeTool("suggest", {
         projectId: graphProjectId,
-        question: "How is district sync approval enforced?",
+        question: "Brainstorm architecture vibes for me.",
       }),
     );
     const investigate = InvestigateToolOutputSchema.parse(
@@ -574,7 +574,7 @@ async function main(): Promise<void> {
     const unsupportedInvestigate = InvestigateToolOutputSchema.parse(
       await invokeTool("investigate", {
         projectId: graphProjectId,
-        question: "How is district sync approval enforced?",
+        question: "Brainstorm architecture vibes for me.",
       }),
     );
 

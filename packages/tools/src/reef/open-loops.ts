@@ -1,14 +1,22 @@
 import { REEF_DIAGNOSTIC_CACHE_STALE_AFTER_MS } from "@mako-ai/contracts";
-import type { ProjectOpenLoopsToolInput, ProjectOpenLoopsToolOutput, ReefOpenLoop } from "@mako-ai/contracts";
+import type {
+  ProjectFact,
+  ProjectOpenLoopsToolInput,
+  ProjectOpenLoopsToolOutput,
+  ReefDiagnosticRun,
+  ReefOpenLoop,
+} from "@mako-ai/contracts";
 import { normalizeFileQuery, withProjectContext } from "../entity-resolver.js";
 import type { ToolServiceOptions } from "../runtime.js";
 import { diagnosticRunCache, filePathFromFact, severityWeight } from "./shared.js";
+import { buildReefToolExecution } from "./tool-execution.js";
 
 export async function projectOpenLoopsTool(
   input: ProjectOpenLoopsToolInput,
   options: ToolServiceOptions,
 ): Promise<ProjectOpenLoopsToolOutput> {
-  return await withProjectContext(input, options, ({ project, projectStore }) => {
+  return await withProjectContext(input, options, async ({ project, projectStore }) => {
+    const startedAtMs = Date.now();
     const limit = input.limit ?? 100;
     const cacheStalenessMs = input.cacheStalenessMs ?? REEF_DIAGNOSTIC_CACHE_STALE_AFTER_MS;
     const checkedAtMs = Date.now();
@@ -40,9 +48,24 @@ export async function projectOpenLoopsTool(
       });
     }
 
+    const aggregatedDbFacts = new Map<string, { state: ProjectFact["freshness"]["state"]; reason: string; facts: ProjectFact[] }>();
     for (const fact of projectStore.queryReefFacts({ projectId: project.projectId, limit: 500 })) {
       if (filePath && filePathFromFact(fact) !== filePath) continue;
       if (fact.freshness.state === "fresh") continue;
+      if (!filePath && isDbReefFact(fact)) {
+        const key = `${fact.freshness.state}:${fact.freshness.reason}`;
+        const existing = aggregatedDbFacts.get(key);
+        if (existing) {
+          existing.facts.push(fact);
+        } else {
+          aggregatedDbFacts.set(key, {
+            state: fact.freshness.state,
+            reason: fact.freshness.reason,
+            facts: [fact],
+          });
+        }
+        continue;
+      }
       loops.push({
         id: `fact:${fact.fingerprint}`,
         kind: fact.freshness.state === "stale" ? "stale_fact" : "unknown_fact",
@@ -57,7 +80,30 @@ export async function projectOpenLoopsTool(
       });
     }
 
-    for (const run of projectStore.queryReefDiagnosticRuns({ projectId: project.projectId, limit: 100 })) {
+    let aggregateIndex = 0;
+    for (const aggregate of aggregatedDbFacts.values()) {
+      aggregateIndex += 1;
+      const byKind: Record<string, number> = {};
+      for (const fact of aggregate.facts) {
+        byKind[fact.kind] = (byKind[fact.kind] ?? 0) + 1;
+      }
+      loops.push({
+        id: `fact_group:db_reef_refresh:${aggregate.state}:${aggregateIndex}`,
+        kind: aggregate.state === "stale" ? "stale_fact" : "unknown_fact",
+        severity: aggregate.state === "stale" ? "warning" : "info",
+        title: `${aggregate.facts.length} DB Reef facts are ${aggregate.state}`,
+        source: "db_reef_refresh",
+        reason: aggregate.reason,
+        suggestedActions: ["Run db_reef_refresh after a live schema snapshot succeeds, or inspect schemaFreshness before relying on DB facts."],
+        metadata: {
+          freshnessState: aggregate.state,
+          factCount: aggregate.facts.length,
+          byKind,
+        },
+      });
+    }
+
+    for (const run of latestDiagnosticRunsBySource(projectStore.queryReefDiagnosticRuns({ projectId: project.projectId, limit: 100 }))) {
       const cache = diagnosticRunCache(run, { checkedAt, checkedAtMs, staleAfterMs: cacheStalenessMs });
       if (run.status !== "succeeded") {
         loops.push({
@@ -87,6 +133,19 @@ export async function projectOpenLoopsTool(
     const sorted = loops
       .sort((a, b) => severityWeight(b.severity) - severityWeight(a.severity) || a.id.localeCompare(b.id))
       .slice(0, limit);
+    const reefExecution = await buildReefToolExecution({
+      toolName: "project_open_loops",
+      projectId: project.projectId,
+      projectRoot: project.canonicalPath,
+      options,
+      startedAtMs,
+      freshnessPolicy: "allow_stale_labeled",
+      staleEvidenceLabeled: sorted.filter((loop) =>
+        loop.kind === "stale_fact" || loop.kind === "unknown_fact" || loop.kind === "stale_diagnostic_run"
+      ).length,
+      returnedCount: sorted.length,
+    });
+
     return {
       toolName: "project_open_loops",
       projectId: project.projectId,
@@ -99,7 +158,31 @@ export async function projectOpenLoopsTool(
         warnings: sorted.filter((loop) => loop.severity === "warning").length,
         infos: sorted.filter((loop) => loop.severity === "info").length,
       },
+      reefExecution,
       warnings: [],
     };
   });
+}
+
+function isDbReefFact(fact: ProjectFact): boolean {
+  return fact.source === "db_reef_refresh" && fact.kind.startsWith("db_");
+}
+
+function latestDiagnosticRunsBySource(runs: ReefDiagnosticRun[]): ReefDiagnosticRun[] {
+  const latest = new Map<string, ReefDiagnosticRun>();
+  for (const run of runs) {
+    const existing = latest.get(run.source);
+    if (!existing || diagnosticRunSortTime(run) > diagnosticRunSortTime(existing)) {
+      latest.set(run.source, run);
+    }
+  }
+  return [...latest.values()];
+}
+
+function diagnosticRunSortTime(run: ReefDiagnosticRun): number {
+  return Math.max(
+    Date.parse(run.finishedAt ?? ""),
+    Date.parse(run.startedAt),
+    0,
+  );
 }

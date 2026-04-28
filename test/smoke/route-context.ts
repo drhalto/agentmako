@@ -54,11 +54,11 @@ async function main(): Promise<void> {
       store.replaceIndexSnapshot({
         files: [
           {
-            ...file("app/api/admin/users/[id]/route.ts", "import { banUser } from '../../../../lib/admin/dal';"),
+            ...file("app/api/admin/users/[id]/route.ts", "import { handleBanUser } from './handler';"),
             imports: [
               {
-                targetPath: "lib/admin/dal.ts",
-                specifier: "../../../../lib/admin/dal",
+                targetPath: "app/api/admin/users/[id]/handler.ts",
+                specifier: "./handler",
                 importKind: "value",
                 line: 1,
               },
@@ -70,6 +70,17 @@ async function main(): Promise<void> {
                 pattern: "/api/admin/users/[id]",
                 method: "POST",
                 isApi: true,
+              },
+            ],
+          },
+          {
+            ...file("app/api/admin/users/[id]/handler.ts", "import { banUser } from '../../../../../lib/admin/dal';"),
+            imports: [
+              {
+                targetPath: "lib/admin/dal.ts",
+                specifier: "../../../../../lib/admin/dal",
+                importKind: "value",
+                line: 1,
               },
             ],
           },
@@ -119,8 +130,9 @@ async function main(): Promise<void> {
     assert.equal(output.toolName, "route_context");
     assert.equal(output.resolvedRoute?.pattern, "/api/admin/users/[id]");
     assert.equal(output.handlerFile?.path, "app/api/admin/users/[id]/route.ts");
-    assert.equal(output.outboundImports.entries.length, 1, "route should expose DAL import");
-    assert.equal(output.downstreamRpcs.entries.length, 1, "route should expose downstream RPC");
+    assert.equal(output.outboundImports.entries.length, 1, "route should expose direct handler import");
+    assert.equal(output.outboundImports.entries[0]?.targetPath, "app/api/admin/users/[id]/handler.ts");
+    assert.equal(output.downstreamRpcs.entries.length, 1, "route should expose downstream RPC through imported files");
     assert.ok(
       output.downstreamTables.entries.some((entry) => entry.tableName === "admin_users"),
       "route should expose downstream table touches",

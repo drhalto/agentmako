@@ -17,10 +17,12 @@ import {
   gitPrecommitCheckTool,
   lintFilesTool,
   oxlintDiagnosticsTool,
+  typescriptSyntaxDiagnosticsTool,
   typescriptDiagnosticsTool,
 } from "../code-intel/index.js";
 import { withProjectContext } from "../entity-resolver.js";
 import type { ToolServiceOptions } from "../runtime.js";
+import { runProgrammaticFindingsRefresh } from "./programmatic-findings.js";
 
 interface RunResult {
   result: DiagnosticRefreshResult;
@@ -31,7 +33,7 @@ export async function diagnosticRefreshTool(
   input: DiagnosticRefreshToolInput,
   options: ToolServiceOptions,
 ): Promise<DiagnosticRefreshToolOutput> {
-  return await withProjectContext(input, options, async ({ project }) => {
+  return await withProjectContext(input, options, async ({ project, profile, projectStore }) => {
     const startedMs = Date.now();
     const sources = input.sources ?? defaultSources(input);
     const results: DiagnosticRefreshResult[] = [];
@@ -42,6 +44,9 @@ export async function diagnosticRefreshTool(
     for (const source of sources) {
       const run = await runDiagnosticSource(source, {
         input,
+        project,
+        profile,
+        projectStore,
         projectId: project.projectId,
         options,
       });
@@ -80,15 +85,18 @@ export async function diagnosticRefreshTool(
 
 function defaultSources(input: DiagnosticRefreshToolInput): DiagnosticRefreshSource[] {
   if ((input.files?.length ?? 0) > 0) {
-    return ["lint_files", "typescript", "eslint", "oxlint", "biome"];
+    return ["lint_files", "programmatic_findings", "typescript_syntax", "typescript", "eslint", "oxlint", "biome"];
   }
-  return ["typescript"];
+  return ["typescript_syntax"];
 }
 
 async function runDiagnosticSource(
   source: DiagnosticRefreshSource,
   args: {
     input: DiagnosticRefreshToolInput;
+    project: Parameters<typeof runProgrammaticFindingsRefresh>[0]["project"];
+    profile: Parameters<typeof runProgrammaticFindingsRefresh>[0]["profile"];
+    projectStore: Parameters<typeof runProgrammaticFindingsRefresh>[0]["projectStore"];
     projectId: string;
     options: ToolServiceOptions;
   },
@@ -104,6 +112,15 @@ async function runDiagnosticSource(
             ...(args.input.maxFindings ? { maxFindings: args.input.maxFindings } : {}),
           }, args.options)
         )), startedMs);
+      case "typescript_syntax": {
+        const output = await typescriptSyntaxDiagnosticsTool({
+          projectId: args.projectId,
+          ...(args.input.files ? { files: args.input.files } : {}),
+          ...(args.input.tsconfigPath ? { tsconfigPath: args.input.tsconfigPath } : {}),
+          ...(args.input.maxFindings ? { maxFindings: args.input.maxFindings } : {}),
+        }, args.options);
+        return normalizeProjectFindingOutput(source, "typescript_diagnostics", output);
+      }
       case "typescript": {
         const output = await typescriptDiagnosticsTool({
           projectId: args.projectId,
@@ -144,6 +161,13 @@ async function runDiagnosticSource(
         return withElapsedDuration(normalizeGitPrecommit(await gitPrecommitCheckTool({
           projectId: args.projectId,
         }, args.options)), startedMs);
+      case "programmatic_findings":
+        return withElapsedDuration(runProgrammaticFindingsRefresh({
+          input: args.input,
+          project: args.project,
+          profile: args.profile,
+          projectStore: args.projectStore,
+        }), startedMs);
     }
     return unreachableSource(source);
   } catch (error) {
@@ -267,6 +291,8 @@ function toolNameForSource(source: DiagnosticRefreshSource): string {
   switch (source) {
     case "lint_files":
       return "lint_files";
+    case "typescript_syntax":
+      return "typescript_diagnostics";
     case "typescript":
       return "typescript_diagnostics";
     case "eslint":
@@ -277,6 +303,8 @@ function toolNameForSource(source: DiagnosticRefreshSource): string {
       return "biome_diagnostics";
     case "git_precommit_check":
       return "git_precommit_check";
+    case "programmatic_findings":
+      return "diagnostic_refresh";
   }
   return unreachableSource(source);
 }

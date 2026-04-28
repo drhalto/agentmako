@@ -3,9 +3,10 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { randomUUID } from "node:crypto";
 import os from "node:os";
 import path from "node:path";
-import type { TypeScriptDiagnosticsToolOutput } from "../../packages/contracts/src/index.ts";
+import type { DiagnosticRefreshToolOutput, ProjectFact, TypeScriptDiagnosticsToolOutput } from "../../packages/contracts/src/index.ts";
 import { invokeTool } from "../../packages/tools/src/registry.ts";
 import { openGlobalStore, openProjectStore } from "../../packages/store/src/index.ts";
+import { InProcessReefService } from "../../services/indexer/src/reef-service.ts";
 
 function registerProject(projectRoot: string, projectId: string, displayName: string): void {
   const globalStore = openGlobalStore();
@@ -47,6 +48,10 @@ function seedProject(projectRoot: string, projectId: string): void {
     path.join(projectRoot, "src", "bad.ts"),
     "export const count: number = \"oops\";\n",
   );
+  writeFileSync(
+    path.join(projectRoot, "src", "syntax.ts"),
+    "export const broken = ;\n",
+  );
   registerProject(projectRoot, projectId, "typescript-diagnostics-smoke");
 }
 
@@ -62,6 +67,15 @@ async function main(): Promise<void> {
 
   const projectId = randomUUID();
   seedProject(projectRoot, projectId);
+  const initialStore = openProjectStore({ projectRoot });
+  try {
+    initialStore.ensureReefAnalysisState({ projectId, root: projectRoot });
+  } finally {
+    initialStore.close();
+  }
+  const reefService = new InProcessReefService();
+  await reefService.start();
+  await reefService.registerProject({ root: projectRoot });
 
   try {
     const first = await invokeTool("typescript_diagnostics", {
@@ -105,9 +119,80 @@ async function main(): Promise<void> {
       assert.equal(runs[0]?.findingCount, first.totalFindings);
       assert.equal(runs[0]?.persistedFindingCount, first.persistedFindings);
       assert.equal(runs[0]?.configPath, "tsconfig.json");
+      assert.equal(runs[0]?.metadata?.sourceKind, "semantic");
+      assert.equal(runs[0]?.metadata?.inputRevision, 0);
     } finally {
       store.close();
     }
+
+    const syntax = await invokeTool("diagnostic_refresh", {
+      projectId,
+      sources: ["typescript_syntax"],
+      files: ["src/syntax.ts"],
+      includeFindings: true,
+    }) as DiagnosticRefreshToolOutput;
+    assert.equal(syntax.results[0]?.source, "typescript_syntax");
+    assert.equal(syntax.results[0]?.status, "succeeded");
+    assert.ok(syntax.findings?.some((finding) => finding.source === "typescript_syntax"));
+
+    writeFileSync(path.join(projectRoot, "src", "syntax.ts"), "export const broken = 1;\n");
+    const syntaxChangedAt = new Date(Date.now() + 1000).toISOString();
+    const syntaxStore = openProjectStore({ projectRoot });
+    try {
+      const subject = { kind: "file" as const, path: "src/syntax.ts" };
+      const subjectFingerprint = syntaxStore.computeReefSubjectFingerprint(subject);
+      const fact: ProjectFact = {
+        projectId,
+        kind: "file_snapshot",
+        subject,
+        subjectFingerprint,
+        overlay: "working_tree",
+        source: "working_tree_overlay",
+        confidence: 1,
+        fingerprint: syntaxStore.computeReefFactFingerprint({
+          projectId,
+          kind: "file_snapshot",
+          subjectFingerprint,
+          overlay: "working_tree",
+          source: "working_tree_overlay",
+          data: { lastModifiedAt: syntaxChangedAt },
+        }),
+        freshness: {
+          state: "fresh",
+          checkedAt: syntaxChangedAt,
+          reason: "fixture changed after diagnostics",
+        },
+        provenance: {
+          source: "typescript-diagnostics-smoke",
+          capturedAt: syntaxChangedAt,
+        },
+        data: { lastModifiedAt: syntaxChangedAt },
+      };
+      syntaxStore.upsertReefFacts([fact]);
+    } finally {
+      syntaxStore.close();
+    }
+
+    const reefStatus = await reefService.getProjectStatus(projectId);
+    assert.equal(reefStatus.diagnostics?.typescript.syntactic.source, "typescript_syntax");
+    assert.equal(reefStatus.diagnostics?.typescript.syntactic.state, "stale");
+    assert.equal(reefStatus.diagnostics?.typescript.syntactic.inputRevision, 0);
+    assert.equal(reefStatus.diagnostics?.typescript.semantic.source, "typescript");
+    assert.ok(
+      reefStatus.diagnostics?.changedAfterCheck.some((entry) =>
+        entry.filePath === "src/syntax.ts" && entry.staleSources.includes("typescript_syntax")
+      ),
+      "Reef project status should expose files changed after the syntax diagnostic run",
+    );
+    const diagnosticOperations = await reefService.listOperations({
+      projectId,
+      kind: "diagnostic_source",
+      limit: 10,
+    });
+    assert.ok(
+      diagnosticOperations.some((operation) => operation.data?.source === "typescript_syntax"),
+      "Reef operations should expose diagnostic source runs",
+    );
 
     writeFileSync(
       path.join(projectRoot, "src", "bad.ts"),
@@ -183,6 +268,7 @@ async function main(): Promise<void> {
     } else {
       process.env.MAKO_STATE_HOME = priorStateHome;
     }
+    await reefService.stop();
     rmSync(tmp, { recursive: true, force: true });
   }
 }

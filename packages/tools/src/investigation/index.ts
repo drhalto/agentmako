@@ -5,6 +5,8 @@ import type {
   ChangePlanToolInput,
   FlowMapResult,
   FlowMapToolInput,
+  GraphNeighborsResult,
+  GraphNeighborsToolInput,
   GraphNodeLocator,
   GraphTraversalDirection,
   HealthTrendResult,
@@ -31,7 +33,7 @@ import type {
 import { extractAnswerResultFromToolOutput } from "@mako-ai/contracts";
 import { hashJson } from "@mako-ai/store";
 import { executeAskSelection, routeAskQuestion, type AskToolSelection } from "../ask/index.js";
-import { changePlanTool, flowMapTool } from "../graph/index.js";
+import { changePlanTool, flowMapTool, graphNeighborsTool } from "../graph/index.js";
 import { tenantLeakAuditTool } from "../operators/index.js";
 import { healthTrendTool, issuesNextTool, sessionHandoffTool } from "../project-intelligence/index.js";
 import { withProjectContext, type ToolServiceOptions } from "../runtime.js";
@@ -62,7 +64,7 @@ interface StepExecutionSummary {
 
 const DEFAULT_SUGGEST_MAX_STEPS = 3;
 const DEFAULT_INVESTIGATE_BUDGET = 3;
-const ASK_ROUTED_MIN_CONFIDENCE = 0.8;
+const ASK_ROUTED_MIN_CONFIDENCE = 0.7;
 
 export async function suggestTool(
   input: SuggestToolInput,
@@ -287,7 +289,32 @@ function planGraphWorkflow(
   input: (SuggestToolInput | InvestigateToolInput) & { projectId: string },
 ): InvestigationPlan | null {
   if (!input.startEntity || !input.targetEntity) {
-    return null;
+    const startEntity = input.startEntity ?? input.targetEntity;
+    if (!startEntity) {
+      return null;
+    }
+    const neighborInput = {
+      projectId: input.projectId,
+      startEntities: [toGraphNodeLocatorJson(startEntity)],
+      direction: input.direction ?? "both",
+      ...(input.traversalDepth ? { traversalDepth: input.traversalDepth } : { traversalDepth: 2 }),
+      ...(typeof input.includeHeuristicEdges === "boolean"
+        ? { includeHeuristicEdges: input.includeHeuristicEdges }
+        : { includeHeuristicEdges: true }),
+    } satisfies JsonObject;
+    return {
+      strategy: looksLikeChangeQuestion(input.question) ? "change_scope" : "graph_flow",
+      steps: [
+        createPlannedStep({
+          toolName: "graph_neighbors",
+          toolInput: neighborInput,
+          title: "Map nearby graph context",
+          inputSummary: summarizeGraphNeighborInput(startEntity),
+          rationale: "Only one graph endpoint was provided, so the bounded graph workflow expands adjacent evidence around that entity.",
+        }),
+      ],
+      warnings: [],
+    };
   }
 
   const graphInput = {
@@ -298,7 +325,7 @@ function planGraphWorkflow(
     ...(input.traversalDepth ? { traversalDepth: input.traversalDepth } : {}),
     ...(typeof input.includeHeuristicEdges === "boolean"
       ? { includeHeuristicEdges: input.includeHeuristicEdges }
-      : {}),
+      : { includeHeuristicEdges: true }),
   } satisfies JsonObject;
 
   const wantsChange = looksLikeChangeQuestion(input.question);
@@ -468,6 +495,8 @@ async function runPlannedStep(
   options: ToolServiceOptions,
 ): Promise<unknown> {
   switch (step.toolName) {
+    case "graph_neighbors":
+      return graphNeighborsTool(step.toolInput as unknown as GraphNeighborsToolInput, options);
     case "flow_map":
       return flowMapTool(step.toolInput as unknown as FlowMapToolInput, options);
     case "change_plan":
@@ -503,6 +532,8 @@ function summarizeToolOutput(output: unknown): StepExecutionSummary {
 
   const toolName = String(output.toolName);
   switch (toolName) {
+    case "graph_neighbors":
+      return summarizeGraphNeighborsOutput(output as unknown as { result: GraphNeighborsResult });
     case "flow_map":
       return summarizeFlowMapOutput(output as unknown as { result: FlowMapResult });
     case "change_plan":
@@ -556,6 +587,15 @@ function summarizeChangePlanOutput(output: { result: ChangePlanResult }): StepEx
     ],
     warnings: result.warnings,
     followOn: result.recommendedFollowOn,
+  };
+}
+
+function summarizeGraphNeighborsOutput(output: { result: GraphNeighborsResult }): StepExecutionSummary {
+  const { result } = output;
+  return {
+    resultSummary: `Found ${result.neighbors.length} nearby graph node(s) from ${result.resolvedStartNodes.length} resolved start node(s).`,
+    resultRefs: result.neighbors.map((entry) => `${entry.node.kind}:${entry.node.key}`),
+    warnings: result.warnings,
   };
 }
 
@@ -624,6 +664,10 @@ function normalizeInvestigateBudget(value?: number): number {
 
 function summarizeGraphInput(startEntity: GraphNodeLocator, targetEntity: GraphNodeLocator): string {
   return `${startEntity.kind}:${startEntity.key} -> ${targetEntity.kind}:${targetEntity.key}`;
+}
+
+function summarizeGraphNeighborInput(startEntity: GraphNodeLocator): string {
+  return `${startEntity.kind}:${startEntity.key}`;
 }
 
 function toGraphNodeLocatorJson(locator: GraphNodeLocator): JsonObject {

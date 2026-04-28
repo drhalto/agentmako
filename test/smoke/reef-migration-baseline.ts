@@ -171,6 +171,10 @@ async function main(): Promise<void> {
         .prepare("SELECT name FROM schema_migrations WHERE version = 30")
         .get() as { name: string } | undefined;
       assert.equal(migration?.name, "0030_project_reef_foundation");
+      const latestReefMigration = store.db
+        .prepare("SELECT name FROM schema_migrations WHERE version = 36")
+        .get() as { name: string } | undefined;
+      assert.equal(latestReefMigration?.name, "0036_project_reef_artifact_tag_revisions");
       const tables = new Set(
         (store.db.prepare("SELECT name FROM sqlite_master WHERE type = 'table'").all() as Array<{ name: string }>)
           .map((row) => row.name),
@@ -179,6 +183,12 @@ async function main(): Promise<void> {
       assert.ok(tables.has("reef_findings"));
       assert.ok(tables.has("reef_finding_events"));
       assert.ok(tables.has("reef_rule_descriptors"));
+      const artifactTagColumns = new Set(
+        (store.db.prepare("PRAGMA table_info(reef_artifact_tags)").all() as Array<{ name: string }>)
+          .map((row) => row.name),
+      );
+      assert.ok(artifactTagColumns.has("last_verified_revision"));
+      assert.ok(artifactTagColumns.has("last_changed_revision"));
     } finally {
       store.close();
     }

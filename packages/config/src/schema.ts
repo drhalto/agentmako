@@ -74,6 +74,10 @@ const HarnessConfigSchema = z.object({
   port: z.number().int().min(1).max(65535).optional(),
 });
 
+const ReefConfigSchema = z.object({
+  mode: z.enum(["auto", "required", "legacy"]).default("auto"),
+});
+
 export const MakoConfigSchema = z.object({
   appName: z.string().min(1).default(DEFAULT_APP_NAME),
   stateHome: z.string().min(1).optional(),
@@ -95,6 +99,7 @@ export const MakoConfigSchema = z.object({
   }),
   databaseTools: DatabaseToolsSchema.default({ enabled: true }),
   harness: HarnessConfigSchema.optional(),
+  reef: ReefConfigSchema.default({ mode: "auto" }),
 });
 
 export type MakoConfig = z.infer<typeof MakoConfigSchema>;

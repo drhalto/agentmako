@@ -254,6 +254,17 @@ async function main(): Promise<void> {
     assert.equal(suggestTenant.result.stopReason, "satisfied_by_canonical_tool");
     assert.deepEqual(suggestTenant.result.steps.map((step) => step.toolName), ["tenant_leak_audit"]);
 
+    const suggestStartOnly = SuggestToolOutputSchema.parse(
+      await invokeTool("suggest", {
+        projectId,
+        question: "What is near GET /api/events in the graph?",
+        startEntity: { kind: "route", key: "GET /api/events" },
+      }),
+    );
+    assert.equal(suggestStartOnly.result.strategy, "graph_flow");
+    assert.deepEqual(suggestStartOnly.result.steps.map((step) => step.toolName), ["graph_neighbors"]);
+    assert.ok(!suggestStartOnly.result.warnings.some((warning) => warning.includes("partial graph input was ignored")));
+
     const suggestProjectStatus = SuggestToolOutputSchema.parse(
       await invokeTool("suggest", {
         projectId,
@@ -280,18 +291,15 @@ async function main(): Promise<void> {
     assert.equal(investigateRoute.result.steps[0]?.selectionConfidence, 0.97);
     assert.match(investigateRoute.result.steps[0]?.resultSummary ?? "", /route_trace answered/i);
 
-    const lowConfidenceSuggest = SuggestToolOutputSchema.parse(
+    const moderateConfidenceSuggest = SuggestToolOutputSchema.parse(
       await invokeTool("suggest", {
         projectId,
         question: "Why do support tickets disagree?",
       }),
     );
-    assert.equal(lowConfidenceSuggest.result.strategy, "unsupported");
-    assert.equal(lowConfidenceSuggest.result.stopReason, "unsupported");
-    assert.match(
-      lowConfidenceSuggest.result.warnings.join("\n"),
-      /routing confidence .* below the 0.80 threshold/i,
-    );
+    assert.equal(moderateConfidenceSuggest.result.strategy, "ask_routed_canonical");
+    assert.equal(moderateConfidenceSuggest.result.stopReason, "satisfied_by_canonical_tool");
+    assert.ok(!moderateConfidenceSuggest.result.warnings.some((warning) => warning.includes("below the 0.70 threshold")));
 
     const unsupported = SuggestToolOutputSchema.parse(
       await invokeTool("suggest", {

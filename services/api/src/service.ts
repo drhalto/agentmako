@@ -12,6 +12,17 @@ import type {
   JsonObject,
   ProjectLocatorInput,
   ProjectProfile,
+  ReefOperationLogEntry,
+  ReefOperationQuery,
+  ReefDaemonStartResult,
+  ReefDaemonStatus,
+  ReefDaemonStopResult,
+  ReefProjectStatus,
+  ReefRefreshRequest,
+  ReefRefreshResult,
+  ReefService,
+  RegisteredProject,
+  RegisterProjectInput,
   ToolDefinitionSummary,
   ToolOutput,
   WorkflowPacketSurface,
@@ -25,6 +36,10 @@ import {
   getProjectStatus,
   indexProject,
   listAttachedProjects,
+  createReefClient,
+  getReefDaemonStatus,
+  startReefDaemon,
+  stopReefDaemon,
   refreshProjectDb,
   setProjectDefaultSchemaScope,
   testProjectDbConnection,
@@ -69,9 +84,14 @@ export interface ApiServiceOptions {
 
 export class MakoApiService {
   private readonly toolService;
+  private readonly reefService: ReefService;
 
   constructor(private readonly options: ApiServiceOptions = {}) {
-    this.toolService = createToolService(options);
+    this.reefService = createReefClient(options);
+    this.toolService = createToolService({
+      ...options,
+      reefService: this.reefService,
+    });
   }
 
   health() {
@@ -121,6 +141,46 @@ export class MakoApiService {
 
   getProjectStatus(projectReference: string): ProjectStatusResult | null {
     return getProjectStatus(projectReference, this.options);
+  }
+
+  async registerReefProject(input: RegisterProjectInput): Promise<RegisteredProject> {
+    return this.reefService.registerProject(input);
+  }
+
+  async unregisterReefProject(projectId: string): Promise<void> {
+    return this.reefService.unregisterProject(projectId);
+  }
+
+  async listReefProjects(): Promise<RegisteredProject[]> {
+    return this.reefService.listProjects();
+  }
+
+  async getReefProjectStatus(projectReference: string): Promise<ReefProjectStatus> {
+    return this.reefService.getProjectStatus(projectReference);
+  }
+
+  async listReefProjectStatuses(): Promise<ReefProjectStatus[]> {
+    return this.reefService.listProjectStatuses();
+  }
+
+  async requestReefRefresh(input: ReefRefreshRequest): Promise<ReefRefreshResult> {
+    return this.reefService.requestRefresh(input);
+  }
+
+  async listReefOperations(input: ReefOperationQuery = {}): Promise<ReefOperationLogEntry[]> {
+    return this.reefService.listOperations(input);
+  }
+
+  async startReefDaemon(options: { foreground?: boolean; force?: boolean } = {}): Promise<ReefDaemonStartResult> {
+    return startReefDaemon({ ...this.options, ...options });
+  }
+
+  async stopReefDaemon(): Promise<ReefDaemonStopResult> {
+    return stopReefDaemon(this.options);
+  }
+
+  async getReefDaemonStatus(): Promise<ReefDaemonStatus> {
+    return getReefDaemonStatus(this.options);
   }
 
   bindProjectDb(projectReference: string, input: BindProjectDbInput): BindProjectDbResult {
@@ -208,6 +268,7 @@ export class MakoApiService {
 
   close(): void {
     this.toolService.close();
+    void this.reefService.stop();
   }
 }
 

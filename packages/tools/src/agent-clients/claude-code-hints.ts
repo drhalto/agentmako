@@ -275,6 +275,15 @@ export const CLAUDE_CODE_TOOL_HINTS: Record<
   evidence_conflicts: {
     searchHint: "reef contradictory stale phantom evidence conflicts",
   },
+  reef_where_used: {
+    searchHint: "reef maintained structural where used definitions usages",
+  },
+  reef_known_issues: {
+    searchHint: "reef current diagnostics errors warnings stale sources",
+  },
+  reef_agent_status: {
+    searchHint: "reef agent loop project status known issues changed files",
+  },
 };
 
 export function getClaudeCodeToolHint(

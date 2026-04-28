@@ -243,7 +243,7 @@ async function main(): Promise<void> {
     );
     assert.equal(heuristicPath.result.noPathReason, undefined);
 
-    // --- Locator normalization (finding 1 from forgebench triage) ---------
+    // --- Locator normalization (finding 1 from graph triage) --------------
     //
     // The real Next.js indexer stores route keys as `route:<pattern>:<method>`
     // and RPC keys as `<schema>.<name>(<argTypes>)`, but callers naturally

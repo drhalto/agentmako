@@ -1,1 +1,6 @@
-export { buildChunks, buildChunksForFile, languageKindForPath } from "./tree-sitter-chunker.js";
+export {
+  analyzeDeclarationChangedRanges,
+  buildChunks,
+  buildChunksForFile,
+  languageKindForPath,
+} from "./tree-sitter-chunker.js";

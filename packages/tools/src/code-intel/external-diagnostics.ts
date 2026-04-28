@@ -5,6 +5,7 @@ export interface ExternalToolRunner {
   command: string;
   argsPrefix: string[];
   display: string;
+  shell?: boolean;
 }
 
 export function slashPath(value: string): string {
@@ -49,6 +50,8 @@ export function resolveLocalToolRunner(
       command: binPath,
       argsPrefix: [],
       display: slashPath(path.relative(projectRoot, binPath)),
+      // Node refuses to spawn .cmd/.bat without shell:true since CVE-2024-27980.
+      ...(process.platform === "win32" ? { shell: true } : {}),
     };
   }
 
@@ -93,5 +96,6 @@ export function resolvePackageScriptRunner(
     command: process.platform === "win32" ? path.join(nodeDir, "npm.cmd") : "npm",
     argsPrefix: ["run", "-s", scriptName, "--"],
     display: `npm run -s ${scriptName} --`,
+    ...(process.platform === "win32" ? { shell: true } : {}),
   };
 }

@@ -299,7 +299,7 @@ export function buildDerivedGraphSlice(
 
   if (nodes.length >= LARGE_GRAPH_WARNING_NODE_COUNT || edges.length >= LARGE_GRAPH_WARNING_EDGE_COUNT) {
     warnings.push(
-      `large whole-project graph slice materialized (${nodes.length} nodes, ${edges.length} edges); rooted traversal and filtering are not shipped yet`,
+      `large whole-project graph slice materialized (${nodes.length} nodes, ${edges.length} edges); traversal is bounded by the requested entities, but graph derivation is still whole-project`,
     );
   }
 
@@ -322,13 +322,7 @@ function getGraphTraversalState(
   cacheKey: string,
   projectStore: ProjectStore,
 ): GraphTraversalState {
-  const latestIndexRun = projectStore.getLatestIndexRun();
-  const schemaSnapshot = projectStore.loadSchemaSnapshot();
-  const signature = hashJson({
-    latestIndexRunId: latestIndexRun?.runId ?? null,
-    schemaSnapshotId: schemaSnapshot?.snapshotId ?? null,
-    schemaFingerprint: schemaSnapshot?.fingerprint ?? null,
-  });
+  const signature = buildGraphTraversalSignature(projectStore);
   const cached = graphTraversalStateCache.get(cacheKey);
   if (cached?.signature === signature) {
     graphTraversalStateCache.delete(cacheKey);
@@ -352,6 +346,66 @@ function getGraphTraversalState(
     graphTraversalStateCache.delete(oldestKey);
   }
   return state;
+}
+
+function buildGraphTraversalSignature(projectStore: ProjectStore): string {
+  const latestIndexRun = projectStore.getLatestIndexRun();
+  const schemaSnapshot = projectStore.loadSchemaSnapshot();
+  const files = projectStore
+    .listFiles()
+    .map((file) => ({
+      path: file.path,
+      sha256: file.sha256 ?? null,
+      language: file.language,
+      sizeBytes: file.sizeBytes,
+      lineCount: file.lineCount,
+    }))
+    .sort((left, right) => left.path.localeCompare(right.path));
+  const imports = projectStore
+    .listAllImportEdges()
+    .map((edge) => ({
+      sourcePath: edge.sourcePath,
+      targetPath: edge.targetPath,
+      targetExists: edge.targetExists,
+      specifier: edge.specifier,
+      importKind: edge.importKind,
+      isTypeOnly: edge.isTypeOnly,
+      line: edge.line ?? null,
+    }))
+    .sort((left, right) =>
+      left.sourcePath.localeCompare(right.sourcePath) ||
+      left.targetPath.localeCompare(right.targetPath) ||
+      left.specifier.localeCompare(right.specifier) ||
+      left.importKind.localeCompare(right.importKind) ||
+      Number(left.isTypeOnly) - Number(right.isTypeOnly) ||
+      Number(left.targetExists) - Number(right.targetExists) ||
+      (left.line ?? 0) - (right.line ?? 0),
+    );
+  const routes = projectStore
+    .listRoutes()
+    .map((route) => ({
+      routeKey: route.routeKey,
+      filePath: route.filePath,
+      pattern: route.pattern,
+      method: route.method ?? null,
+      handlerName: route.handlerName ?? null,
+      isApi: route.isApi,
+    }))
+    .sort((left, right) =>
+      left.routeKey.localeCompare(right.routeKey) ||
+      left.filePath.localeCompare(right.filePath),
+    );
+
+  return hashJson({
+    latestIndexRunId: latestIndexRun?.runId ?? null,
+    latestIndexRunStatus: latestIndexRun?.status ?? null,
+    latestIndexRunFinishedAt: latestIndexRun?.finishedAt ?? null,
+    schemaSnapshotId: schemaSnapshot?.snapshotId ?? null,
+    schemaFingerprint: schemaSnapshot?.fingerprint ?? null,
+    files,
+    imports,
+    routes,
+  });
 }
 
 function resolveGraphPathQuery(
@@ -533,7 +587,7 @@ export async function flowMapTool(
       direction: input.direction ?? "both",
       traversalDepth: input.traversalDepth ?? 6,
       edgeKinds: input.edgeKinds ? new Set(input.edgeKinds) : undefined,
-      includeHeuristicEdges: input.includeHeuristicEdges ?? false,
+      includeHeuristicEdges: input.includeHeuristicEdges ?? true,
     });
     const pathFound =
       resolved.startNode != null &&
@@ -578,7 +632,7 @@ export async function changePlanTool(
       direction: input.direction ?? "both",
       traversalDepth: input.traversalDepth ?? 6,
       edgeKinds: input.edgeKinds ? new Set(input.edgeKinds) : undefined,
-      includeHeuristicEdges: input.includeHeuristicEdges ?? false,
+      includeHeuristicEdges: input.includeHeuristicEdges ?? true,
     });
     const pathFound =
       resolved.startNode != null &&

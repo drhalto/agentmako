@@ -2059,7 +2059,11 @@ CREATE INDEX IF NOT EXISTS idx_reef_diagnostic_runs_project_status
   ON reef_diagnostic_runs(project_id, status, finished_at DESC);
 `;
 
-export const PROJECT_MIGRATION_0032_DB_REVIEW_COMMENTS_SQL = `-- DB review comments: append-only operator/AI notes attached to database objects.
+// Originally introduced at slot 32, but slot 32 was previously consumed by a different
+// migration (0032_project_studio_events) that has since been removed from source. DBs that
+// applied the older slot 32 would never run this SQL again, leaving db_review_comments missing.
+// Re-registered at slot 37 so existing DBs catch up; CREATE IF NOT EXISTS keeps it idempotent.
+export const PROJECT_MIGRATION_0037_DB_REVIEW_COMMENTS_SQL = `-- DB review comments: append-only operator/AI notes attached to database objects.
 CREATE TABLE IF NOT EXISTS db_review_comments (
   comment_id TEXT PRIMARY KEY,
   project_id TEXT NOT NULL,
@@ -2123,4 +2127,101 @@ FOR EACH ROW
 BEGIN
   SELECT RAISE(FAIL, 'db_review_comments rows are append-only');
 END;
+`;
+
+export const PROJECT_MIGRATION_0033_REEF_REVISION_STATE_SQL = `-- Reef Engine v2.4: revisioned analysis state and applied change-set history.
+CREATE TABLE IF NOT EXISTS reef_analysis_state (
+  project_id TEXT NOT NULL,
+  root TEXT NOT NULL,
+  current_revision INTEGER NOT NULL DEFAULT 0 CHECK (current_revision >= 0),
+  materialized_revision INTEGER CHECK (materialized_revision IS NULL OR materialized_revision >= 0),
+  last_applied_change_set_id TEXT,
+  last_applied_at TEXT,
+  recomputation_generation INTEGER NOT NULL DEFAULT 0 CHECK (recomputation_generation >= 0),
+  watcher_recrawl_count INTEGER NOT NULL DEFAULT 0 CHECK (watcher_recrawl_count >= 0),
+  last_recrawl_at TEXT,
+  last_recrawl_reason TEXT,
+  last_recrawl_warning TEXT,
+  updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  PRIMARY KEY(project_id, root)
+);
+
+CREATE TABLE IF NOT EXISTS reef_applied_change_sets (
+  change_set_id TEXT PRIMARY KEY,
+  project_id TEXT NOT NULL,
+  root TEXT NOT NULL,
+  base_revision INTEGER NOT NULL CHECK (base_revision >= 0),
+  new_revision INTEGER NOT NULL CHECK (new_revision >= 0),
+  observed_at TEXT NOT NULL,
+  applied_at TEXT NOT NULL,
+  generation INTEGER NOT NULL CHECK (generation >= 0),
+  status TEXT NOT NULL CHECK (status IN ('applied', 'skipped', 'failed')),
+  refresh_mode TEXT NOT NULL CHECK (refresh_mode IN ('path_scoped', 'full')),
+  fallback_reason TEXT,
+  cause_count INTEGER NOT NULL CHECK (cause_count >= 0),
+  file_change_count INTEGER NOT NULL CHECK (file_change_count >= 0),
+  causes_json TEXT NOT NULL CHECK (json_valid(causes_json)),
+  file_changes_json TEXT NOT NULL CHECK (json_valid(file_changes_json)),
+  data_json TEXT CHECK (data_json IS NULL OR json_valid(data_json)),
+  created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE INDEX IF NOT EXISTS idx_reef_applied_change_sets_project_revision
+  ON reef_applied_change_sets(project_id, root, new_revision DESC);
+
+CREATE UNIQUE INDEX IF NOT EXISTS idx_reef_applied_change_sets_unique_revision
+  ON reef_applied_change_sets(project_id, root, new_revision);
+
+CREATE INDEX IF NOT EXISTS idx_reef_applied_change_sets_project_applied_at
+  ON reef_applied_change_sets(project_id, root, applied_at DESC);
+`;
+
+export const PROJECT_MIGRATION_0034_REEF_ARTIFACTS_SQL = `-- Reef Engine v2.4: content-addressed artifact identity and projection tags.
+CREATE TABLE IF NOT EXISTS reef_artifacts (
+  artifact_id TEXT PRIMARY KEY,
+  content_hash TEXT NOT NULL,
+  artifact_kind TEXT NOT NULL,
+  extractor_version TEXT NOT NULL,
+  payload_json TEXT NOT NULL CHECK (json_valid(payload_json)),
+  metadata_json TEXT CHECK (metadata_json IS NULL OR json_valid(metadata_json)),
+  created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  UNIQUE(content_hash, artifact_kind, extractor_version)
+);
+
+CREATE TABLE IF NOT EXISTS reef_artifact_tags (
+  tag_id TEXT PRIMARY KEY,
+  artifact_id TEXT NOT NULL REFERENCES reef_artifacts(artifact_id) ON DELETE CASCADE,
+  content_hash TEXT NOT NULL,
+  artifact_kind TEXT NOT NULL,
+  extractor_version TEXT NOT NULL,
+  project_id TEXT NOT NULL,
+  root TEXT NOT NULL,
+  branch TEXT NOT NULL DEFAULT '',
+  worktree TEXT NOT NULL DEFAULT '',
+  overlay TEXT NOT NULL CHECK (overlay IN ('indexed', 'working_tree', 'staged', 'preview')),
+  path TEXT NOT NULL,
+  created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  UNIQUE(project_id, root, branch, worktree, overlay, path, artifact_kind, extractor_version)
+);
+
+CREATE INDEX IF NOT EXISTS idx_reef_artifacts_content_key
+  ON reef_artifacts(content_hash, artifact_kind, extractor_version);
+
+CREATE INDEX IF NOT EXISTS idx_reef_artifact_tags_artifact
+  ON reef_artifact_tags(artifact_id);
+
+CREATE INDEX IF NOT EXISTS idx_reef_artifact_tags_projection
+  ON reef_artifact_tags(project_id, root, branch, worktree, overlay, path);
+`;
+
+export const PROJECT_MIGRATION_0035_REEF_REVISION_UNIQUENESS_SQL = `-- Reef Engine v2.4: enforce one applied change set per revision.
+CREATE UNIQUE INDEX IF NOT EXISTS idx_reef_applied_change_sets_unique_revision
+  ON reef_applied_change_sets(project_id, root, new_revision);
+`;
+
+export const PROJECT_MIGRATION_0036_REEF_ARTIFACT_TAG_REVISIONS_SQL = `-- Reef Engine v2.4: record calculation tag verification/change revisions.
+ALTER TABLE reef_artifact_tags ADD COLUMN last_verified_revision INTEGER CHECK (last_verified_revision IS NULL OR last_verified_revision >= 0);
+ALTER TABLE reef_artifact_tags ADD COLUMN last_changed_revision INTEGER CHECK (last_changed_revision IS NULL OR last_changed_revision >= 0);
 `;

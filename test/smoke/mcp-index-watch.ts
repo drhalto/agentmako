@@ -9,7 +9,7 @@ import {
   createProjectIndexRefreshCoordinator,
   type ProjectIndexRefreshCoordinator,
 } from "../../services/api/src/index-refresh-coordinator.ts";
-import { indexProject } from "../../services/indexer/src/index.ts";
+import { createInProcessReefService, indexProject, readReefOperations } from "../../services/indexer/src/index.ts";
 
 const WATCH_DEBOUNCE_MS = 100;
 const WATCH_MAX_DELAY_MS = 1000;
@@ -17,6 +17,18 @@ const WATCH_MAX_DELAY_MS = 1000;
 interface FileSnapshotData {
   state?: string;
   sha256?: string;
+}
+
+interface ReefChangeSetsQueryOutput {
+  snapshot: {
+    behavior: "latest" | "pinned" | "restartable";
+    revision: number;
+    latestKnownRevision: number;
+    materializedRevision?: number;
+    stale: boolean;
+    state: "fresh" | "refreshing" | "stale" | "unknown";
+    restarted: boolean;
+  };
 }
 
 function sleep(ms: number): Promise<void> {
@@ -107,6 +119,24 @@ async function runBasicWatchCase(
     () => coordinator.getWatchState(projectId)?.status === "idle",
     "watcher did not return to idle after refresh",
   );
+  const watcherEvents = await readReefOperations({}, {
+    projectId,
+    kind: "watcher_event",
+    limit: 20,
+  });
+  assert.ok(watcherEvents.some((operation) => {
+    return operation.data?.kind === "reef.file.changed"
+      && operation.data?.pathCount === 1;
+  }), "watcher refresh should submit a reef.file.changed event");
+  const changeSets = await readReefOperations({}, {
+    projectId,
+    kind: "change_set_created",
+    limit: 20,
+  });
+  assert.ok(changeSets.some((operation) => {
+    return operation.data?.source === "submitEvent:debounce"
+      && operation.data?.causeCount === 1;
+  }), "watcher event should enter the submitEvent change-set pipeline");
 
   const subjectFingerprint = store.computeReefSubjectFingerprint({
     kind: "file",
@@ -201,6 +231,15 @@ async function runBasicWatchCase(
     () => coordinator.getWatchState(projectId)?.status === "idle",
     "watcher did not return to idle after delete refresh",
   );
+  const deleteWatcherEvents = await readReefOperations({}, {
+    projectId,
+    kind: "watcher_event",
+    limit: 20,
+  });
+  assert.ok(deleteWatcherEvents.some((operation) => {
+    return operation.data?.kind === "reef.file.deleted"
+      && operation.data?.pathCount === 1;
+  }), "watcher delete should submit a reef.file.deleted event");
 
   const deletedSubjectFingerprint = store.computeReefSubjectFingerprint({
     kind: "file",
@@ -245,6 +284,75 @@ async function runBasicWatchCase(
   assert.ok((deleteWatchState?.lastOverlayResolvedFindingCount ?? 0) >= 1);
 }
 
+async function runCatchUpCookieCase(
+  store: ProjectStore,
+  coordinator: ProjectIndexRefreshCoordinator,
+  projectId: string,
+): Promise<void> {
+  await settleCoordinator(coordinator, projectId);
+  const runBefore = store.getLatestIndexRun()?.runId;
+  const result = await coordinator.waitForCatchUp(projectId, {
+    maxWaitMs: 1500,
+    reason: "mcp_index_watch_smoke",
+  });
+
+  assert.equal(result.status, "succeeded");
+  assert.equal(result.method, "watcher_cookie");
+  assert.equal(result.reason, "mcp_index_watch_smoke");
+  assert.equal(result.error, undefined);
+  assert.ok(result.cookiePath?.startsWith(".mako-reef-watch-cookie-"));
+
+  const watchState = coordinator.getWatchState(projectId);
+  assert.equal(watchState?.lastCatchUpStatus, "succeeded");
+  assert.equal(watchState?.lastCatchUpMethod, "watcher_cookie");
+  assert.equal(watchState?.lastCatchUpReason, "mcp_index_watch_smoke");
+  assert.ok(typeof watchState?.lastCatchUpDurationMs === "number");
+
+  await sleep(WATCH_DEBOUNCE_MS + 100);
+  assert.equal(
+    store.getLatestIndexRun()?.runId,
+    runBefore,
+    "watcher catch-up cookie should not trigger an index run",
+  );
+}
+
+async function runWaitForRefreshQueryCase(
+  coordinator: ProjectIndexRefreshCoordinator,
+  reefService: ReturnType<typeof createInProcessReefService>,
+  projectRoot: string,
+  projectId: string,
+): Promise<void> {
+  await settleCoordinator(coordinator, projectId);
+  const before = await reefService.getProjectStatus(projectId);
+  const beforeRevision = before.analysis.currentRevision ?? 0;
+  writeFileSync(
+    path.join(projectRoot, "src", "alpha.ts"),
+    `export const value = ${Date.now()};\n`,
+  );
+  await waitFor(
+    () => {
+      const status = coordinator.getWatchState(projectId)?.status;
+      return status === "scheduled" || status === "dirty";
+    },
+    "watcher did not schedule dirty work before wait_for_refresh query",
+  );
+
+  const result = await reefService.query<Record<string, unknown>, ReefChangeSetsQueryOutput>({
+    projectId,
+    kind: "reef.change_sets",
+    freshnessPolicy: "wait_for_refresh",
+    snapshot: "latest",
+    input: {
+      limit: 5,
+    },
+  });
+  assert.equal(result.snapshot.behavior, "latest");
+  assert.ok(
+    result.snapshot.revision > beforeRevision,
+    `wait_for_refresh query should materialize scheduled watcher work before resolving; got ${result.snapshot.revision} <= ${beforeRevision}`,
+  );
+}
+
 async function runGeneratedOutputIgnoredCase(
   store: ProjectStore,
   projectRoot: string,
@@ -284,12 +392,12 @@ async function runMaxDelayCase(
       path.join(projectRoot, "src", "alpha.ts"),
       `export const value = ${Date.now()};\n`,
     );
-  }, 80);
+  }, 25);
 
   try {
-    // Run edits for 1200ms (past the 1000ms max-delay) so max-delay wins
-    // while debounce keeps getting reset by the 80ms edit cadence.
-    await sleep(WATCH_MAX_DELAY_MS + 200);
+    // Run edits past the 1000ms max-delay so max-delay wins while
+    // debounce keeps getting reset by the rapid edit cadence.
+    await sleep(WATCH_MAX_DELAY_MS + 400);
   } finally {
     clearInterval(editInterval);
   }
@@ -427,11 +535,13 @@ async function main(): Promise<void> {
   const originalWatch = process.env.MAKO_INDEX_WATCH;
   const originalDebounce = process.env.MAKO_INDEX_WATCH_DEBOUNCE_MS;
   const originalMaxDelay = process.env.MAKO_INDEX_WATCH_MAX_DELAY_MS;
+  const originalReefMode = process.env.MAKO_REEF_MODE;
   process.env.MAKO_STATE_HOME = stateHome;
   delete process.env.MAKO_STATE_DIRNAME;
   process.env.MAKO_INDEX_WATCH = "1";
   process.env.MAKO_INDEX_WATCH_DEBOUNCE_MS = String(WATCH_DEBOUNCE_MS);
   process.env.MAKO_INDEX_WATCH_MAX_DELAY_MS = String(WATCH_MAX_DELAY_MS);
+  process.env.MAKO_REEF_MODE = "legacy";
 
   for (const root of [projectRoot, secondRoot]) {
     mkdirSync(path.join(root, "src"), { recursive: true });
@@ -442,13 +552,21 @@ async function main(): Promise<void> {
 
   const cache = createProjectStoreCache();
   const coordinator = createProjectIndexRefreshCoordinator({ projectStoreCache: cache });
+  const reefService = createInProcessReefService({
+    projectStoreCache: cache,
+    indexRefreshCoordinator: coordinator,
+  });
 
   try {
+    await reefService.start();
     const indexed = await indexProject(projectRoot, { projectStoreCache: cache });
+    await reefService.registerProject({ root: projectRoot });
     const store = cache.borrow({ projectRoot: indexed.project.canonicalPath });
     await coordinator.setActiveProject(indexed.project);
     assert.equal(coordinator.getWatchState(indexed.project.projectId)?.status, "idle");
 
+    await runCatchUpCookieCase(store, coordinator, indexed.project.projectId);
+    await runWaitForRefreshQueryCase(coordinator, reefService, projectRoot, indexed.project.projectId);
     await runBasicWatchCase(store, coordinator, projectRoot, indexed.project.projectId);
     await runGeneratedOutputIgnoredCase(store, projectRoot);
     await runMaxDelayCase(store, coordinator, projectRoot, indexed.project.projectId);
@@ -457,6 +575,7 @@ async function main(): Promise<void> {
 
     console.log("mcp-index-watch: PASS");
   } finally {
+    await reefService.stop();
     await coordinator.close();
     cache.flush();
     restoreEnv("MAKO_STATE_HOME", originalStateHome);
@@ -464,6 +583,7 @@ async function main(): Promise<void> {
     restoreEnv("MAKO_INDEX_WATCH", originalWatch);
     restoreEnv("MAKO_INDEX_WATCH_DEBOUNCE_MS", originalDebounce);
     restoreEnv("MAKO_INDEX_WATCH_MAX_DELAY_MS", originalMaxDelay);
+    restoreEnv("MAKO_REEF_MODE", originalReefMode);
     rmSync(tmp, { recursive: true, force: true });
   }
 }

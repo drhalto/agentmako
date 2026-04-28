@@ -128,6 +128,7 @@ export async function lintFilesTool(
   return withProjectContext(input, options, ({ project, projectStore }) => {
     const startedMs = Date.now();
     const startedAt = new Date().toISOString();
+    const inputRevision = projectStore.loadReefAnalysisState(project.projectId, project.canonicalPath)?.currentRevision;
     const warnings: string[] = [];
     const maxFindings = input.maxFindings ?? DEFAULT_MAX_FINDINGS;
 
@@ -197,6 +198,7 @@ export async function lintFilesTool(
       warnings.push("no findings on the requested file set — rule-packs + alignment diagnostics returned clean.");
     }
 
+    const outputRevision = projectStore.loadReefAnalysisState(project.projectId, project.canonicalPath)?.currentRevision;
     projectStore.saveReefDiagnosticRun({
       projectId: project.projectId,
       source: LINT_FILES_REEF_SOURCE,
@@ -211,6 +213,9 @@ export async function lintFilesTool(
       command: "indexed diagnostics engine",
       cwd: project.canonicalPath,
       metadata: {
+        sourceKind: "programmatic",
+        ...(inputRevision !== undefined ? { inputRevision } : {}),
+        ...(outputRevision !== undefined ? { outputRevision } : {}),
         requestedFiles: input.files,
         requestedFileCount: input.files.length,
         unresolvedFiles,

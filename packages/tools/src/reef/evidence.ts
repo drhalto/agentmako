@@ -22,12 +22,14 @@ import {
   stringDataValue,
   summarizeConfidenceLabels,
 } from "./shared.js";
+import { buildReefToolExecution } from "./tool-execution.js";
 
 export async function evidenceConfidenceTool(
   input: EvidenceConfidenceToolInput,
   options: ToolServiceOptions,
 ): Promise<EvidenceConfidenceToolOutput> {
-  return await withProjectContext(input, options, ({ project, projectStore }) => {
+  return await withProjectContext(input, options, async ({ project, projectStore }) => {
+    const startedAtMs = Date.now();
     const limit = input.limit ?? 100;
     const filePath = input.filePath ? normalizeFileQuery(project.canonicalPath, input.filePath) : undefined;
     const subjectFingerprint = input.subjectFingerprint;
@@ -73,12 +75,24 @@ export async function evidenceConfidenceTool(
     const sorted = items
       .sort((a, b) => confidenceLabelWeight(b.confidenceLabel) - confidenceLabelWeight(a.confidenceLabel) || b.confidence - a.confidence)
       .slice(0, limit);
+    const reefExecution = await buildReefToolExecution({
+      toolName: "evidence_confidence",
+      projectId: project.projectId,
+      projectRoot: project.canonicalPath,
+      options,
+      startedAtMs,
+      freshnessPolicy: "allow_stale_labeled",
+      staleEvidenceLabeled: sorted.filter((item) => item.freshness.state !== "fresh").length,
+      returnedCount: sorted.length,
+    });
+
     return {
       toolName: "evidence_confidence",
       projectId: project.projectId,
       projectRoot: project.canonicalPath,
       items: sorted,
       summary: summarizeConfidenceLabels(sorted),
+      reefExecution,
       warnings: sorted.length === 0 ? ["no Reef evidence matched the requested scope"] : [],
     };
   });
@@ -88,7 +102,8 @@ export async function evidenceConflictsTool(
   input: EvidenceConflictsToolInput,
   options: ToolServiceOptions,
 ): Promise<EvidenceConflictsToolOutput> {
-  return await withProjectContext(input, options, ({ project, projectStore }) => {
+  return await withProjectContext(input, options, async ({ project, projectStore }) => {
+    const startedAtMs = Date.now();
     const limit = input.limit ?? 100;
     const filePath = input.filePath ? normalizeFileQuery(project.canonicalPath, input.filePath) : undefined;
     const subjectFingerprint = input.subjectFingerprint;
@@ -147,12 +162,27 @@ export async function evidenceConflictsTool(
     const sorted = [...conflicts.values()]
       .sort((a, b) => severityWeight(b.severity) - severityWeight(a.severity) || a.conflictId.localeCompare(b.conflictId))
       .slice(0, limit);
+    const reefExecution = await buildReefToolExecution({
+      toolName: "evidence_conflicts",
+      projectId: project.projectId,
+      projectRoot: project.canonicalPath,
+      options,
+      startedAtMs,
+      freshnessPolicy: "allow_stale_labeled",
+      staleEvidenceLabeled: sorted.filter((conflict) =>
+        conflict.facts.some((fact) => fact.freshness.state !== "fresh")
+        || conflict.findings.some((finding) => finding.freshness.state !== "fresh")
+      ).length,
+      returnedCount: sorted.length,
+    });
+
     return {
       toolName: "evidence_conflicts",
       projectId: project.projectId,
       projectRoot: project.canonicalPath,
       conflicts: sorted,
       totalReturned: sorted.length,
+      reefExecution,
       warnings: sorted.length === 0 ? ["no Reef evidence conflicts matched the requested scope"] : [],
     };
   });

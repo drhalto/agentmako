@@ -5,6 +5,8 @@ import path from "node:path";
 import type {
   FileFindingsToolOutput,
   ListReefRulesToolOutput,
+  ProjectFact,
+  ProjectFactsToolOutput,
   ProjectDiagnosticRunsToolOutput,
   ProjectFinding,
   ProjectFindingsToolOutput,
@@ -13,6 +15,7 @@ import type {
 } from "../../packages/contracts/src/index.ts";
 import { createToolService } from "../../packages/tools/src/index.ts";
 import { openGlobalStore } from "../../packages/store/src/index.ts";
+import { readReefOperations } from "../../services/indexer/src/reef-operation-log.ts";
 import { seedReefProject } from "../fixtures/reef/index.ts";
 
 function now(): string {
@@ -26,6 +29,7 @@ function secondsAgo(seconds: number): string {
 async function main(): Promise<void> {
   const tmp = mkdtempSync(path.join(os.tmpdir(), "mako-reef-tools-"));
   const priorStateHome = process.env.MAKO_STATE_HOME;
+  const priorReefMode = process.env.MAKO_REEF_MODE;
   const projectRoot = path.join(tmp, "project");
   const stateHome = path.join(tmp, "state");
   mkdirSync(projectRoot, { recursive: true });
@@ -47,6 +51,9 @@ async function main(): Promise<void> {
     const subject = { kind: "file" as const, path: "src/secure-route.ts" };
     const subjectFingerprint = seeded.store.computeReefSubjectFingerprint(subject);
     const freshness = { state: "fresh" as const, checkedAt: now(), reason: "fixture" };
+    const staleFreshness = { state: "stale" as const, checkedAt: now(), reason: "fixture stale evidence" };
+    const staleSubject = { kind: "file" as const, path: "src/stale-route.ts" };
+    const staleSubjectFingerprint = seeded.store.computeReefSubjectFingerprint(staleSubject);
     const rule: ReefRuleDescriptor = {
       id: "auth.unprotected_route",
       version: "1.0.0",
@@ -82,12 +89,72 @@ async function main(): Promise<void> {
       message: "UNPROTECTED: src/secure-route.ts - no auth guard detected",
       factFingerprints: [],
     };
+    const staleFindingFingerprint = seeded.store.computeReefFindingFingerprint({
+      source: rule.source,
+      ruleId: rule.id,
+      subjectFingerprint: staleSubjectFingerprint,
+      message: "STALE: src/stale-route.ts - stale auth evidence",
+    });
+    const staleFinding: ProjectFinding = {
+      ...finding,
+      fingerprint: staleFindingFingerprint,
+      subjectFingerprint: staleSubjectFingerprint,
+      filePath: staleSubject.path,
+      line: 7,
+      freshness: staleFreshness,
+      message: "STALE: src/stale-route.ts - stale auth evidence",
+    };
+    const factProvenance = {
+      source: rule.source,
+      capturedAt: now(),
+      dependencies: [{ kind: "file" as const, path: subject.path }],
+    };
+    const freshFact: ProjectFact = {
+      projectId: seeded.projectId,
+      kind: "route_auth_signal",
+      subject,
+      subjectFingerprint,
+      overlay: "working_tree",
+      source: rule.source,
+      confidence: 0.92,
+      fingerprint: seeded.store.computeReefFactFingerprint({
+        projectId: seeded.projectId,
+        kind: "route_auth_signal",
+        subjectFingerprint,
+        overlay: "working_tree",
+        source: rule.source,
+        data: { guarded: false },
+      }),
+      freshness,
+      provenance: factProvenance,
+      data: { guarded: false },
+    };
+    const staleFact: ProjectFact = {
+      ...freshFact,
+      subject: staleSubject,
+      subjectFingerprint: staleSubjectFingerprint,
+      fingerprint: seeded.store.computeReefFactFingerprint({
+        projectId: seeded.projectId,
+        kind: "route_auth_signal",
+        subjectFingerprint: staleSubjectFingerprint,
+        overlay: "working_tree",
+        source: rule.source,
+        data: { guarded: false, stale: true },
+      }),
+      freshness: staleFreshness,
+      provenance: {
+        ...factProvenance,
+        dependencies: [{ kind: "file" as const, path: staleSubject.path }],
+      },
+      data: { guarded: false, stale: true },
+    };
     seeded.store.saveReefRuleDescriptors([rule]);
+    seeded.store.upsertReefFacts([freshFact, staleFact]);
     seeded.store.replaceReefFindingsForSource({
       projectId: seeded.projectId,
       source: rule.source,
       overlay: "working_tree",
-      findings: [finding],
+      findings: [finding, staleFinding],
     });
     seeded.store.saveReefDiagnosticRun({
       projectId: seeded.projectId,
@@ -126,6 +193,57 @@ async function main(): Promise<void> {
     assert.equal(projectFindings.totalReturned, 1);
     assert.equal(projectFindings.findings[0]?.fingerprint, findingFingerprint);
     assert.equal(projectFindings.findings[0]?.status, "active");
+    assert.equal(projectFindings.reefExecution.reefMode, "auto");
+    assert.equal(projectFindings.reefExecution.serviceMode, "direct");
+    assert.equal(projectFindings.reefExecution.queryPath, "reef_materialized_view");
+    assert.equal(projectFindings.reefExecution.freshnessPolicy, "require_fresh");
+    assert.equal(projectFindings.reefExecution.fallback?.used, true);
+    assert.ok(projectFindings.warnings.some((warning) => warning.includes("Dropped 1 stale finding")));
+
+    const staleAllowed = await toolService.callTool("project_findings", {
+      projectId: seeded.projectId,
+      freshnessPolicy: "allow_stale_labeled",
+    }) as ProjectFindingsToolOutput;
+    assert.equal(staleAllowed.totalReturned, 2);
+    assert.equal(staleAllowed.reefExecution.freshnessPolicy, "allow_stale_labeled");
+    assert.ok(staleAllowed.findings.some((item) => item.freshness.state === "stale"));
+
+    const projectFacts = await toolService.callTool("project_facts", {
+      projectId: seeded.projectId,
+      kind: "route_auth_signal",
+    }) as ProjectFactsToolOutput;
+    assert.equal(projectFacts.totalReturned, 1);
+    assert.equal(projectFacts.facts[0]?.fingerprint, freshFact.fingerprint);
+    assert.ok(projectFacts.warnings.some((warning) => warning.includes("Dropped 1 stale fact")));
+
+    const staleFactsAllowed = await toolService.callTool("project_facts", {
+      projectId: seeded.projectId,
+      kind: "route_auth_signal",
+      freshnessPolicy: "allow_stale_labeled",
+    }) as ProjectFactsToolOutput;
+    assert.equal(staleFactsAllowed.totalReturned, 2);
+    assert.ok(staleFactsAllowed.facts.some((item) => item.freshness.state === "stale"));
+
+    const queryPathOperations = await readReefOperations({}, {
+      projectId: seeded.projectId,
+      kind: "query_path",
+      limit: 20,
+    });
+    assert.ok(queryPathOperations.some((operation) =>
+      operation.id === projectFindings.reefExecution.operationId
+      && operation.data?.toolName === "project_findings"
+      && operation.data?.queryPath === "reef_materialized_view"
+      && operation.data?.staleEvidenceDropped === 1
+    ));
+    const fallbackOperations = await readReefOperations({}, {
+      projectId: seeded.projectId,
+      kind: "fallback_used",
+      limit: 20,
+    });
+    assert.ok(fallbackOperations.some((operation) =>
+      operation.data?.toolName === "project_findings"
+      && operation.data?.serviceMode === "direct"
+    ));
 
     seeded.store.insertFindingAck({
       projectId: seeded.projectId,
@@ -197,6 +315,25 @@ async function main(): Promise<void> {
     assert.equal(batch.results[1]?.tool, "list_reef_rules");
     assert.equal(batch.results[2]?.tool, "project_diagnostic_runs");
 
+    process.env.MAKO_REEF_MODE = "legacy";
+    const legacyFacts = await toolService.callTool("project_facts", {
+      projectId: seeded.projectId,
+      kind: "route_auth_signal",
+    }) as ProjectFactsToolOutput;
+    assert.equal(legacyFacts.reefExecution.reefMode, "legacy");
+    assert.equal(legacyFacts.reefExecution.serviceMode, "legacy");
+    assert.equal(legacyFacts.reefExecution.queryPath, "legacy");
+    assert.equal(legacyFacts.reefExecution.fallback?.used, true);
+
+    process.env.MAKO_REEF_MODE = "required";
+    await assert.rejects(
+      () => toolService.callTool("project_facts", {
+        projectId: seeded.projectId,
+        kind: "route_auth_signal",
+      }),
+      /requires a Reef daemon-backed service/,
+    );
+
     console.log("reef-tools: PASS");
   } finally {
     toolService.close();
@@ -206,6 +343,11 @@ async function main(): Promise<void> {
       delete process.env.MAKO_STATE_HOME;
     } else {
       process.env.MAKO_STATE_HOME = priorStateHome;
+    }
+    if (priorReefMode === undefined) {
+      delete process.env.MAKO_REEF_MODE;
+    } else {
+      process.env.MAKO_REEF_MODE = priorReefMode;
     }
     rmSync(tmp, { recursive: true, force: true });
   }

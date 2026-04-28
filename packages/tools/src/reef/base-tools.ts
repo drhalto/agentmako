@@ -17,27 +17,47 @@ import { normalizeFileQuery, withProjectContext } from "../entity-resolver.js";
 import type { ToolServiceOptions } from "../runtime.js";
 import { factFilters, findingFilters } from "./filters.js";
 import { diagnosticRunCache } from "./shared.js";
+import {
+  applyReefToolFreshnessPolicy,
+  buildReefToolExecution,
+  defaultReefToolFreshnessPolicy,
+} from "./tool-execution.js";
 
 export async function projectFindingsTool(
   input: ProjectFindingsToolInput,
   options: ToolServiceOptions,
 ): Promise<ProjectFindingsToolOutput> {
-  return await withProjectContext(input, options, ({ project, projectStore }) => {
+  return await withProjectContext(input, options, async ({ project, projectStore }) => {
+    const startedAtMs = Date.now();
+    const freshnessPolicy = defaultReefToolFreshnessPolicy(input.freshnessPolicy);
     const filters = findingFilters(input);
-    const findings = projectStore.queryReefFindings({
+    const rawFindings = projectStore.queryReefFindings({
       projectId: project.projectId,
       ...filters,
       limit: input.limit ?? 100,
+    });
+    const filtered = applyReefToolFreshnessPolicy(rawFindings, freshnessPolicy, "finding");
+    const reefExecution = await buildReefToolExecution({
+      toolName: "project_findings",
+      projectId: project.projectId,
+      projectRoot: project.canonicalPath,
+      options,
+      startedAtMs,
+      freshnessPolicy,
+      staleEvidenceDropped: filtered.staleEvidenceDropped,
+      staleEvidenceLabeled: filtered.staleEvidenceLabeled,
+      returnedCount: filtered.items.length,
     });
 
     return {
       toolName: "project_findings",
       projectId: project.projectId,
       projectRoot: project.canonicalPath,
-      findings,
-      totalReturned: findings.length,
+      findings: filtered.items,
+      totalReturned: filtered.items.length,
+      reefExecution,
       filters,
-      warnings: [],
+      warnings: filtered.warnings,
     };
   });
 }
@@ -46,14 +66,28 @@ export async function fileFindingsTool(
   input: FileFindingsToolInput,
   options: ToolServiceOptions,
 ): Promise<FileFindingsToolOutput> {
-  return await withProjectContext(input, options, ({ project, projectStore }) => {
+  return await withProjectContext(input, options, async ({ project, projectStore }) => {
+    const startedAtMs = Date.now();
+    const freshnessPolicy = defaultReefToolFreshnessPolicy(input.freshnessPolicy);
     const filters = findingFilters(input);
     const filePath = normalizeFileQuery(project.canonicalPath, input.filePath);
-    const findings = projectStore.queryReefFindings({
+    const rawFindings = projectStore.queryReefFindings({
       projectId: project.projectId,
       filePath,
       ...filters,
       limit: input.limit ?? 100,
+    });
+    const filtered = applyReefToolFreshnessPolicy(rawFindings, freshnessPolicy, "finding");
+    const reefExecution = await buildReefToolExecution({
+      toolName: "file_findings",
+      projectId: project.projectId,
+      projectRoot: project.canonicalPath,
+      options,
+      startedAtMs,
+      freshnessPolicy,
+      staleEvidenceDropped: filtered.staleEvidenceDropped,
+      staleEvidenceLabeled: filtered.staleEvidenceLabeled,
+      returnedCount: filtered.items.length,
     });
 
     return {
@@ -61,10 +95,11 @@ export async function fileFindingsTool(
       projectId: project.projectId,
       projectRoot: project.canonicalPath,
       filePath,
-      findings,
-      totalReturned: findings.length,
+      findings: filtered.items,
+      totalReturned: filtered.items.length,
+      reefExecution,
       filters,
-      warnings: [],
+      warnings: filtered.warnings,
     };
   });
 }
@@ -73,22 +108,37 @@ export async function projectFactsTool(
   input: ProjectFactsToolInput,
   options: ToolServiceOptions,
 ): Promise<ProjectFactsToolOutput> {
-  return await withProjectContext(input, options, ({ project, projectStore }) => {
+  return await withProjectContext(input, options, async ({ project, projectStore }) => {
+    const startedAtMs = Date.now();
+    const freshnessPolicy = defaultReefToolFreshnessPolicy(input.freshnessPolicy);
     const filters = factFilters(input);
-    const facts = projectStore.queryReefFacts({
+    const rawFacts = projectStore.queryReefFacts({
       projectId: project.projectId,
       ...filters,
       limit: input.limit ?? 100,
+    });
+    const filtered = applyReefToolFreshnessPolicy(rawFacts, freshnessPolicy, "fact");
+    const reefExecution = await buildReefToolExecution({
+      toolName: "project_facts",
+      projectId: project.projectId,
+      projectRoot: project.canonicalPath,
+      options,
+      startedAtMs,
+      freshnessPolicy,
+      staleEvidenceDropped: filtered.staleEvidenceDropped,
+      staleEvidenceLabeled: filtered.staleEvidenceLabeled,
+      returnedCount: filtered.items.length,
     });
 
     return {
       toolName: "project_facts",
       projectId: project.projectId,
       projectRoot: project.canonicalPath,
-      facts,
-      totalReturned: facts.length,
+      facts: filtered.items,
+      totalReturned: filtered.items.length,
+      reefExecution,
       filters,
-      warnings: [],
+      warnings: filtered.warnings,
     };
   });
 }
@@ -97,15 +147,29 @@ export async function fileFactsTool(
   input: FileFactsToolInput,
   options: ToolServiceOptions,
 ): Promise<FileFactsToolOutput> {
-  return await withProjectContext(input, options, ({ project, projectStore }) => {
+  return await withProjectContext(input, options, async ({ project, projectStore }) => {
+    const startedAtMs = Date.now();
+    const freshnessPolicy = defaultReefToolFreshnessPolicy(input.freshnessPolicy);
     const filePath = normalizeFileQuery(project.canonicalPath, input.filePath);
     const subjectFingerprint = projectStore.computeReefSubjectFingerprint({ kind: "file", path: filePath });
     const filters = factFilters(input);
-    const facts = projectStore.queryReefFacts({
+    const rawFacts = projectStore.queryReefFacts({
       projectId: project.projectId,
       ...filters,
       subjectFingerprint,
       limit: input.limit ?? 100,
+    });
+    const filtered = applyReefToolFreshnessPolicy(rawFacts, freshnessPolicy, "fact");
+    const reefExecution = await buildReefToolExecution({
+      toolName: "file_facts",
+      projectId: project.projectId,
+      projectRoot: project.canonicalPath,
+      options,
+      startedAtMs,
+      freshnessPolicy,
+      staleEvidenceDropped: filtered.staleEvidenceDropped,
+      staleEvidenceLabeled: filtered.staleEvidenceLabeled,
+      returnedCount: filtered.items.length,
     });
 
     return {
@@ -113,10 +177,11 @@ export async function fileFactsTool(
       projectId: project.projectId,
       projectRoot: project.canonicalPath,
       filePath,
-      facts,
-      totalReturned: facts.length,
+      facts: filtered.items,
+      totalReturned: filtered.items.length,
+      reefExecution,
       filters,
-      warnings: [],
+      warnings: filtered.warnings,
     };
   });
 }

@@ -47,6 +47,9 @@ export function loadConfig(overrides: Partial<MakoConfig> = {}): MakoConfig {
     databaseTools: {
       enabled: parseOptionalBoolean(process.env.MAKO_DB_TOOLS_ENABLED) ?? true,
     },
+    reef: process.env.MAKO_REEF_MODE
+      ? { mode: process.env.MAKO_REEF_MODE }
+      : undefined,
     ...overrides,
   });
 }

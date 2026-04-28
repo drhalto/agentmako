@@ -14,6 +14,8 @@ import {
 } from "./schema-snapshot.js";
 import type { ProjectLocatorInput } from "./tool-project-locator.js";
 import { ProjectLocatorInputObjectSchema } from "./tool-project-locator.js";
+import type { ReefToolExecution } from "./tool-reef-execution-schemas.js";
+import { ReefToolExecutionSchema } from "./tool-reef-execution-schemas.js";
 import { JsonObjectSchema } from "./tool-schema-shared.js";
 
 const MAX_NEIGHBORHOOD_SECTION_LIMIT = 100;
@@ -256,6 +258,7 @@ export interface RouteContextToolOutput {
   rlsPolicies: NeighborhoodSection<NeighborhoodRlsPolicyEntry>;
   evidenceRefs: string[];
   trust: NeighborhoodTrustSurface | null;
+  reefExecution: ReefToolExecution;
   warnings: string[];
 }
 
@@ -273,6 +276,7 @@ export const RouteContextToolOutputSchema = z.object({
   rlsPolicies: neighborhoodSectionSchema(NeighborhoodRlsPolicyEntrySchema),
   evidenceRefs: z.array(z.string().min(1)),
   trust: NeighborhoodTrustSurfaceSchema.nullable(),
+  reefExecution: ReefToolExecutionSchema,
   warnings: z.array(z.string()),
 }) satisfies z.ZodType<RouteContextToolOutput>;
 

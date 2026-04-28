@@ -83,12 +83,15 @@ export const MAKO_TOOL_NAMES = [
   "project_diagnostic_runs",
   "reef_scout",
   "reef_inspect",
+  "reef_where_used",
   "project_open_loops",
   "verification_state",
   "project_conventions",
   "rule_memory",
   "evidence_confidence",
   "evidence_conflicts",
+  "reef_known_issues",
+  "reef_agent_status",
 ] as const;
 
 export type ToolName = (typeof MAKO_TOOL_NAMES)[number];

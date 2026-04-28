@@ -1,5 +1,9 @@
 import { z } from "zod";
+import type { ReefQueryFreshness } from "./index-freshness.js";
+import { ReefQueryFreshnessSchema } from "./index-freshness.js";
 import { ProjectLocatorInputObjectSchema } from "./tool-project-locator.js";
+import type { ReefToolExecution } from "./tool-reef-execution-schemas.js";
+import { ReefToolExecutionSchema } from "./tool-reef-execution-schemas.js";
 
 /**
  * `ast_find_pattern` — read-only structural pattern search.
@@ -110,6 +114,8 @@ export interface AstFindPatternToolOutput {
    * when `excludeAcknowledgedCategory` is unset.
    */
   acknowledgedCount: number;
+  reefFreshness: ReefQueryFreshness;
+  reefExecution: ReefToolExecution;
   truncated: boolean;
   warnings: string[];
 }
@@ -122,6 +128,8 @@ export const AstFindPatternToolOutputSchema = z.object({
   filesScanned: z.number().int().nonnegative(),
   matches: z.array(AstFindPatternMatchSchema),
   acknowledgedCount: z.number().int().nonnegative(),
+  reefFreshness: ReefQueryFreshnessSchema,
+  reefExecution: ReefToolExecutionSchema,
   truncated: z.boolean(),
   warnings: z.array(z.string()),
 }) satisfies z.ZodType<AstFindPatternToolOutput>;

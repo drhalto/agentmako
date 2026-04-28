@@ -1,3 +1,4 @@
+export * from "./agent-status.js";
 export * from "./base-tools.js";
 export * from "./db-review-comments.js";
 export * from "./conventions.js";
@@ -11,5 +12,7 @@ export * from "./overlay-diff.js";
 export * from "./open-loops.js";
 export * from "./rule-memory.js";
 export * from "./scout.js";
+export * from "./structural-knowledge.js";
+export * from "./tool-execution.js";
 export * from "./verification.js";
 export * from "./working-tree-overlay.js";

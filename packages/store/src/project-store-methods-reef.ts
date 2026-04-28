@@ -3,36 +3,68 @@ import {
   computeReefFactFingerprint,
   computeReefFindingFingerprint,
   computeReefSubjectFingerprint,
+  computeReefArtifactId,
   computeDbReviewTargetFingerprint,
+  addReefArtifactTagImpl,
+  applyReefChangeSetImpl,
+  ensureReefAnalysisStateImpl,
   insertDbReviewCommentImpl,
   listReefRuleDescriptorsImpl,
+  loadReefAnalysisStateImpl,
+  markReefChangeSetFailedImpl,
+  markReefChangeSetMaterializedImpl,
+  markReefChangeSetSkippedImpl,
+  recordReefWatcherRecrawlImpl,
   queryDbReviewCommentsImpl,
+  queryReefArtifactsImpl,
+  queryReefArtifactTagsImpl,
   queryReefDiagnosticRunsImpl,
+  queryReefAppliedChangeSetsImpl,
   queryReefFactsImpl,
   replaceReefFactsForSourceImpl,
   queryReefFindingsImpl,
   replaceReefFindingsForSourceImpl,
+  removeReefArtifactTagsImpl,
   resolveReefFindingsForDeletedFilesImpl,
   saveReefDiagnosticRunImpl,
   saveReefRuleDescriptorsImpl,
+  upsertReefArtifactImpl,
   upsertReefFactsImpl,
 } from "./project-store-reef.js";
 import type { ProjectStoreContext } from "./project-store-context.js";
 import type {
+  AddReefArtifactTagInput,
   QueryReefDiagnosticRunsOptions,
+  ApplyReefChangeSetInput,
+  EnsureReefAnalysisStateInput,
   QueryDbReviewCommentsOptions,
+  QueryReefArtifactsOptions,
+  QueryReefArtifactTagsOptions,
+  MarkReefChangeSetFailedInput,
+  MarkReefChangeSetMaterializedInput,
+  QueryReefAppliedChangeSetsOptions,
   QueryReefFactsOptions,
   QueryReefFindingsOptions,
   DbReviewCommentRecord,
   InsertDbReviewCommentInput,
+  ReefAnalysisStateRecord,
+  ReefAppliedChangeSetRecord,
+  ReefArtifactKey,
+  ReefArtifactRecord,
+  ReefArtifactTagRecord,
   ReefDiagnosticRunRecord,
   ReefFactRecord,
   ReefFindingRecord,
   ReefRuleDescriptorRecord,
+  MarkReefChangeSetSkippedInput,
+  RecordReefWatcherRecrawlInput,
   ReplaceReefFactsForSourceInput,
   ReplaceReefFindingsForSourceInput,
+  RemoveReefArtifactTagsInput,
+  RemoveReefArtifactTagsResult,
   ResolveReefFindingsForDeletedFilesInput,
   SaveReefDiagnosticRunInput,
+  UpsertReefArtifactInput,
 } from "./types.js";
 
 export const projectStoreReefMethods = {
@@ -48,8 +80,104 @@ export const projectStoreReefMethods = {
     return computeReefFindingFingerprint(input);
   },
 
+  computeReefArtifactId(input: ReefArtifactKey): string {
+    return computeReefArtifactId(input);
+  },
+
   computeDbReviewTargetFingerprint(input: Parameters<typeof computeDbReviewTargetFingerprint>[0]): string {
     return computeDbReviewTargetFingerprint(input);
+  },
+
+  loadReefAnalysisState(
+    this: ProjectStoreContext,
+    projectId: string,
+    root: string,
+  ): ReefAnalysisStateRecord | null {
+    return loadReefAnalysisStateImpl(this.db, projectId, root);
+  },
+
+  applyReefChangeSet(
+    this: ProjectStoreContext,
+    input: ApplyReefChangeSetInput,
+  ): ReefAppliedChangeSetRecord {
+    return applyReefChangeSetImpl(this.db, input);
+  },
+
+  ensureReefAnalysisState(
+    this: ProjectStoreContext,
+    input: EnsureReefAnalysisStateInput,
+  ): ReefAnalysisStateRecord {
+    return ensureReefAnalysisStateImpl(this.db, input);
+  },
+
+  markReefChangeSetMaterialized(
+    this: ProjectStoreContext,
+    input: MarkReefChangeSetMaterializedInput,
+  ): ReefAnalysisStateRecord {
+    return markReefChangeSetMaterializedImpl(this.db, input);
+  },
+
+  markReefChangeSetFailed(
+    this: ProjectStoreContext,
+    input: MarkReefChangeSetFailedInput,
+  ): void {
+    return markReefChangeSetFailedImpl(this.db, input);
+  },
+
+  markReefChangeSetSkipped(
+    this: ProjectStoreContext,
+    input: MarkReefChangeSetSkippedInput,
+  ): void {
+    return markReefChangeSetSkippedImpl(this.db, input);
+  },
+
+  recordReefWatcherRecrawl(
+    this: ProjectStoreContext,
+    input: RecordReefWatcherRecrawlInput,
+  ): ReefAnalysisStateRecord {
+    return recordReefWatcherRecrawlImpl(this.db, input);
+  },
+
+  queryReefAppliedChangeSets(
+    this: ProjectStoreContext,
+    options: QueryReefAppliedChangeSetsOptions,
+  ): ReefAppliedChangeSetRecord[] {
+    return queryReefAppliedChangeSetsImpl(this.db, options);
+  },
+
+  upsertReefArtifact(
+    this: ProjectStoreContext,
+    input: UpsertReefArtifactInput,
+  ): ReefArtifactRecord {
+    return upsertReefArtifactImpl(this.db, input);
+  },
+
+  addReefArtifactTag(
+    this: ProjectStoreContext,
+    input: AddReefArtifactTagInput,
+  ): ReefArtifactTagRecord {
+    return addReefArtifactTagImpl(this.db, input);
+  },
+
+  queryReefArtifacts(
+    this: ProjectStoreContext,
+    options?: QueryReefArtifactsOptions,
+  ): ReefArtifactRecord[] {
+    return queryReefArtifactsImpl(this.db, options);
+  },
+
+  queryReefArtifactTags(
+    this: ProjectStoreContext,
+    options?: QueryReefArtifactTagsOptions,
+  ): ReefArtifactTagRecord[] {
+    return queryReefArtifactTagsImpl(this.db, options);
+  },
+
+  removeReefArtifactTags(
+    this: ProjectStoreContext,
+    input: RemoveReefArtifactTagsInput,
+  ): RemoveReefArtifactTagsResult {
+    return removeReefArtifactTagsImpl(this.db, input);
   },
 
   upsertReefFacts(this: ProjectStoreContext, facts: ProjectFact[]): ReefFactRecord[] {

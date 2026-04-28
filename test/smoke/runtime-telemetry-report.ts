@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, rmSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import type {
@@ -19,6 +19,7 @@ function seedProject(projectRoot: string, projectId: string): void {
       displayName: "runtime-telemetry-report-smoke",
       canonicalPath: projectRoot,
       lastSeenPath: projectRoot,
+      status: "active",
       supportTarget: "best_effort",
     });
   } finally {
@@ -104,15 +105,12 @@ function makeGraphNeighborsOutput(projectId: string): GraphNeighborsToolOutput {
 
 async function main(): Promise<void> {
   const tmpRoot = mkdtempSync(path.join(os.tmpdir(), "mako-rt-report-"));
-  const previousStateHome = process.env.MAKO_STATE_HOME;
-  const previousStateDirname = process.env.MAKO_STATE_DIRNAME;
+  const priorStateHome = process.env.MAKO_STATE_HOME;
+  const priorStateDirName = process.env.MAKO_STATE_DIRNAME;
+  process.env.MAKO_STATE_HOME = path.join(tmpRoot, "state");
+  delete process.env.MAKO_STATE_DIRNAME;
   try {
-    const stateHome = path.join(tmpRoot, "state");
-    mkdirSync(stateHome, { recursive: true });
-    process.env.MAKO_STATE_HOME = stateHome;
-    delete process.env.MAKO_STATE_DIRNAME;
-
-    const projectId = "proj_rt_report";
+    const projectId = `proj_rt_report_${process.pid}_${Date.now()}`;
     seedProject(tmpRoot, projectId);
 
     // Seed events via the capture path, not the raw insert. This exercises
@@ -321,17 +319,17 @@ async function main(): Promise<void> {
 
     console.log("runtime-telemetry-report: PASS");
   } finally {
-    if (previousStateHome == null) {
-      delete process.env.MAKO_STATE_HOME;
-    } else {
-      process.env.MAKO_STATE_HOME = previousStateHome;
-    }
-    if (previousStateDirname == null) {
-      delete process.env.MAKO_STATE_DIRNAME;
-    } else {
-      process.env.MAKO_STATE_DIRNAME = previousStateDirname;
-    }
+    restoreEnv("MAKO_STATE_HOME", priorStateHome);
+    restoreEnv("MAKO_STATE_DIRNAME", priorStateDirName);
     rmSync(tmpRoot, { recursive: true, force: true });
+  }
+}
+
+function restoreEnv(name: string, value: string | undefined): void {
+  if (value === undefined) {
+    delete process.env[name];
+  } else {
+    process.env[name] = value;
   }
 }
 

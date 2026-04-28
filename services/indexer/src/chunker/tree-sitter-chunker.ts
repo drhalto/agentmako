@@ -132,6 +132,8 @@ const CLASS_MEMBER_NODE_KINDS: ReadonlySet<string> = new Set([
 interface ChunkSpan {
   name: string;
   kind: string;
+  startIndex: number;
+  endIndex: number;
   startLine: number;
   endLine: number;
   content: string;
@@ -173,6 +175,8 @@ function pushDeclarationChunk(
   out.push({
     name,
     kind: node.type as string,
+    startIndex: node.startIndex,
+    endIndex: node.endIndex,
     startLine: (node.startPosition?.row ?? 0) + 1,
     endLine: (node.endPosition?.row ?? 0) + 1,
     content: source.slice(node.startIndex, node.endIndex),
@@ -240,10 +244,33 @@ function collectDeclarations(root: any, source: string): ChunkSpan[] {
   return out;
 }
 
+function collectRelevantNodeRanges(root: any, source: string, relevantKinds: ReadonlySet<string>): ChunkSpan[] {
+  const out: ChunkSpan[] = [];
+  const seen = new Set<string>();
+  const visit = (node: any): void => {
+    if (relevantKinds.has(node.type)) {
+      pushDeclarationChunk(out, seen, node, source);
+    }
+    for (const child of node.children ?? []) {
+      visit(child);
+    }
+  };
+  visit(root);
+  return out;
+}
+
 export interface BuildChunksOptions {
   path: string;
   content: string;
   lineCount: number;
+}
+
+export interface DeclarationChangedRangeAnalysis {
+  available: boolean;
+  changedRangeCount: number;
+  changedRangeKinds: string[];
+  intersectsRelevantRange: boolean;
+  reason?: string;
 }
 
 export async function buildChunks(options: BuildChunksOptions): Promise<FileChunkRecord[]> {
@@ -290,9 +317,155 @@ export async function buildChunks(options: BuildChunksOptions): Promise<FileChun
       lineStart: decl.startLine,
       lineEnd: decl.endLine,
       content: decl.content.slice(0, 4000),
+      startIndex: decl.startIndex,
+      endIndex: decl.endIndex,
     });
   }
   return chunks;
+}
+
+export async function analyzeDeclarationChangedRanges(options: {
+  path: string;
+  priorContent: string;
+  currentContent: string;
+  relevantRangeKinds?: readonly string[];
+}): Promise<DeclarationChangedRangeAnalysis> {
+  const lang = languageKindForPath(options.path);
+  if (!lang) {
+    return changedRangeUnavailable("unsupported language");
+  }
+  if (options.priorContent === options.currentContent) {
+    return {
+      available: true,
+      changedRangeCount: 0,
+      changedRangeKinds: [],
+      intersectsRelevantRange: false,
+    };
+  }
+
+  try {
+    await ensureReady();
+  } catch {
+    return changedRangeUnavailable("tree-sitter unavailable");
+  }
+
+  const ParserClass = ParserCtor as { new (): any };
+  const language = lang === "tsx" ? tsxLanguage : tsLanguage;
+  if (!ParserClass || !language) {
+    return changedRangeUnavailable("tree-sitter language unavailable");
+  }
+
+  try {
+    const parser = new ParserClass();
+    parser.setLanguage(language);
+    const priorTree = parser.parse(options.priorContent);
+    if (!priorTree?.rootNode) {
+      return changedRangeUnavailable("prior parse failed");
+    }
+
+    priorTree.edit(singleEdit(options.priorContent, options.currentContent));
+    const currentTree = parser.parse(options.currentContent, priorTree);
+    if (!currentTree?.rootNode) {
+      return changedRangeUnavailable("current parse failed");
+    }
+
+    const ranges = priorTree.getChangedRanges(currentTree) as Array<{
+      startIndex: number;
+      endIndex: number;
+    }>;
+    const relevantKinds = new Set(options.relevantRangeKinds ?? [...MODULE_DECLARATION_NODE_KINDS]);
+    const relevantRanges = collectRelevantNodeRanges(currentTree.rootNode, options.currentContent, relevantKinds);
+    const changedRangeKinds = new Set<string>();
+    let intersectsRelevantRange = false;
+    for (const range of ranges) {
+      for (const relevantRange of relevantRanges) {
+        if (rangesIntersect(range.startIndex, range.endIndex, relevantRange.startIndex, relevantRange.endIndex)) {
+          intersectsRelevantRange = true;
+          changedRangeKinds.add(relevantRange.kind);
+        }
+      }
+    }
+    return {
+      available: true,
+      changedRangeCount: ranges.length,
+      changedRangeKinds: [...changedRangeKinds].sort(),
+      intersectsRelevantRange,
+    };
+  } catch (error) {
+    return changedRangeUnavailable(error instanceof Error ? error.message : String(error));
+  }
+}
+
+function changedRangeUnavailable(reason: string): DeclarationChangedRangeAnalysis {
+  return {
+    available: false,
+    changedRangeCount: 0,
+    changedRangeKinds: [],
+    intersectsRelevantRange: true,
+    reason,
+  };
+}
+
+function singleEdit(priorContent: string, currentContent: string): {
+  startPosition: { row: number; column: number };
+  oldEndPosition: { row: number; column: number };
+  newEndPosition: { row: number; column: number };
+  startIndex: number;
+  oldEndIndex: number;
+  newEndIndex: number;
+} {
+  let startIndex = 0;
+  while (
+    startIndex < priorContent.length &&
+    startIndex < currentContent.length &&
+    priorContent[startIndex] === currentContent[startIndex]
+  ) {
+    startIndex += 1;
+  }
+
+  let oldEndIndex = priorContent.length;
+  let newEndIndex = currentContent.length;
+  while (
+    oldEndIndex > startIndex &&
+    newEndIndex > startIndex &&
+    priorContent[oldEndIndex - 1] === currentContent[newEndIndex - 1]
+  ) {
+    oldEndIndex -= 1;
+    newEndIndex -= 1;
+  }
+
+  return {
+    startIndex,
+    oldEndIndex,
+    newEndIndex,
+    startPosition: pointForIndex(priorContent, startIndex),
+    oldEndPosition: pointForIndex(priorContent, oldEndIndex),
+    newEndPosition: pointForIndex(currentContent, newEndIndex),
+  };
+}
+
+function pointForIndex(content: string, index: number): { row: number; column: number } {
+  let row = 0;
+  let lineStart = 0;
+  for (let i = 0; i < index; i += 1) {
+    if (content.charCodeAt(i) === 10) {
+      row += 1;
+      lineStart = i + 1;
+    }
+  }
+  return { row, column: index - lineStart };
+}
+
+function rangesIntersect(
+  leftStart: number,
+  leftEnd: number,
+  rightStart: number,
+  rightEnd: number,
+): boolean {
+  if (leftStart === leftEnd) {
+    return leftStart >= rightStart && leftStart <= rightEnd;
+  }
+  return leftStart < rightEnd && rightStart < leftEnd;
 }
 
 function fileChunk(filePath: string, content: string, lineCount: number): FileChunkRecord {

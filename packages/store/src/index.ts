@@ -16,6 +16,7 @@ export * from "./project-store-memories.js";
 export * from "./project-store-embeddings.js";
 export * from "./project-store-semantic-units.js";
 export * from "./project-store-reef.js";
+export * from "./schema-snapshot-objects.js";
 export * from "./sqlite.js";
 export * from "./sql-analysis.js";
 export * from "./types.js";

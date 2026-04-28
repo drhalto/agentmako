@@ -14,6 +14,9 @@ export interface IndexerOptions {
   configOverrides?: Partial<MakoConfig>;
   projectStoreCache?: ProjectStoreCache;
   triggerSource?: string;
+  skipReefWriterLock?: boolean;
+  reefWriterLockAcquireTimeoutMs?: number;
+  reefRevision?: number;
 }
 
 export interface AttachProjectResult {

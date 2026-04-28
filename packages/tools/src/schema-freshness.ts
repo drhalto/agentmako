@@ -21,6 +21,7 @@
  */
 
 import type { SchemaFreshnessStatus, SchemaSnapshot } from "@mako-ai/contracts";
+import { REEF_SCHEMA_LIVE_SNAPSHOT_MAX_AGE_MS } from "@mako-ai/contracts";
 import {
   computeSnapshotFreshness,
   readProjectManifest,
@@ -42,7 +43,7 @@ export const SCHEMA_FRESHNESS_DEFAULT_DEBOUNCE_MS = 60_000;
  *
  * Defaults to 5 minutes. Callers can override via `maxSnapshotAgeMs`.
  */
-export const SCHEMA_FRESHNESS_DEFAULT_MAX_AGE_MS = 5 * 60_000;
+export const SCHEMA_FRESHNESS_DEFAULT_MAX_AGE_MS = REEF_SCHEMA_LIVE_SNAPSHOT_MAX_AGE_MS;
 
 const REFRESH_TRIGGERS: ReadonlySet<SchemaFreshnessStatus> = new Set([
   "stale",
@@ -163,13 +164,18 @@ export async function ensureFreshSchemaSnapshot(
   // leaves repo sources untouched), so additionally treat a snapshot whose
   // `refreshedAt` is older than `maxSnapshotAgeMs` as stale when the project
   // has a live DB binding.
+  const liveDbBound = Boolean(
+    manifest.database.liveBinding?.enabled &&
+    manifest.database.liveBinding.ref.trim().length > 0,
+  );
   const sourceStale = REFRESH_TRIGGERS.has(freshnessBefore);
   const refreshedAtMs = Date.parse(snapshot.refreshedAt);
   const ageBasedStale =
-    manifest.database.liveBinding != null &&
+    liveDbBound &&
     Number.isFinite(refreshedAtMs) &&
     Date.now() - refreshedAtMs > maxSnapshotAgeMs;
-  const shouldRefresh = sourceStale || ageBasedStale;
+  const liveModeStale = liveDbBound && snapshot.sourceMode !== "live_refresh_enabled";
+  const shouldRefresh = sourceStale || ageBasedStale || liveModeStale;
 
   if (!shouldRefresh) {
     return {
@@ -181,7 +187,7 @@ export async function ensureFreshSchemaSnapshot(
     };
   }
 
-  if (manifest.database.liveBinding == null) {
+  if (!liveDbBound) {
     warnings.push(
       `schema snapshot is \`${freshnessBefore}\` but this project has no live DB binding; serving the stale snapshot.`,
     );

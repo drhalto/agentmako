@@ -35,7 +35,11 @@ import {
   PROJECT_MIGRATION_0029_RUNTIME_TELEMETRY_AGENT_FEEDBACK_KIND_SQL,
   PROJECT_MIGRATION_0030_REEF_FOUNDATION_SQL,
   PROJECT_MIGRATION_0031_REEF_DIAGNOSTIC_RUNS_SQL,
-  PROJECT_MIGRATION_0032_DB_REVIEW_COMMENTS_SQL,
+  PROJECT_MIGRATION_0033_REEF_REVISION_STATE_SQL,
+  PROJECT_MIGRATION_0034_REEF_ARTIFACTS_SQL,
+  PROJECT_MIGRATION_0035_REEF_REVISION_UNIQUENESS_SQL,
+  PROJECT_MIGRATION_0036_REEF_ARTIFACT_TAG_REVISIONS_SQL,
+  PROJECT_MIGRATION_0037_DB_REVIEW_COMMENTS_SQL,
 } from "./migration-sql.js";
 import {
   backfillChunkSearchTextImpl,
@@ -131,9 +135,29 @@ const PROJECT_MIGRATIONS: SqliteMigration[] = [
     sql: PROJECT_MIGRATION_0031_REEF_DIAGNOSTIC_RUNS_SQL,
   },
   {
-    version: 32,
-    name: "0032_project_db_review_comments",
-    sql: PROJECT_MIGRATION_0032_DB_REVIEW_COMMENTS_SQL,
+    version: 33,
+    name: "0033_project_reef_revision_state",
+    sql: PROJECT_MIGRATION_0033_REEF_REVISION_STATE_SQL,
+  },
+  {
+    version: 34,
+    name: "0034_project_reef_artifacts",
+    sql: PROJECT_MIGRATION_0034_REEF_ARTIFACTS_SQL,
+  },
+  {
+    version: 35,
+    name: "0035_project_reef_revision_uniqueness",
+    sql: PROJECT_MIGRATION_0035_REEF_REVISION_UNIQUENESS_SQL,
+  },
+  {
+    version: 36,
+    name: "0036_project_reef_artifact_tag_revisions",
+    sql: PROJECT_MIGRATION_0036_REEF_ARTIFACT_TAG_REVISIONS_SQL,
+  },
+  {
+    version: 37,
+    name: "0037_project_db_review_comments",
+    sql: PROJECT_MIGRATION_0037_DB_REVIEW_COMMENTS_SQL,
   },
 ];
 

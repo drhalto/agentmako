@@ -3,10 +3,12 @@ import type {
   AstFindPatternMatch,
   AstFindPatternToolInput,
   AstFindPatternToolOutput,
+  ReefQueryFreshness,
 } from "@mako-ai/contracts";
-import { assessFileFreshness } from "@mako-ai/indexer";
 import { computeAstMatchFingerprint } from "../finding-acks/fingerprint.js";
+import { assessReefFileEvidence, assessReefLiveLineCount } from "../index-freshness/index.js";
 import { isReefBackedToolViewEnabled } from "../reef/migration-flags.js";
+import { buildReefToolExecution } from "../reef/tool-execution.js";
 import { withProjectContext, type ToolServiceOptions } from "../runtime.js";
 import { findAstMatches, langFromPath, type SupportedLang } from "./ast-patterns.js";
 import { matchesPathGlob } from "./path-globs.js";
@@ -35,7 +37,8 @@ export async function astFindPatternTool(
   input: AstFindPatternToolInput,
   options: ToolServiceOptions = {},
 ): Promise<AstFindPatternToolOutput> {
-  return withProjectContext(input, options, ({ project, projectStore }) => {
+  return withProjectContext(input, options, async ({ project, projectStore }) => {
+    const startedAtMs = Date.now();
     const reefBacked = isReefBackedToolViewEnabled("ast_find_pattern");
     const warnings: string[] = [];
     const maxMatches = input.maxMatches ?? DEFAULT_MAX_MATCHES;
@@ -60,7 +63,10 @@ export async function astFindPatternTool(
     let truncatedByMaxFiles = false;
     let impossibleLineRangeCount = 0;
     let nonFreshFileSkippedCount = 0;
+    let nonFreshLineEvidenceDroppedCount = 0;
+    let staleEvidenceDropped = 0;
     let filesMatchedFilters = 0;
+    const checkedAt = new Date().toISOString();
 
     const allFiles = projectStore.listFiles();
     for (const file of allFiles) {
@@ -75,15 +81,17 @@ export async function astFindPatternTool(
       filesMatchedFilters += 1;
 
       if (reefBacked) {
-        const freshness = assessFileFreshness({
+        const decision = assessReefFileEvidence({
           projectRoot: project.canonicalPath,
           filePath: file.path,
           indexedAt: file.indexedAt,
           indexedMtime: file.lastModifiedAt,
           indexedSizeBytes: file.sizeBytes,
+          freshnessPolicy: "require_fresh",
         });
-        if (freshness.state !== "fresh") {
+        if (decision.action !== "return") {
           nonFreshFileSkippedCount += 1;
+          staleEvidenceDropped += 1;
           continue;
         }
       }
@@ -103,8 +111,30 @@ export async function astFindPatternTool(
         continue;
       }
 
+      let liveLineCount: number | undefined;
+      if (reefBacked) {
+        const lineCountDecision = assessReefLiveLineCount({
+          projectRoot: project.canonicalPath,
+          filePath: file.path,
+          indexedAt: file.indexedAt,
+          indexedMtime: file.lastModifiedAt,
+          indexedSizeBytes: file.sizeBytes,
+          freshnessPolicy: "require_fresh",
+        });
+        if (lineCountDecision.action !== "return") {
+          nonFreshLineEvidenceDroppedCount += hits.length;
+          staleEvidenceDropped += hits.length;
+          continue;
+        }
+        liveLineCount = lineCountDecision.lineCount ?? 0;
+      }
+
       for (const hit of hits) {
-        if (file.lineCount > 0 && (hit.lineStart > file.lineCount || hit.lineEnd > file.lineCount)) {
+        if (reefBacked && liveLineCount != null && (hit.lineStart > liveLineCount || hit.lineEnd > liveLineCount)) {
+          staleEvidenceDropped += 1;
+          impossibleLineRangeCount += 1;
+          continue;
+        } else if (!reefBacked && file.lineCount > 0 && (hit.lineStart > file.lineCount || hit.lineEnd > file.lineCount)) {
           impossibleLineRangeCount += 1;
           continue;
         }
@@ -150,12 +180,17 @@ export async function astFindPatternTool(
     }
     if (impossibleLineRangeCount > 0) {
       warnings.push(
-        `filtered ${impossibleLineRangeCount} match(es) whose line range exceeded indexed file metadata; refresh the project index if this persists.`,
+        `filtered ${impossibleLineRangeCount} match(es) whose line range exceeded live file metadata; refresh the project index if this persists.`,
       );
     }
     if (nonFreshFileSkippedCount > 0) {
       warnings.push(
         `skipped ${nonFreshFileSkippedCount} non-fresh indexed file(s) via Reef freshness guard; refresh the project index or use live_text_search for live verification.`,
+      );
+    }
+    if (nonFreshLineEvidenceDroppedCount > 0) {
+      warnings.push(
+        `filtered ${nonFreshLineEvidenceDroppedCount} match(es) whose backing file changed during live line validation.`,
       );
     }
     if (filesScanned === 0 && filesMatchedFilters === 0 && allFiles.length > 0) {
@@ -173,6 +208,33 @@ export async function astFindPatternTool(
       );
     }
 
+    const reefFreshness: ReefQueryFreshness = {
+      ...(options.requestContext?.requestId ? { requestId: options.requestContext.requestId } : {}),
+      projectId: project.projectId,
+      root: project.canonicalPath,
+      reefMode: reefBacked ? "in_process" : "legacy",
+      freshnessPolicy: "require_fresh",
+      state: reefBacked ? (staleEvidenceDropped > 0 ? "dirty" : "fresh") : "unknown",
+      staleEvidenceDropped,
+      fallbackUsed: false,
+      snapshotPinned: false,
+      queryRestarted: false,
+      queryCanceled: false,
+      checkedAt,
+    };
+    const reefExecution = await buildReefToolExecution({
+      toolName: "ast_find_pattern",
+      projectId: project.projectId,
+      projectRoot: project.canonicalPath,
+      options,
+      startedAtMs,
+      freshnessPolicy: "require_fresh",
+      queryPath: reefBacked ? "reef_query" : "legacy",
+      staleEvidenceDropped,
+      staleEvidenceLabeled: 0,
+      returnedCount: matches.length,
+    });
+
     return {
       toolName: "ast_find_pattern",
       projectId: project.projectId,
@@ -181,6 +243,8 @@ export async function astFindPatternTool(
       filesScanned,
       matches,
       acknowledgedCount,
+      reefFreshness,
+      reefExecution,
       truncated: truncatedByMaxMatches || truncatedByMaxFiles,
       warnings,
     } satisfies AstFindPatternToolOutput;

@@ -17,12 +17,14 @@ import {
   severityWeight,
   tokenizeQuery,
 } from "./shared.js";
+import { buildReefToolExecution } from "./tool-execution.js";
 
 export async function reefScoutTool(
   input: ReefScoutToolInput,
   options: ToolServiceOptions,
 ): Promise<ReefScoutToolOutput> {
-  return await withProjectContext(input, options, ({ project, projectStore }) => {
+  return await withProjectContext(input, options, async ({ project, projectStore }) => {
+    const startedAtMs = Date.now();
     const limit = input.limit ?? 20;
     const focusFiles = new Set((input.focusFiles ?? []).map((filePath) => normalizeFileQuery(project.canonicalPath, filePath)));
     const queryTokens = tokenizeQuery(input.query);
@@ -188,11 +190,24 @@ export async function reefScoutTool(
       .sort((a, b) => b.score - a.score || b.confidence - a.confidence || a.id.localeCompare(b.id))
       .slice(0, limit);
     const hasStaleCandidate = sorted.some((candidate) => candidate.freshness?.state !== undefined && candidate.freshness.state !== "fresh");
+    const staleEvidenceLabeled = sorted.filter((candidate) =>
+      candidate.freshness?.state !== undefined && candidate.freshness.state !== "fresh"
+    ).length;
     const suggestedActions = [
       "Read the top candidate files with the normal harness tools before editing.",
       "Use reef_inspect on a top file or subject when you need the evidence trail.",
       ...(hasStaleCandidate ? ["Run working_tree_overlay or project_index_status when stale evidence appears in the scout results."] : []),
     ];
+    const reefExecution = await buildReefToolExecution({
+      toolName: "reef_scout",
+      projectId: project.projectId,
+      projectRoot: project.canonicalPath,
+      options,
+      startedAtMs,
+      freshnessPolicy: "allow_stale_labeled",
+      staleEvidenceLabeled,
+      returnedCount: sorted.length,
+    });
 
     return {
       toolName: "reef_scout",
@@ -201,6 +216,7 @@ export async function reefScoutTool(
       query: input.query,
       candidates: sorted,
       ...(input.includeRawEvidence ? { facts: facts.slice(0, limit), findings: findings.slice(0, limit) } : {}),
+      reefExecution,
       suggestedActions,
       warnings: candidates.size === 0 ? ["no Reef candidates matched the query"] : [],
     };

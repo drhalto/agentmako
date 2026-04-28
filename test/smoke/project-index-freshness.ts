@@ -3,6 +3,7 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import type {
+  AstFindPatternToolOutput,
   ProjectIndexRefreshToolOutput,
   ProjectIndexStatusToolOutput,
 } from "../../packages/contracts/src/index.ts";
@@ -17,11 +18,13 @@ async function main(): Promise<void> {
   const originalStateHome = process.env.MAKO_STATE_HOME;
   const originalStateDirName = process.env.MAKO_STATE_DIRNAME;
   const originalReefBacked = process.env.MAKO_REEF_BACKED;
+  const originalReefMode = process.env.MAKO_REEF_MODE;
   process.env.MAKO_STATE_HOME = stateHome;
   delete process.env.MAKO_STATE_DIRNAME;
   mkdirSync(path.join(projectRoot, "src"), { recursive: true });
   writeFileSync(path.join(projectRoot, "package.json"), JSON.stringify({ name: "index-freshness-smoke" }));
   writeFileSync(path.join(projectRoot, "src", "alpha.ts"), "export const value = 1;\n");
+  writeFileSync(path.join(projectRoot, "src", "delete-me.ts"), "export const deleteMe = true;\n");
 
   const cache = createProjectStoreCache();
   try {
@@ -109,13 +112,54 @@ async function main(): Promise<void> {
         pathGlob: "src/alpha.ts",
       },
       { projectStoreCache: cache },
-    ) as { matches: unknown[]; warnings: string[] };
+    ) as AstFindPatternToolOutput;
     assert.equal(staleAst.matches.length, 0, "stale indexed files should be skipped by the Reef AST freshness guard");
+    assert.equal(staleAst.reefFreshness.reefMode, "in_process");
+    assert.equal(staleAst.reefFreshness.freshnessPolicy, "require_fresh");
+    assert.equal(staleAst.reefFreshness.state, "dirty");
+    assert.ok((staleAst.reefFreshness.staleEvidenceDropped ?? 0) > 0);
     assert.ok(staleAst.warnings.some((warning) => warning.includes("Reef freshness guard")));
     assert.equal(
       staleAst.warnings.some((warning) => warning.includes("no indexed files matched the language/glob filters")),
       false,
     );
+
+    rmSync(path.join(projectRoot, "src", "delete-me.ts"));
+    const deletedAst = await invokeTool(
+      "ast_find_pattern",
+      {
+        projectId: indexed.project.projectId,
+        pattern: "export const deleteMe = true",
+        pathGlob: "src/delete-me.ts",
+      },
+      { projectStoreCache: cache },
+    ) as AstFindPatternToolOutput;
+    assert.equal(deletedAst.matches.length, 0, "deleted indexed files should be skipped by the Reef AST guard");
+    assert.equal(deletedAst.reefFreshness.state, "dirty");
+    assert.ok((deletedAst.reefFreshness.staleEvidenceDropped ?? 0) > 0);
+
+    process.env.MAKO_REEF_MODE = "legacy";
+    process.env.MAKO_REEF_BACKED = "ast_find_pattern";
+    try {
+      const legacyModeAst = await invokeTool(
+        "ast_find_pattern",
+        {
+          projectId: indexed.project.projectId,
+          pattern: "export const value = 1",
+          pathGlob: "src/alpha.ts",
+        },
+        { projectStoreCache: cache },
+      ) as AstFindPatternToolOutput;
+      assert.equal(
+        legacyModeAst.matches.length,
+        1,
+        "MAKO_REEF_MODE=legacy should globally bypass the Reef freshness gate",
+      );
+      assert.equal(legacyModeAst.reefFreshness.reefMode, "legacy");
+    } finally {
+      restoreEnv("MAKO_REEF_MODE", originalReefMode);
+      restoreEnv("MAKO_REEF_BACKED", originalReefBacked);
+    }
 
     process.env.MAKO_REEF_BACKED = "legacy";
     try {
@@ -127,12 +171,13 @@ async function main(): Promise<void> {
           pathGlob: "src/alpha.ts",
         },
         { projectStoreCache: cache },
-      ) as { matches: unknown[] };
+      ) as AstFindPatternToolOutput;
       assert.equal(
         legacyStaleAst.matches.length,
         1,
         "MAKO_REEF_BACKED=legacy should keep the old indexed-snapshot AST behavior available",
       );
+      assert.equal(legacyStaleAst.reefFreshness.reefMode, "legacy");
     } finally {
       restoreEnv("MAKO_REEF_BACKED", originalReefBacked);
     }
@@ -205,6 +250,7 @@ async function main(): Promise<void> {
       process.env.MAKO_STATE_DIRNAME = originalStateDirName;
     }
     restoreEnv("MAKO_REEF_BACKED", originalReefBacked);
+    restoreEnv("MAKO_REEF_MODE", originalReefMode);
     rmSync(tmp, { recursive: true, force: true });
   }
 }

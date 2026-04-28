@@ -6,14 +6,19 @@ import type {
   JsonObject,
   ProjectFact,
   ReefCalculationDependency,
+  ReefProjectSchemaStatus,
   SchemaSnapshot,
   SchemaSourceRef,
 } from "@mako-ai/contracts";
+import { REEF_SCHEMA_LIVE_SNAPSHOT_MAX_AGE_MS } from "@mako-ai/contracts";
+import { computeSnapshotFreshness, readProjectManifest } from "@mako-ai/indexer";
 import type { ProjectStore } from "@mako-ai/store";
 import { withProjectContext } from "../entity-resolver.js";
 import type { ToolServiceOptions } from "../runtime.js";
+import { ensureFreshSchemaSnapshot } from "../schema-freshness.js";
 
 const SOURCE = "db_reef_refresh";
+const DEFAULT_FACTS_LIMIT = 100;
 
 const DB_REEF_FACT_KINDS = [
   "db_schema",
@@ -37,16 +42,25 @@ interface DbFactBuilder {
   projectStore: ProjectStore;
   checkedAt: string;
   freshness: FactFreshness;
+  schemaFreshness: ReefProjectSchemaStatus;
 }
 
 export async function dbReefRefreshTool(
   input: DbReefRefreshToolInput,
   options: ToolServiceOptions,
 ): Promise<DbReefRefreshToolOutput> {
-  return await withProjectContext(input, options, ({ project, projectStore }) => {
+  return await withProjectContext(input, options, async ({ project, projectStore }) => {
     const checkedAt = new Date().toISOString();
-    const snapshot = projectStore.loadSchemaSnapshot();
-    const warnings: string[] = [];
+    const freshness = await ensureFreshSchemaSnapshot({
+      projectId: project.projectId,
+      projectRoot: project.canonicalPath,
+      projectStore,
+      freshen: input.freshen ?? true,
+      toolOptions: options,
+    });
+    const snapshot = freshness.snapshot;
+    const schemaFreshness = schemaFreshnessFromSnapshot(project.canonicalPath, snapshot, checkedAt);
+    const warnings: string[] = [...freshness.warnings];
     const facts: ProjectFact[] = [];
 
     if (!snapshot) {
@@ -61,9 +75,10 @@ export async function dbReefRefreshTool(
         toolName: "db_reef_refresh",
         projectId: project.projectId,
         projectRoot: project.canonicalPath,
-        ...(input.includeFacts ? { facts: [] } : {}),
+        ...(input.includeFacts ? { facts: [], factsTruncated: false } : {}),
+        schemaFreshness,
         summary: emptySummary(),
-        warnings: ["No schema snapshot is available. Run project_index_refresh before refreshing DB Reef facts."],
+        warnings: [...warnings, "No schema snapshot is available. Run project_index_refresh before refreshing DB Reef facts."],
       };
     }
 
@@ -71,7 +86,8 @@ export async function dbReefRefreshTool(
       projectId: project.projectId,
       projectStore,
       checkedAt,
-      freshness: freshnessFromSnapshot(snapshot, checkedAt),
+      freshness: freshnessFromSchemaStatus(schemaFreshness, checkedAt),
+      schemaFreshness,
     };
 
     facts.push(...factsFromSnapshot(snapshot, builder));
@@ -92,16 +108,37 @@ export async function dbReefRefreshTool(
     if (snapshot.warnings.length > 0) {
       warnings.push(`${snapshot.warnings.length} schema snapshot warning(s) were present when DB Reef facts were refreshed.`);
     }
+    if (freshness.refreshed) {
+      warnings.push("schema snapshot was refreshed from the live DB before DB Reef facts were generated.");
+    }
+
+    const factPayload = input.includeFacts
+      ? factsPayload(persisted, input.factsLimit)
+      : null;
 
     return {
       toolName: "db_reef_refresh",
       projectId: project.projectId,
       projectRoot: project.canonicalPath,
-      ...(input.includeFacts ? { facts: persisted } : {}),
+      ...(factPayload ? { facts: factPayload.facts, factsTruncated: factPayload.truncated } : {}),
+      schemaFreshness,
       summary: summarizeFacts(persisted),
-      warnings,
+      warnings: [
+        ...warnings,
+        ...(factPayload?.truncated
+          ? [`facts payload truncated to ${factPayload.facts.length} of ${persisted.length}; set factsLimit or omit includeFacts for summary-only output.`]
+          : []),
+      ],
     };
   });
+}
+
+function factsPayload(facts: readonly ProjectFact[], limit: number | undefined): { facts: ProjectFact[]; truncated: boolean } {
+  const effectiveLimit = limit ?? DEFAULT_FACTS_LIMIT;
+  return {
+    facts: facts.slice(0, effectiveLimit),
+    truncated: facts.length > effectiveLimit,
+  };
 }
 
 function factsFromSnapshot(snapshot: SchemaSnapshot, builder: DbFactBuilder): ProjectFact[] {
@@ -385,6 +422,7 @@ function makeFact(
       source: SOURCE,
       capturedAt: builder.checkedAt,
       ...(args.dependencies && args.dependencies.length > 0 ? { dependencies: args.dependencies } : {}),
+      metadata: schemaFreshnessMetadata(builder.schemaFreshness),
     },
     data: args.data,
   };
@@ -398,16 +436,152 @@ function rpcSignature(name: string, argTypes: readonly string[]): string {
   return `${name}(${argTypes.join(",")})`;
 }
 
-function freshnessFromSnapshot(snapshot: SchemaSnapshot, checkedAt: string): FactFreshness {
-  const state = snapshot.freshnessStatus === "fresh" || snapshot.freshnessStatus === "verified"
+function schemaFreshnessFromSnapshot(
+  projectRoot: string,
+  snapshot: SchemaSnapshot | null,
+  checkedAt: string,
+): ReefProjectSchemaStatus {
+  const checkedAtMs = Date.parse(checkedAt);
+  const manifest = readProjectManifest(projectRoot);
+  const liveDbBound = Boolean(
+    manifest?.database.liveBinding.enabled &&
+    manifest.database.liveBinding.ref.trim().length > 0,
+  );
+  if (!snapshot) {
+    return {
+      checkedAt,
+      state: "no_snapshot",
+      reason: "schema snapshot state is not_built",
+      sourceFreshness: "no_snapshot",
+      liveDbFreshness: liveDbBound ? "stale" : "not_bound",
+      liveDbBound,
+      liveSnapshotMaxAgeMs: REEF_SCHEMA_LIVE_SNAPSHOT_MAX_AGE_MS,
+    };
+  }
+
+  const sourceStatus = manifest
+    ? computeSnapshotFreshness(projectRoot, manifest.database, snapshot)
+    : snapshot.freshnessStatus;
+  const sourceFreshness = sourceStatus === "fresh" || sourceStatus === "verified"
     ? "fresh"
-    : snapshot.freshnessStatus === "unknown"
+    : sourceStatus === "unknown"
+      ? "unknown"
+      : "stale";
+  const refreshedAtMs = Date.parse(snapshot.refreshedAt);
+  const snapshotAgeMs = Number.isFinite(checkedAtMs) && Number.isFinite(refreshedAtMs)
+    ? Math.max(0, checkedAtMs - refreshedAtMs)
+    : undefined;
+  const liveDbFreshness = liveDbFreshnessFromSnapshot({
+    liveDbBound,
+    sourceMode: snapshot.sourceMode,
+    snapshotAgeMs,
+    refreshedAtMs,
+  });
+  const state = sourceFreshness === "stale" || liveDbFreshness === "stale"
+    ? "stale"
+    : sourceFreshness === "unknown" || liveDbFreshness === "unknown"
+      ? "unknown"
+      : "fresh";
+
+  return {
+    checkedAt,
+    state,
+    reason: schemaFreshnessReason({
+      sourceFreshness,
+      liveDbFreshness,
+      liveDbBound,
+      sourceMode: snapshot.sourceMode,
+      snapshotAgeMs,
+    }),
+    snapshotId: snapshot.snapshotId,
+    sourceMode: snapshot.sourceMode,
+    freshnessStatus: sourceStatus,
+    sourceFreshness,
+    liveDbFreshness,
+    liveDbBound,
+    lastSnapshotAt: snapshot.refreshedAt,
+    ...(snapshot.verifiedAt ? { lastVerifiedAt: snapshot.verifiedAt } : {}),
+    liveSnapshotMaxAgeMs: REEF_SCHEMA_LIVE_SNAPSHOT_MAX_AGE_MS,
+    ...(snapshotAgeMs !== undefined ? { snapshotAgeMs } : {}),
+    driftDetected: snapshot.driftDetected,
+  };
+}
+
+function liveDbFreshnessFromSnapshot(args: {
+  liveDbBound: boolean;
+  sourceMode: SchemaSnapshot["sourceMode"];
+  snapshotAgeMs: number | undefined;
+  refreshedAtMs: number;
+}): ReefProjectSchemaStatus["liveDbFreshness"] {
+  if (!args.liveDbBound) {
+    return "not_bound";
+  }
+  if (args.sourceMode !== "live_refresh_enabled") {
+    return "stale";
+  }
+  if (!Number.isFinite(args.refreshedAtMs) || args.snapshotAgeMs === undefined) {
+    return "stale";
+  }
+  return args.snapshotAgeMs <= REEF_SCHEMA_LIVE_SNAPSHOT_MAX_AGE_MS ? "fresh" : "stale";
+}
+
+function schemaFreshnessReason(args: {
+  sourceFreshness: ReefProjectSchemaStatus["sourceFreshness"];
+  liveDbFreshness: ReefProjectSchemaStatus["liveDbFreshness"];
+  liveDbBound: boolean;
+  sourceMode: SchemaSnapshot["sourceMode"];
+  snapshotAgeMs: number | undefined;
+}): string {
+  if (args.sourceFreshness === "stale") {
+    return "schema snapshot source hashes are stale or drift was detected";
+  }
+  if (args.liveDbFreshness === "stale") {
+    if (!args.liveDbBound) {
+      return "schema snapshot has no live DB binding";
+    }
+    if (args.sourceMode !== "live_refresh_enabled") {
+      return "live DB binding exists but the latest schema snapshot was not produced by live refresh";
+    }
+    if (args.snapshotAgeMs === undefined) {
+      return "live DB snapshot age could not be computed";
+    }
+    return `live DB schema snapshot is older than ${REEF_SCHEMA_LIVE_SNAPSHOT_MAX_AGE_MS} ms`;
+  }
+  if (args.sourceFreshness === "unknown" || args.liveDbFreshness === "unknown") {
+    return "schema freshness could not be fully determined";
+  }
+  return args.liveDbFreshness === "fresh"
+    ? "schema snapshot is source-fresh and within the live DB snapshot age budget"
+    : "schema snapshot is source-fresh and no live DB binding is configured";
+}
+
+function freshnessFromSchemaStatus(schemaFreshness: ReefProjectSchemaStatus, checkedAt: string): FactFreshness {
+  const state = schemaFreshness.state === "fresh"
+    ? "fresh"
+    : schemaFreshness.state === "unknown" || schemaFreshness.state === "no_snapshot"
       ? "unknown"
       : "stale";
   return {
     state,
     checkedAt,
-    reason: `schema snapshot freshnessStatus=${snapshot.freshnessStatus}`,
+    reason: schemaFreshness.reason,
+  };
+}
+
+function schemaFreshnessMetadata(status: ReefProjectSchemaStatus): JsonObject {
+  return {
+    state: status.state,
+    reason: status.reason,
+    sourceFreshness: status.sourceFreshness,
+    liveDbFreshness: status.liveDbFreshness,
+    liveDbBound: status.liveDbBound,
+    liveSnapshotMaxAgeMs: status.liveSnapshotMaxAgeMs,
+    ...(status.snapshotId ? { snapshotId: status.snapshotId } : {}),
+    ...(status.sourceMode ? { sourceMode: status.sourceMode } : {}),
+    ...(status.freshnessStatus ? { freshnessStatus: status.freshnessStatus } : {}),
+    ...(status.lastSnapshotAt ? { lastSnapshotAt: status.lastSnapshotAt } : {}),
+    ...(status.snapshotAgeMs !== undefined ? { snapshotAgeMs: status.snapshotAgeMs } : {}),
+    ...(status.driftDetected !== undefined ? { driftDetected: status.driftDetected } : {}),
   };
 }
 

@@ -2,12 +2,14 @@ import type { ReefInspectToolInput, ReefInspectToolOutput } from "@mako-ai/contr
 import { normalizeFileQuery, withProjectContext } from "../entity-resolver.js";
 import type { ToolServiceOptions } from "../runtime.js";
 import { matchesFactScope, matchesFindingScope } from "./shared.js";
+import { buildReefToolExecution } from "./tool-execution.js";
 
 export async function reefInspectTool(
   input: ReefInspectToolInput,
   options: ToolServiceOptions,
 ): Promise<ReefInspectToolOutput> {
-  return await withProjectContext(input, options, ({ project, projectStore }) => {
+  return await withProjectContext(input, options, async ({ project, projectStore }) => {
+    const startedAtMs = Date.now();
     const limit = input.limit ?? 100;
     const filePath = input.filePath ? normalizeFileQuery(project.canonicalPath, input.filePath) : undefined;
     const subjectFingerprint = input.subjectFingerprint;
@@ -27,6 +29,18 @@ export async function reefInspectTool(
     if (!filePath && !subjectFingerprint) {
       warnings.push("reef_inspect was called without filePath or subjectFingerprint; returning a bounded project sample");
     }
+    const staleFactCount = facts.filter((fact) => fact.freshness.state !== "fresh").length;
+    const staleFindingCount = findings.filter((finding) => finding.freshness.state !== "fresh").length;
+    const reefExecution = await buildReefToolExecution({
+      toolName: "reef_inspect",
+      projectId: project.projectId,
+      projectRoot: project.canonicalPath,
+      options,
+      startedAtMs,
+      freshnessPolicy: "allow_stale_labeled",
+      staleEvidenceLabeled: staleFactCount + staleFindingCount,
+      returnedCount: facts.length + findings.length + diagnosticRuns.length,
+    });
 
     return {
       toolName: "reef_inspect",
@@ -41,8 +55,9 @@ export async function reefInspectTool(
         factCount: facts.length,
         findingCount: findings.length,
         activeFindingCount: findings.filter((finding) => finding.status === "active").length,
-        staleFactCount: facts.filter((fact) => fact.freshness.state !== "fresh").length,
+        staleFactCount,
       },
+      reefExecution,
       warnings,
     };
   });

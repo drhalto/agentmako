@@ -13,7 +13,7 @@ them, while `.mcp.json` starts the existing `agentmako mcp` stdio server.
 
 ## Local Development
 
-From the agentmako repo root:
+From the Mako repo root:
 
 ```powershell
 claude plugin validate .\mako-ai-claude-plugin

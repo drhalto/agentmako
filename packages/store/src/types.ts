@@ -34,7 +34,9 @@ import type {
   ProjectStatus,
   ReefDiagnosticRun,
   ReefDiagnosticRunStatus,
+  ReefProjectEvent,
   ReefRuleDescriptor,
+  ReefWorkspaceChangeSet,
   QueryKind,
   ReasoningTier,
   RuntimeUsefulnessDecisionKind,
@@ -413,9 +415,13 @@ export interface QueryReefFindingsOptions {
   projectId: string;
   overlay?: ProjectOverlay;
   source?: string;
+  sources?: string[];
   filePath?: string;
+  filePaths?: string[];
+  severities?: Array<ProjectFinding["severity"]>;
   status?: ProjectFindingStatus;
   includeResolved?: boolean;
+  excludeAcknowledged?: boolean;
   limit?: number;
 }
 
@@ -469,6 +475,177 @@ export interface QueryDbReviewCommentsOptions {
 }
 
 export type DbReviewCommentRecord = DbReviewComment;
+
+export interface ReefAnalysisStateRecord {
+  projectId: string;
+  root: string;
+  currentRevision: number;
+  materializedRevision?: number;
+  lastAppliedChangeSetId?: string;
+  lastAppliedAt?: Timestamp;
+  recomputationGeneration: number;
+  watcherRecrawlCount: number;
+  lastRecrawlAt?: Timestamp;
+  lastRecrawlReason?: string;
+  lastRecrawlWarning?: string;
+  updatedAt: Timestamp;
+}
+
+export type ReefAppliedChangeSetStatus = "applied" | "skipped" | "failed";
+export type ReefAppliedChangeSetRefreshMode = "path_scoped" | "full";
+
+export interface ReefAppliedChangeSetRecord {
+  changeSetId: string;
+  projectId: string;
+  root: string;
+  baseRevision: number;
+  newRevision: number;
+  observedAt: Timestamp;
+  appliedAt: Timestamp;
+  generation: number;
+  status: ReefAppliedChangeSetStatus;
+  refreshMode: ReefAppliedChangeSetRefreshMode;
+  fallbackReason?: string;
+  causeCount: number;
+  fileChangeCount: number;
+  causes: ReefProjectEvent[];
+  fileChanges: ReefWorkspaceChangeSet["fileChanges"];
+  data?: JsonObject;
+}
+
+export interface ApplyReefChangeSetInput {
+  changeSet: ReefWorkspaceChangeSet;
+  refreshMode: ReefAppliedChangeSetRefreshMode;
+  fallbackReason?: string;
+  appliedAt?: Timestamp;
+}
+
+export interface MarkReefChangeSetMaterializedInput {
+  projectId: string;
+  root: string;
+  changeSetId: string;
+  revision: number;
+  materializedAt?: Timestamp;
+  refreshMode?: ReefAppliedChangeSetRefreshMode;
+  fallbackReason?: string;
+}
+
+export interface MarkReefChangeSetFailedInput {
+  projectId: string;
+  root: string;
+  changeSetId: string;
+  errorText: string;
+}
+
+export interface MarkReefChangeSetSkippedInput {
+  projectId: string;
+  root: string;
+  changeSetId: string;
+  reason: string;
+}
+
+export interface RecordReefWatcherRecrawlInput {
+  projectId: string;
+  root: string;
+  reason: string;
+  warning?: string;
+  observedAt?: Timestamp;
+}
+
+export interface QueryReefAppliedChangeSetsOptions {
+  projectId: string;
+  root?: string;
+  changeSetId?: string;
+  maxRevision?: number;
+  limit?: number;
+}
+
+export interface EnsureReefAnalysisStateInput {
+  projectId: string;
+  root: string;
+  now?: Timestamp;
+}
+
+export interface ReefArtifactKey {
+  contentHash: string;
+  artifactKind: string;
+  extractorVersion: string;
+}
+
+export interface ReefArtifactRecord extends ReefArtifactKey {
+  artifactId: string;
+  payload: JsonValue;
+  metadata?: JsonObject;
+  createdAt: Timestamp;
+  updatedAt: Timestamp;
+}
+
+export interface UpsertReefArtifactInput extends ReefArtifactKey {
+  artifactId?: string;
+  payload: JsonValue;
+  metadata?: JsonObject;
+  now?: Timestamp;
+}
+
+export interface ReefArtifactTagRecord extends ReefArtifactKey {
+  tagId: string;
+  artifactId: string;
+  projectId: string;
+  root: string;
+  branch?: string;
+  worktree?: string;
+  overlay: ProjectOverlay;
+  path: string;
+  lastVerifiedRevision?: number;
+  lastChangedRevision?: number;
+  createdAt: Timestamp;
+  updatedAt: Timestamp;
+}
+
+export interface AddReefArtifactTagInput {
+  artifactId: string;
+  projectId: string;
+  root: string;
+  branch?: string;
+  worktree?: string;
+  overlay: ProjectOverlay;
+  path: string;
+  lastVerifiedRevision?: number;
+  lastChangedRevision?: number;
+  now?: Timestamp;
+}
+
+export interface QueryReefArtifactsOptions extends Partial<ReefArtifactKey> {
+  artifactId?: string;
+  projectId?: string;
+  root?: string;
+  branch?: string;
+  worktree?: string;
+  overlay?: ProjectOverlay;
+  path?: string;
+  limit?: number;
+}
+
+export interface QueryReefArtifactTagsOptions extends Partial<ReefArtifactKey> {
+  artifactId?: string;
+  projectId?: string;
+  root?: string;
+  branch?: string;
+  worktree?: string;
+  overlay?: ProjectOverlay;
+  path?: string;
+  limit?: number;
+}
+
+export interface RemoveReefArtifactTagsInput extends QueryReefArtifactTagsOptions {
+  tagId?: string;
+  pruneArtifacts?: boolean;
+}
+
+export interface RemoveReefArtifactTagsResult {
+  removedTagCount: number;
+  prunedArtifactCount: number;
+}
 
 export interface BenchmarkSuiteRecord {
   suiteId: string;
@@ -604,6 +781,12 @@ export interface FileChunkRecord {
   lineStart?: number;
   lineEnd?: number;
   content: string;
+  // Byte offsets into the parsed source. Populated for tree-sitter symbol
+  // chunks; in-memory only (not persisted in the chunks table). Used by the
+  // semantic-unit builder to disambiguate multiple declarations that share a
+  // line/name (common in minified code).
+  startIndex?: number;
+  endIndex?: number;
 }
 
 export interface SymbolRecord {

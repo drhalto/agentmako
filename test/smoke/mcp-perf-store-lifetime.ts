@@ -37,7 +37,7 @@ const MEASURED_CALLS = 10;
 
 function buildFileContent(seed: number): string {
   // Modestly-sized content per file so the snapshot write produces a
-  // non-trivial WAL. Real courseconnect-sized DBs are much larger, but
+  // non-trivial WAL. Real production-sized DBs are much larger, but
   // we just need enough to make an open-close do *some* work.
   // Single-arg `console.log($X)` calls — ast-grep's `$X` is one
   // metavariable per AST node, so 2-arg calls wouldn't match.
@@ -72,12 +72,27 @@ function seedProject(projectRoot: string, projectId: string): void {
     globalStore.close();
   }
 
-  const contents: Array<{ relPath: string; body: string }> = [];
+  const contents: Array<{
+    relPath: string;
+    body: string;
+    lineCount: number;
+    lastModifiedAt: string;
+    sizeBytes: number;
+  }> = [];
   for (let i = 0; i < FILE_COUNT; i += 1) {
     const body = buildFileContent(i);
     const relPath = `lib/mod_${i}.ts`;
-    writeFileSync(path.join(projectRoot, relPath), `${body}\n`);
-    contents.push({ relPath, body });
+    const absolutePath = path.join(projectRoot, relPath);
+    const fileContent = `${body}\n`;
+    writeFileSync(absolutePath, fileContent);
+    const stat = statSync(absolutePath);
+    contents.push({
+      relPath,
+      body,
+      lineCount: fileContent.split("\n").length,
+      lastModifiedAt: stat.mtime.toISOString(),
+      sizeBytes: stat.size,
+    });
   }
 
   const store = openProjectStore({ projectRoot });
@@ -98,32 +113,26 @@ function seedProject(projectRoot: string, projectId: string): void {
     });
 
     store.replaceIndexSnapshot({
-      files: contents.map(({ relPath, body }) => {
-        const indexedContent = `${body}\n`;
-        const lineCount = indexedContent.split("\n").length;
-        const stat = statSync(path.join(projectRoot, relPath));
-
-        return {
-          path: relPath,
-          sha256: relPath,
-          language: "typescript",
-          sizeBytes: stat.size,
-          lineCount,
-          lastModifiedAt: stat.mtime.toISOString(),
-          chunks: [
-            {
-              chunkKind: "file" as const,
-              name: relPath,
-              lineStart: 1,
-              lineEnd: lineCount,
-              content: indexedContent,
-            },
-          ],
-          symbols: [],
-          imports: [],
-          routes: [],
-        };
-      }),
+      files: contents.map(({ relPath, body, lineCount, lastModifiedAt, sizeBytes }) => ({
+        path: relPath,
+        sha256: relPath,
+        language: "typescript",
+        sizeBytes,
+        lineCount,
+        lastModifiedAt,
+        chunks: [
+          {
+            chunkKind: "file" as const,
+            name: relPath,
+            lineStart: 1,
+            lineEnd: lineCount,
+            content: body,
+          },
+        ],
+        symbols: [],
+        imports: [],
+        routes: [],
+      })),
       schemaObjects: [],
       schemaUsages: [],
     });

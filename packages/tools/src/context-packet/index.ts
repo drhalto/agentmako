@@ -24,6 +24,7 @@ import { detectContextPacketRisks } from "./risks.js";
 import { loadScopedInstructions } from "./scoped-instructions.js";
 import type { ContextPacketCandidateSeed } from "./types.js";
 import { isReefBackedToolViewEnabled } from "../reef/migration-flags.js";
+import { buildReefToolExecution } from "../reef/tool-execution.js";
 
 const DEFAULT_MAX_PRIMARY_CONTEXT = 8;
 const DEFAULT_MAX_RELATED_CONTEXT = 16;
@@ -489,7 +490,8 @@ export async function contextPacketTool(
   input: ContextPacketToolInput,
   options: ToolServiceOptions = {},
 ): Promise<ContextPacketToolOutput> {
-  return withProjectContext(input, options, ({ project, projectStore }) => {
+  return withProjectContext(input, options, async ({ project, projectStore }) => {
+    const startedAtMs = Date.now();
     const reefBacked = isReefBackedToolViewEnabled("context_packet");
     const intent = detectContextPacketIntent(input);
     const latestRun = projectStore.getLatestIndexRun();
@@ -546,7 +548,7 @@ export async function contextPacketTool(
     const primaryContext = annotateContextOverlay(ranked.primaryContext, workingTreeOverlayFacts);
     const relatedContext = annotateContextOverlay(ranked.relatedContext, workingTreeOverlayFacts);
     const allContext = [...primaryContext, ...relatedContext];
-    const activeFindings = reefBacked
+    const rawActiveFindings = reefBacked
       ? collectRelevantActiveFindings({
           input,
           projectStore,
@@ -554,6 +556,8 @@ export async function contextPacketTool(
           candidates: allContext,
         })
       : [];
+    const activeFindings = rawActiveFindings.filter((finding) => finding.freshness.state === "fresh");
+    const staleActiveFindingsDropped = rawActiveFindings.length - activeFindings.length;
     const warnings = [...collected.warnings];
     if (ranked.budgetExhausted) {
       warnings.push("context packet was truncated by budgetTokens.");
@@ -569,6 +573,9 @@ export async function contextPacketTool(
     }
     if (!reefBacked) {
       warnings.push("Reef-backed context enrichments are disabled by MAKO_REEF_BACKED.");
+    }
+    if (staleActiveFindingsDropped > 0) {
+      warnings.push(`Dropped ${staleActiveFindingsDropped} stale active finding(s) from edit-guiding context.`);
     }
     const risks = input.includeRisks === false
       ? []
@@ -596,6 +603,21 @@ export async function contextPacketTool(
       ],
       reason: `context_packet returned ${allContext.length} readable candidate(s).`,
     });
+    const staleContextItems = allContext.filter((candidate) =>
+      candidate.freshness?.state !== undefined && candidate.freshness.state !== "fresh"
+    ).length;
+    const reefExecution = await buildReefToolExecution({
+      toolName: "context_packet",
+      projectId: project.projectId,
+      projectRoot: project.canonicalPath,
+      options,
+      startedAtMs,
+      freshnessPolicy: "allow_stale_labeled",
+      queryPath: reefBacked ? "reef_materialized_view" : "direct_live",
+      staleEvidenceDropped: staleActiveFindingsDropped,
+      staleEvidenceLabeled: staleContextItems,
+      returnedCount: allContext.length + activeFindings.length,
+    });
 
     return {
       toolName: "context_packet",
@@ -622,6 +644,7 @@ export async function contextPacketTool(
         needsWorkingTreeOverlay: changedFilesMissingOverlay.length > 0,
       }),
       indexFreshness,
+      reefExecution,
       limits: {
         budgetTokens,
         tokenEstimateMethod: "char_div_4",

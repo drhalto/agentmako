@@ -9,6 +9,7 @@ import {
   type IndexRunSurface,
   type ProjectIndexWatchState,
 } from "./index-freshness.js";
+import { ReefProjectStatusSchema, type ReefProjectStatus } from "./reef-service.js";
 import { ProjectOverlaySchema, type ProjectOverlay } from "./reef.js";
 import {
   ProjectLocatorInputObjectSchema,
@@ -85,6 +86,7 @@ export interface ProjectIndexStatusToolOutput {
   latestRun?: IndexRunSurface;
   lastIndexedAt?: string;
   freshness: IndexFreshnessSummary;
+  reefStatus?: ReefProjectStatus;
   reefFacts?: ProjectIndexReefFactsSummary;
   watch?: ProjectIndexWatchState;
   unindexedScan: ProjectIndexUnindexedScan;
@@ -99,6 +101,7 @@ export const ProjectIndexStatusToolOutputSchema = z.object({
   latestRun: IndexRunSurfaceSchema.optional(),
   lastIndexedAt: z.string().optional(),
   freshness: IndexFreshnessSummarySchema,
+  reefStatus: ReefProjectStatusSchema.optional(),
   reefFacts: ProjectIndexReefFactsSummarySchema.optional(),
   watch: ProjectIndexWatchStateSchema.optional(),
   unindexedScan: ProjectIndexUnindexedScanSchema,

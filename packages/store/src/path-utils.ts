@@ -29,9 +29,11 @@ export function isIgnoredDirectory(name: string): boolean {
   }
 
   return [
+    ".claude",
     ".git",
     ".idea",
     ".mako",
+    ".playwright",
     ".vscode",
     ".next",
     ".turbo",
@@ -39,5 +41,6 @@ export function isIgnoredDirectory(name: string): boolean {
     "dist",
     "build",
     "node_modules",
+    "obj",
   ].includes(name);
 }

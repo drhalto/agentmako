@@ -192,7 +192,9 @@ Use these focused code tools when the shape is known:
 - `trace_file`: explain one file.
 - `route_trace`, `route_context`: route resolution and route
   neighborhood.
-- `schema_usage`: app-code references to schema objects.
+- `schema_usage`: direct app-code references to schema objects. It does not
+  report RPC-mediated or graph-transitive touches; use `trace_rpc`,
+  `route_context`, `table_neighborhood`, or `flow_map` for those.
 - `table_neighborhood`, `rpc_neighborhood`: table/RPC-centered context
   bundles.
 - `trace_table`, `trace_rpc`, `trace_edge`, `trace_error`: composer

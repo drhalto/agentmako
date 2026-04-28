@@ -1,0 +1,103 @@
+name: Publish npm
+
+on:
+  push:
+    tags:
+      - "v*.*.*"
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Package version to publish, matching apps/cli/package.json"
+        required: true
+        type: string
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+  id-token: write
+
+jobs:
+  publish:
+    name: Publish agentmako
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          registry-url: https://registry.npmjs.org
+
+      - name: Update npm for trusted publishing
+        run: |
+          npm install -g npm@latest
+          npm --version
+
+      - name: Enable Corepack
+        run: corepack enable
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v2
+        with:
+          version: 10
+          run_install: false
+
+      - name: Get pnpm store directory
+        shell: bash
+        run: |
+          echo "STORE_PATH=$(pnpm store path --silent)" >> "$GITHUB_ENV"
+
+      - name: Setup pnpm cache
+        uses: actions/cache@v4
+        with:
+          path: ${{ env.STORE_PATH }}
+          key: ${{ runner.os }}-pnpm-store-${{ hashFiles('**/pnpm-lock.yaml') }}
+          restore-keys: |
+            ${{ runner.os }}-pnpm-store-
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Validate release version
+        shell: bash
+        env:
+          MANUAL_VERSION: ${{ github.event.inputs.version }}
+        run: |
+          package_name="$(node -p "require('./apps/cli/package.json').name")"
+          package_version="$(node -p "require('./apps/cli/package.json').version")"
+
+          if [[ "${GITHUB_REF_TYPE}" == "tag" ]]; then
+            expected_version="${GITHUB_REF_NAME#v}"
+          else
+            expected_version="${MANUAL_VERSION}"
+          fi
+
+          if [[ "${expected_version}" != "${package_version}" ]]; then
+            echo "Release version mismatch: expected ${expected_version}, package has ${package_version}."
+            exit 1
+          fi
+
+          if npm view "${package_name}@${package_version}" version >/dev/null 2>&1; then
+            echo "${package_name}@${package_version} is already published."
+            exit 1
+          fi
+
+          echo "Publishing ${package_name}@${package_version}."
+
+      - name: Typecheck
+        run: pnpm run typecheck
+
+      - name: Build workspace
+        run: pnpm run build:force
+
+      - name: Run CLI/API smoke tests
+        run: pnpm run test:smoke
+
+      - name: Publish
+        working-directory: apps/cli
+        run: npm publish --access public

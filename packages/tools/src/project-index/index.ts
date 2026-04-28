@@ -8,6 +8,7 @@ import type {
   ProjectIndexStatusToolOutput,
   ProjectIndexSuggestedAction,
   ProjectIndexUnindexedScan,
+  ReefProjectStatus,
 } from "@mako-ai/contracts";
 import { indexProject, summarizeProjectIndexFreshness } from "@mako-ai/indexer";
 import type { IndexRunRecord, ProjectStore } from "@mako-ai/store";
@@ -147,7 +148,7 @@ export async function projectIndexStatusTool(
   input: ProjectIndexStatusToolInput,
   options: ToolServiceOptions,
 ): Promise<ProjectIndexStatusToolOutput> {
-  return await withProjectContext(input, options, ({ project, projectStore }) => {
+  return await withProjectContext(input, options, async ({ project, projectStore }) => {
     const includeUnindexed = input.includeUnindexed ?? false;
     const freshness = summarizeProjectIndexFreshness({
       projectRoot: project.canonicalPath,
@@ -167,6 +168,7 @@ export async function projectIndexStatusTool(
     const reefFacts = isReefBackedToolViewEnabled("project_index_status")
       ? buildReefFactsSummary(projectStore, project.projectId)
       : undefined;
+    const reefStatus = await loadReefStatus(project.projectId, options);
 
     return {
       toolName: "project_index_status",
@@ -175,6 +177,7 @@ export async function projectIndexStatusTool(
       ...(latestRun ? { latestRun } : {}),
       ...(project.lastIndexedAt ? { lastIndexedAt: project.lastIndexedAt } : {}),
       freshness,
+      ...(reefStatus ? { reefStatus } : {}),
       ...(reefFacts ? { reefFacts } : {}),
       ...(watch ? { watch } : {}),
       unindexedScan,
@@ -210,16 +213,28 @@ export async function projectIndexRefreshTool(
       };
     }
 
-    const result = await indexProject(project.canonicalPath, {
-      configOverrides: options.configOverrides,
-      projectStoreCache: options.projectStoreCache,
-      triggerSource: "mcp_refresh",
-    });
+    const result = options.reefService
+      ? undefined
+      : await indexProject(project.canonicalPath, {
+        configOverrides: options.configOverrides,
+        projectStoreCache: options.projectStoreCache,
+        triggerSource: "mcp_refresh",
+      });
+    if (options.reefService) {
+      const refresh = await options.reefService.requestRefresh({
+        projectId: project.projectId,
+        reason: "mcp_refresh",
+      });
+      if (refresh.state === "failed") {
+        throw new Error(refresh.message ?? "Reef service index refresh failed.");
+      }
+    }
     const after = summarizeProjectIndexFreshness({
       projectRoot: project.canonicalPath,
       store: projectStore,
       includeUnindexed: true,
     });
+    const latestRun = result?.run ?? projectStore.getLatestIndexRun();
 
     return {
       toolName: "project_index_refresh",
@@ -234,9 +249,23 @@ export async function projectIndexRefreshTool(
       ...(input.reason ? { operatorReason: input.reason } : {}),
       before,
       after,
-      run: toIndexRunSurface(result.run),
-      stats: result.stats as unknown as JsonObject,
-      warnings: result.schemaSnapshotWarnings.map((warning) => warning.message),
+      run: toIndexRunSurface(latestRun),
+      stats: (result?.stats ?? projectStore.getScanStats()) as unknown as JsonObject,
+      warnings: result?.schemaSnapshotWarnings.map((warning) => warning.message) ?? [],
     };
   });
+}
+
+async function loadReefStatus(
+  projectId: string,
+  options: ToolServiceOptions,
+): Promise<ReefProjectStatus | undefined> {
+  if (!options.reefService) {
+    return undefined;
+  }
+  try {
+    return await options.reefService.getProjectStatus(projectId);
+  } catch {
+    return undefined;
+  }
 }
