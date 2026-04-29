@@ -1,7 +1,7 @@
 {
   "name": "mako-ai",
   "private": true,
-  "version": "0.2.0",
+  "version": "0.2.1",
   "description": "Local-first repo intelligence engine for AI coding agents.",
   "license": "Apache-2.0",
   "homepage": "https://github.com/drhalto/agentmako#readme",
