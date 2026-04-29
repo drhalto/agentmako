@@ -12,7 +12,6 @@
  *   /api/v1/dashboard/*   → services/api
  *   /api/v1/tools/*       → services/api
  *   /api/v1/answers/*     → services/api
- *   /api/v1/health        → services/api
  *   /api/v1/*             → services/harness  (127.0.0.1:3018)  [catch-all]
  *
  * The split mirrors the CLI's routing: project-scoped data comes from
@@ -44,7 +43,6 @@ export default defineConfig({
       "/api/v1/tools": TO_API,
       "/api/v1/answers": TO_API,
       "/api/v1/workflow-packets": TO_API,
-      "/api/v1/health": TO_API,
       "/api/v1": TO_HARNESS,
     },
   },

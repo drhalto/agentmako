@@ -42,7 +42,7 @@
     "build": "tsup",
     "build:types": "tsc -p tsconfig.json --emitDeclarationOnly --outDir dist",
     "typecheck": "tsc -p tsconfig.json --noEmit",
-    "prepublishOnly": "npm run build:types && npm run build && node scripts/verify-bundle.mjs"
+    "prepublishOnly": "corepack pnpm --filter @mako-ai/web run build && npm run build:types && npm run build && node scripts/verify-bundle.mjs"
   },
   "dependencies": {
     "@ast-grep/napi": "^0.39.5",

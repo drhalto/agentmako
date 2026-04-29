@@ -15,10 +15,11 @@ import {
   type AgentClientToolInfo,
   type ProgressReporter,
   type ToolSearchCatalogEntry,
+  coerceDeferredInput,
   getToolDefinition,
   rankToolSearchEntries,
 } from "@mako-ai/tools";
-import { z } from "zod";
+import { z, type ZodTypeAny } from "zod";
 import type { HttpServerOptions } from "./server.js";
 import { createApiService } from "./service.js";
 import {
@@ -100,6 +101,41 @@ function createProgressReporterForCall(args: {
   });
 }
 
+function createMcpInputSchema(schema: ZodTypeAny): ZodTypeAny {
+  if ((schema._def.typeName as string) !== "ZodObject") {
+    return schema;
+  }
+
+  const shapeFactory = schema._def.shape as
+    | (() => Record<string, ZodTypeAny>)
+    | Record<string, ZodTypeAny>;
+  const shape = typeof shapeFactory === "function" ? shapeFactory() : shapeFactory;
+  const coercedShape: Record<string, ZodTypeAny> = {};
+  for (const [key, entrySchema] of Object.entries(shape)) {
+    coercedShape[key] = z.preprocess(
+      (value) => coerceDeferredInput(entrySchema, value),
+      entrySchema,
+    );
+  }
+
+  let objectSchema: z.AnyZodObject = z.object(coercedShape);
+  const unknownKeys = schema._def.unknownKeys as "passthrough" | "strict" | "strip" | undefined;
+  if (unknownKeys === "strict") {
+    objectSchema = objectSchema.strict();
+  } else if (unknownKeys === "passthrough") {
+    objectSchema = objectSchema.passthrough();
+  } else {
+    objectSchema = objectSchema.strip();
+  }
+
+  const catchall = schema._def.catchall as ZodTypeAny | undefined;
+  if (catchall && (catchall._def.typeName as string) !== "ZodNever") {
+    objectSchema = objectSchema.catchall(catchall);
+  }
+
+  return schema.description ? objectSchema.describe(schema.description) : objectSchema;
+}
+
 export interface McpSession {
   server: McpServer;
   transport: StreamableHTTPServerTransport;
@@ -175,7 +211,9 @@ export function createMcpServer(
       {
         title: tool.name,
         description: tool.description,
-        inputSchema: tool.name === "auth_path" ? AuthPathMcpInputSchema : definition.inputSchema,
+        inputSchema: createMcpInputSchema(
+          tool.name === "auth_path" ? AuthPathMcpInputSchema : definition.inputSchema,
+        ),
         outputSchema: definition.outputSchema,
         _meta: metaForTool(toolInfo),
         annotations: {
@@ -255,7 +293,7 @@ export function createMcpServer(
     {
       title: "tool_search",
       description: TOOL_SEARCH_DESCRIPTION,
-      inputSchema: ToolSearchInputSchema,
+      inputSchema: createMcpInputSchema(ToolSearchInputSchema),
       outputSchema: ToolSearchOutputSchema,
       _meta: metaForTool(toolSearchInfo),
       annotations: {
@@ -295,7 +333,7 @@ export function createMcpServer(
       tool.name,
       {
         description: tool.description,
-        inputSchema: tool.parameters,
+        inputSchema: createMcpInputSchema(tool.parameters),
         outputSchema: ActionToolUnavailableSchema,
         annotations: {
           title: tool.name,

@@ -117,7 +117,7 @@ function parseToolInput(definition: MakoToolDefinition<string>, input: unknown):
   }
 }
 
-function coerceDeferredInput(schema: ZodTypeAny, value: unknown): unknown {
+export function coerceDeferredInput(schema: ZodTypeAny, value: unknown): unknown {
   const typeName = schema._def.typeName as string;
   if (
     typeName === "ZodOptional"

@@ -1,24 +1,20 @@
 /**
  * `agentmako dashboard` — one-shot launcher for the local web UI.
  *
- * Boots `services/api` and `services/harness` in-process and spawns the
- * Vite dev server from `apps/web`. The dev server already proxies
- * `/api/v1/*` to the right service (api for project routes, harness for
- * sessions / memory / semantic / embeddings) when given the
- * `MAKO_API_URL` and `MAKO_HARNESS_URL` env vars, so we just point it at
- * the in-process services and open the browser when it's reachable.
+ * Boots `services/api` and `services/harness` in-process, then starts the
+ * dashboard UI. In a source checkout this spawns Vite from `apps/web`; in
+ * the installed package this serves the bundled static `dist/web` assets
+ * and proxies `/api/v1/*` to the right local service.
  *
- * Ctrl+C cleanly tears down all three.
- *
- * The published-package case (no `apps/web` next to the bundle) is a
- * follow-up: this v1 assumes a monorepo checkout. The error message
- * tells operators what's missing if `apps/web` can't be found.
+ * Ctrl+C cleanly tears down every owned server/process.
  */
 
-import { spawn } from "node:child_process";
-import { existsSync } from "node:fs";
+import { spawn, type ChildProcess } from "node:child_process";
+import { createReadStream, existsSync, readFileSync, statSync } from "node:fs";
+import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
 import { createRequire } from "node:module";
-import { dirname, resolve } from "node:path";
+import { dirname, extname, resolve, sep } from "node:path";
+import { Readable } from "node:stream";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { startHttpApiServer, type StartedHttpServer } from "@mako-ai/api";
 import { startHarnessServer, type StartedHarnessServer } from "@mako-ai/harness";
@@ -35,6 +31,18 @@ interface DashboardArgs {
 const DEFAULT_WEB_PORT = 3019;
 const DEFAULT_API_PORT = 3017;
 const DEFAULT_HARNESS_PORT = 3018;
+const STATIC_BODY_LIMIT_BYTES = 1_000_000;
+
+type WebRuntime =
+  | { kind: "vite"; dir: string; viteBin: string }
+  | { kind: "static"; dir: string };
+
+interface StartedDashboardWebServer {
+  host: string;
+  port: number;
+  server: Server;
+  close(): Promise<void>;
+}
 
 function parseDashboardArgs(args: string[]): DashboardArgs {
   let port = DEFAULT_WEB_PORT;
@@ -94,20 +102,22 @@ function parsePort(value: string, flag: string): number {
 export async function runDashboardCommand(rawArgs: string[]): Promise<void> {
   const args = parseDashboardArgs(rawArgs);
 
-  const webDir = findWebDir();
-  if (!webDir) {
+  const webRuntime = resolveWebRuntime();
+  if (!webRuntime) {
     throw new Error(
-      "Couldn't find `apps/web` near the agentmako binary. The dashboard launcher currently requires a mako monorepo checkout — run from the repo root.",
+      "Couldn't find dashboard assets. In a source checkout, run from the mako repo root after `corepack pnpm install`; in an installed package, rebuild/reinstall so `dist/web/index.html` is present.",
     );
   }
 
   console.log(color("Starting mako dashboard…", COLORS.bright + COLORS.cyan));
   console.log();
   console.log(`  ${color("project:", COLORS.gray)} ${args.projectRoot}`);
-  console.log(`  ${color("web:    ", COLORS.gray)} ${webDir}`);
+  console.log(`  ${color("web:    ", COLORS.gray)} ${webRuntime.dir} (${webRuntime.kind})`);
   console.log();
 
   let harness: StartedHarnessServer | undefined;
+  let webServer: StartedDashboardWebServer | undefined;
+  let child: ChildProcess | undefined;
   let restartHarnessPromise: Promise<void> | null = null;
   const api = await startHttpApiServer({
     host: "127.0.0.1",
@@ -148,71 +158,78 @@ export async function runDashboardCommand(rawArgs: string[]): Promise<void> {
     throw error;
   }
 
-  const viteBin = resolveViteBin(webDir);
-  if (!viteBin) {
-    await safeClose(api);
-    await safeClose(harness);
-    throw new Error(
-      `Couldn't resolve \`vite\` from ${webDir}. Run \`corepack pnpm install\` from the workspace root and retry.`,
-    );
-  }
-
-  // Spawn Vite via the current Node binary directly. This avoids Windows
-  // `.cmd` shim quirks (`pnpm.cmd` requires `shell: true`, npx adds another
-  // hop) and keeps stderr/stdout cleanly piped through.
-  const child = spawn(
-    process.execPath,
-    [viteBin, "--port", String(args.port), "--strictPort"],
-    {
-      cwd: webDir,
-      env: {
-        ...process.env,
-        MAKO_API_URL: `http://${api.host}:${api.port}`,
-        MAKO_HARNESS_URL: `http://${harness.host}:${harness.port}`,
-        MAKO_WEB_PORT: String(args.port),
-      },
-      stdio: ["ignore", "inherit", "inherit"],
-      shell: false,
-    },
-  );
-
   let shuttingDown = false;
   const shutdown = async (signal?: NodeJS.Signals): Promise<void> => {
     if (shuttingDown) return;
     shuttingDown = true;
     console.log();
     console.log(color(`Shutting down dashboard${signal ? ` (${signal})` : ""}…`, COLORS.gray));
-    if (!child.killed) {
+    if (child && !child.killed) {
       try {
         child.kill("SIGTERM");
       } catch {
         /* noop */
       }
     }
-    await Promise.allSettled([safeClose(api), safeClose(harness)]);
+    await Promise.allSettled([safeClose(api), safeClose(harness), safeClose(webServer)]);
     process.exit(0);
   };
 
   process.on("SIGINT", () => void shutdown("SIGINT"));
   process.on("SIGTERM", () => void shutdown("SIGTERM"));
 
-  child.on("error", (error) => {
-    console.error();
-    console.error(`${color("✗", COLORS.red)} vite failed to start: ${error.message}`);
-    void shutdown();
-  });
-
-  child.on("exit", (code, signal) => {
-    if (!shuttingDown) {
-      const reason = signal ? `signal ${signal}` : `exit code ${code ?? "unknown"}`;
-      console.error();
-      console.error(`${color("✗", COLORS.red)} vite exited (${reason}); shutting down.`);
-      process.exitCode = code ?? 1;
-      void shutdown();
-    }
-  });
-
   const url = `http://127.0.0.1:${args.port}`;
+
+  if (webRuntime.kind === "vite") {
+    // Spawn Vite via the current Node binary directly. This avoids Windows
+    // `.cmd` shim quirks (`pnpm.cmd` requires `shell: true`, npx adds another
+    // hop) and keeps stderr/stdout cleanly piped through.
+    child = spawn(
+      process.execPath,
+      [webRuntime.viteBin, "--port", String(args.port), "--strictPort"],
+      {
+        cwd: webRuntime.dir,
+        env: {
+          ...process.env,
+          MAKO_API_URL: `http://${api.host}:${api.port}`,
+          MAKO_HARNESS_URL: `http://${harness.host}:${harness.port}`,
+          MAKO_WEB_PORT: String(args.port),
+        },
+        stdio: ["ignore", "inherit", "inherit"],
+        shell: false,
+      },
+    );
+
+    child.on("error", (error) => {
+      console.error();
+      console.error(`${color("✗", COLORS.red)} vite failed to start: ${error.message}`);
+      void shutdown();
+    });
+
+    child.on("exit", (code, signal) => {
+      if (!shuttingDown) {
+        const reason = signal ? `signal ${signal}` : `exit code ${code ?? "unknown"}`;
+        console.error();
+        console.error(`${color("✗", COLORS.red)} vite exited (${reason}); shutting down.`);
+        process.exitCode = code ?? 1;
+        void shutdown();
+      }
+    });
+  } else {
+    try {
+      webServer = await startStaticDashboardServer({
+        host: "127.0.0.1",
+        port: args.port,
+        staticDir: webRuntime.dir,
+        apiOrigin: `http://${api.host}:${api.port}`,
+        harnessOrigin: `http://${harness.host}:${harness.port}`,
+      });
+    } catch (error) {
+      await Promise.allSettled([safeClose(api), safeClose(harness)]);
+      throw error;
+    }
+  }
+
   void waitForReachable(url, 30_000).then(async (ready) => {
     if (!ready) {
       console.error();
@@ -235,17 +252,43 @@ export async function runDashboardCommand(rawArgs: string[]): Promise<void> {
     }
   });
 
-  // Block forever — the process stays up until Ctrl+C or vite exits.
+  // Block forever — the process stays up until Ctrl+C or the web server exits.
   await new Promise<void>(() => undefined);
+}
+
+function resolveWebRuntime(): WebRuntime | null {
+  const mode = process.env.MAKO_DASHBOARD_MODE;
+  if (mode !== "static") {
+    const sourceDir = findSourceWebDir();
+    if (sourceDir) {
+      const viteBin = resolveViteBin(sourceDir);
+      if (viteBin) {
+        return { kind: "vite", dir: sourceDir, viteBin };
+      }
+    }
+  }
+
+  if (mode !== "vite") {
+    const packagedDir = findPackagedWebDir();
+    if (packagedDir) {
+      return { kind: "static", dir: packagedDir };
+    }
+  }
+
+  return null;
 }
 
 // =============================================================================
 // Helpers
 // =============================================================================
 
-function findWebDir(): string | null {
+function findSourceWebDir(): string | null {
   const here = dirname(fileURLToPath(import.meta.url));
   const candidates: string[] = [];
+
+  if (process.env.MAKO_WEB_DIR) {
+    candidates.push(resolve(process.env.MAKO_WEB_DIR));
+  }
 
   // Walk up from the binary location: typical hits are
   //   apps/cli/dist/  (bundled CLI)
@@ -263,7 +306,37 @@ function findWebDir(): string | null {
   candidates.push(resolve(process.cwd(), "apps", "web"));
 
   for (const candidate of candidates) {
-    if (existsSync(resolve(candidate, "vite.config.ts"))) {
+    if (isMakoWebSourceDir(candidate)) {
+      return candidate;
+    }
+  }
+  return null;
+}
+
+function isMakoWebSourceDir(candidate: string): boolean {
+  if (!existsSync(resolve(candidate, "vite.config.ts"))) {
+    return false;
+  }
+  try {
+    const packageJson = JSON.parse(
+      readFileSync(resolve(candidate, "package.json"), "utf8"),
+    ) as { name?: unknown };
+    return packageJson.name === "@mako-ai/web";
+  } catch {
+    return false;
+  }
+}
+
+function findPackagedWebDir(): string | null {
+  const here = dirname(fileURLToPath(import.meta.url));
+  const candidates = [
+    resolve(here, "web"),
+    resolve(here, "dashboard"),
+    resolve(here, "..", "web"),
+  ];
+
+  for (const candidate of candidates) {
+    if (existsSync(resolve(candidate, "index.html"))) {
       return candidate;
     }
   }
@@ -288,8 +361,250 @@ function resolveViteBin(webDir: string): string | null {
   return existsSync(candidate) ? candidate : null;
 }
 
+async function startStaticDashboardServer(args: {
+  host: string;
+  port: number;
+  staticDir: string;
+  apiOrigin: string;
+  harnessOrigin: string;
+}): Promise<StartedDashboardWebServer> {
+  const server = createServer((request, response) => {
+    void handleStaticDashboardRequest(request, response, args).catch((error) => {
+      if (response.headersSent) {
+        response.destroy(error instanceof Error ? error : undefined);
+        return;
+      }
+      response.statusCode = 500;
+      response.setHeader("content-type", "text/plain; charset=utf-8");
+      response.end(error instanceof Error ? error.message : String(error));
+    });
+  });
+
+  await new Promise<void>((resolveReady, reject) => {
+    server.once("error", reject);
+    server.listen(args.port, args.host, () => {
+      server.off("error", reject);
+      resolveReady();
+    });
+  });
+
+  const address = server.address();
+  const resolvedPort = typeof address === "object" && address ? address.port : args.port;
+  return {
+    host: args.host,
+    port: resolvedPort,
+    server,
+    close: async () => {
+      await new Promise<void>((resolveReady, reject) => {
+        server.close((error) => {
+          if (error) reject(error);
+          else resolveReady();
+        });
+        const closeAll = (server as Server & { closeAllConnections?: () => void }).closeAllConnections;
+        closeAll?.call(server);
+      });
+    },
+  };
+}
+
+async function handleStaticDashboardRequest(
+  request: IncomingMessage,
+  response: ServerResponse,
+  args: {
+    staticDir: string;
+    apiOrigin: string;
+    harnessOrigin: string;
+  },
+): Promise<void> {
+  const url = new URL(request.url ?? "/", `http://${request.headers.host ?? "localhost"}`);
+  if (url.pathname === "/api/v1" || url.pathname.startsWith("/api/v1/")) {
+    const target = isApiDashboardPath(url.pathname) ? args.apiOrigin : args.harnessOrigin;
+    await proxyDashboardRequest(request, response, target, url);
+    return;
+  }
+
+  serveDashboardAsset(request, response, args.staticDir, url.pathname);
+}
+
+function isApiDashboardPath(pathname: string): boolean {
+  return [
+    "/api/v1/dashboard",
+    "/api/v1/projects",
+    "/api/v1/tools",
+    "/api/v1/answers",
+    "/api/v1/workflow-packets",
+  ].some((prefix) => pathname === prefix || pathname.startsWith(`${prefix}/`));
+}
+
+async function proxyDashboardRequest(
+  request: IncomingMessage,
+  response: ServerResponse,
+  targetOrigin: string,
+  url: URL,
+): Promise<void> {
+  const headers = new Headers();
+  for (const [key, value] of Object.entries(request.headers)) {
+    const lower = key.toLowerCase();
+    if (lower === "host" || lower === "connection" || lower === "content-length") {
+      continue;
+    }
+    if (Array.isArray(value)) {
+      for (const item of value) headers.append(key, item);
+    } else if (typeof value === "string") {
+      headers.set(key, value);
+    }
+  }
+
+  const method = request.method ?? "GET";
+  const hasBody = !["GET", "HEAD"].includes(method.toUpperCase());
+  const upstream = await fetch(`${targetOrigin}${url.pathname}${url.search}`, {
+    method,
+    headers,
+    body: hasBody ? await readRequestBody(request) : undefined,
+  });
+
+  response.statusCode = upstream.status;
+  upstream.headers.forEach((value, key) => {
+    if (!isHopByHopHeader(key)) {
+      response.setHeader(key, value);
+    }
+  });
+
+  if (request.method === "HEAD" || !upstream.body) {
+    response.end();
+    return;
+  }
+
+  Readable.fromWeb(upstream.body as never).pipe(response);
+}
+
+function serveDashboardAsset(
+  request: IncomingMessage,
+  response: ServerResponse,
+  staticDir: string,
+  pathname: string,
+): void {
+  const method = request.method ?? "GET";
+  if (method !== "GET" && method !== "HEAD") {
+    response.statusCode = 405;
+    response.setHeader("allow", "GET, HEAD");
+    response.end();
+    return;
+  }
+
+  const root = resolve(staticDir);
+  const decodedPath = safeDecodePath(pathname);
+  const relativePath = decodedPath === "/" ? "index.html" : decodedPath.replace(/^\/+/, "");
+  const candidate = resolve(root, relativePath);
+  const rootPrefix = root.endsWith(sep) ? root : `${root}${sep}`;
+  if (candidate !== root && !candidate.startsWith(rootPrefix)) {
+    response.statusCode = 403;
+    response.end("Forbidden");
+    return;
+  }
+
+  const filePath = readableFile(candidate)
+    ? candidate
+    : extname(relativePath) === ""
+      ? resolve(root, "index.html")
+      : null;
+  if (!filePath) {
+    response.statusCode = 404;
+    response.end("Not found");
+    return;
+  }
+  if (!readableFile(filePath)) {
+    response.statusCode = 404;
+    response.end("Not found");
+    return;
+  }
+
+  const stat = statSync(filePath);
+  response.statusCode = 200;
+  response.setHeader("content-type", contentTypeFor(filePath));
+  response.setHeader(
+    "cache-control",
+    filePath.endsWith("index.html") ? "no-store" : "public, max-age=31536000, immutable",
+  );
+  response.setHeader("content-length", String(stat.size));
+  if (method === "HEAD") {
+    response.end();
+    return;
+  }
+  createReadStream(filePath).pipe(response);
+}
+
+function safeDecodePath(pathname: string): string {
+  try {
+    return decodeURIComponent(pathname);
+  } catch {
+    return "/";
+  }
+}
+
+function readableFile(path: string): boolean {
+  try {
+    return statSync(path).isFile();
+  } catch {
+    return false;
+  }
+}
+
+function contentTypeFor(path: string): string {
+  switch (extname(path).toLowerCase()) {
+    case ".html":
+      return "text/html; charset=utf-8";
+    case ".js":
+      return "text/javascript; charset=utf-8";
+    case ".css":
+      return "text/css; charset=utf-8";
+    case ".json":
+      return "application/json; charset=utf-8";
+    case ".svg":
+      return "image/svg+xml";
+    case ".png":
+      return "image/png";
+    case ".jpg":
+    case ".jpeg":
+      return "image/jpeg";
+    case ".ico":
+      return "image/x-icon";
+    case ".wasm":
+      return "application/wasm";
+    default:
+      return "application/octet-stream";
+  }
+}
+
+async function readRequestBody(request: IncomingMessage): Promise<string> {
+  const chunks: Buffer[] = [];
+  let totalSize = 0;
+  for await (const chunk of request) {
+    const buffer = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
+    totalSize += buffer.length;
+    if (totalSize > STATIC_BODY_LIMIT_BYTES) {
+      throw new Error("request body too large");
+    }
+    chunks.push(buffer);
+  }
+  return Buffer.concat(chunks).toString("utf8");
+}
+
+function isHopByHopHeader(header: string): boolean {
+  return [
+    "connection",
+    "keep-alive",
+    "proxy-authenticate",
+    "proxy-authorization",
+    "te",
+    "trailer",
+    "transfer-encoding",
+    "upgrade",
+  ].includes(header.toLowerCase());
+}
+
 async function safeClose(
-  service: StartedHttpServer | StartedHarnessServer | undefined,
+  service: StartedHttpServer | StartedHarnessServer | StartedDashboardWebServer | undefined,
 ): Promise<void> {
   if (!service) return;
   try {
@@ -328,6 +643,6 @@ function openBrowser(url: string): void {
     command = "xdg-open";
     args = [url];
   }
-  const child = spawn(command, args, { stdio: "ignore", detached: true });
-  child.unref();
+  const openChild = spawn(command, args, { stdio: "ignore", detached: true });
+  openChild.unref();
 }

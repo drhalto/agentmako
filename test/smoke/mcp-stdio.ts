@@ -62,6 +62,25 @@ interface LiveTextSearchStructured {
   warnings: string[];
 }
 
+interface ProjectIndexStatusStructured {
+  toolName: "project_index_status";
+  unindexedScan: {
+    status: string;
+  };
+}
+
+interface AstFindPatternStructured {
+  toolName: "ast_find_pattern";
+  languagesApplied: string[];
+}
+
+interface ToolBatchStructured {
+  toolName: "tool_batch";
+  summary: {
+    requestedOps: number;
+  };
+}
+
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = path.resolve(HERE, "..", "..");
 const CLI_ENTRY = path.join(REPO_ROOT, "apps", "cli", "src", "index.ts");
@@ -298,13 +317,55 @@ async function main(): Promise<void> {
     );
     assert.deepEqual(liveSearch.warnings, []);
 
+    // --- stringified argument tolerance ---
+    //
+    // Some MCP clients/bridges have been observed to stringify nested
+    // non-string argument values before the SDK's Zod validation runs.
+    // The stdio surface should accept those values and let Mako's normal
+    // typed tool validation see the coerced form.
+    const indexStatusResult = await client.request<ToolCallResult>(4, "tools/call", {
+      name: "project_index_status",
+      arguments: {
+        projectId,
+        includeUnindexed: "false",
+      },
+    });
+    const indexStatus = parseStructured<ProjectIndexStatusStructured>(indexStatusResult);
+    assert.equal(indexStatus.toolName, "project_index_status");
+    assert.equal(indexStatus.unindexedScan.status, "skipped");
+
+    const astResult = await client.request<ToolCallResult>(5, "tools/call", {
+      name: "ast_find_pattern",
+      arguments: {
+        projectId,
+        pattern: "console.log($X)",
+        languages: "[\"ts\",\"tsx\"]",
+        maxMatches: "5",
+      },
+    });
+    const ast = parseStructured<AstFindPatternStructured>(astResult);
+    assert.equal(ast.toolName, "ast_find_pattern");
+    assert.deepEqual(ast.languagesApplied, ["ts", "tsx"]);
+
+    const batchResult = await client.request<ToolCallResult>(6, "tools/call", {
+      name: "tool_batch",
+      arguments: {
+        projectId,
+        continueOnError: "true",
+        ops: "[{\"label\":\"ping\",\"tool\":\"db_ping\",\"args\":{}}]",
+      },
+    });
+    const batch = parseStructured<ToolBatchStructured>(batchResult);
+    assert.equal(batch.toolName, "tool_batch");
+    assert.equal(batch.summary.requestedOps, 1);
+
     // --- tools/call requestId logging ---
     //
     // Regression guard for the CourseConnect live-session UX issue:
     // stdio MCP calls must pass a requestId through ToolServiceOptions
     // so `recall_tool_runs` exposes the id needed by
     // `agent_feedback.referencedRequestId`.
-    const firstRecall = await client.request<ToolCallResult>(4, "tools/call", {
+    const firstRecall = await client.request<ToolCallResult>(7, "tools/call", {
       name: "recall_tool_runs",
       arguments: {
         projectId,
@@ -314,7 +375,7 @@ async function main(): Promise<void> {
     });
     assertToolCallSucceeded(firstRecall);
 
-    const secondRecall = await client.request<ToolCallResult>(5, "tools/call", {
+    const secondRecall = await client.request<ToolCallResult>(8, "tools/call", {
       name: "recall_tool_runs",
       arguments: {
         projectId,

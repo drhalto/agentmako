@@ -24,8 +24,8 @@
   ],
   "packageManager": "pnpm@10.12.1",
   "scripts": {
-    "build": "tsc -b tsconfig.json && corepack pnpm --filter agentmako run build && corepack pnpm --filter @mako-ai/web run build",
-    "build:force": "tsc -b tsconfig.json --force && corepack pnpm --filter agentmako run build && corepack pnpm --filter @mako-ai/web run build",
+    "build": "tsc -b tsconfig.json && corepack pnpm --filter @mako-ai/web run build && corepack pnpm --filter agentmako run build",
+    "build:force": "tsc -b tsconfig.json --force && corepack pnpm --filter @mako-ai/web run build && corepack pnpm --filter agentmako run build",
     "typecheck": "tsc -b tsconfig.json --pretty false && tsc --noEmit -p test/tsconfig.json --pretty false",
     "dev": "corepack pnpm -r --parallel --if-present dev",
     "ml:readiness": "node --import tsx scripts/ml-readiness-report.ts",

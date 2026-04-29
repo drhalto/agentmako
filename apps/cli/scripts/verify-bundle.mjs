@@ -22,6 +22,7 @@ const distDir = path.resolve(__dirname, "..", "dist");
 const distPath = path.resolve(distDir, "index.js");
 const distTypesPath = path.resolve(distDir, "index.d.ts");
 const distTypesMapPath = path.resolve(distDir, "index.d.ts.map");
+const dashboardIndexPath = path.resolve(distDir, "web", "index.html");
 const wasmAssets = [
   "tree-sitter.wasm",
   "tree-sitter-typescript.wasm",
@@ -51,6 +52,12 @@ for (const wasmPath of wasmAssets) {
   }
 }
 
+if (!existsSync(dashboardIndexPath)) {
+  fail(
+    `missing ${dashboardIndexPath}. Run \`corepack pnpm --filter @mako-ai/web run build\` before \`npm run build\`.`,
+  );
+}
+
 const content = readFileSync(distPath, "utf8");
 
 const firstLine = content.split("\n", 1)[0];
@@ -78,5 +85,5 @@ if (offenders.size > 0) {
 }
 
 console.log(
-  `prepublish: bundle and wasm assets look good (${content.length} bytes, no @mako-ai/* references).`,
+  `prepublish: bundle, wasm assets, and dashboard assets look good (${content.length} bytes, no @mako-ai/* references).`,
 );

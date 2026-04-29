@@ -1,4 +1,4 @@
-import { copyFileSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { copyFileSync, cpSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { createRequire } from "node:module";
 import { fileURLToPath } from "node:url";
@@ -75,6 +75,22 @@ function copyRuntimeAssets(distDir: string): void {
   if (existsSync(snapshotSource)) {
     copyFileSync(snapshotSource, resolve(distDir, "models-snapshot.json"));
   }
+}
+
+function copyDashboardAssets(distDir: string): void {
+  const here = fileURLToPath(new URL(".", import.meta.url));
+  const sourceDir = resolve(here, "../../apps/web/dist");
+  const targetDir = resolve(distDir, "web");
+
+  rmSync(targetDir, { recursive: true, force: true });
+  if (!existsSync(resolve(sourceDir, "index.html"))) {
+    console.warn(
+      "dashboard assets were not copied because apps/web/dist/index.html is missing; run `corepack pnpm --filter @mako-ai/web run build` before packaging.",
+    );
+    return;
+  }
+
+  cpSync(sourceDir, targetDir, { recursive: true });
 }
 
 // Bundle the CLI into a single self-contained file for publishing. The goal is
@@ -158,6 +174,7 @@ export default defineConfig({
     const distDir = resolve(here, "dist");
     restoreNodePrefixes(resolve(distDir, "index.js"));
     copyRuntimeAssets(distDir);
+    copyDashboardAssets(distDir);
   },
   // The banner injects two things at the top of the bundle:
   //
