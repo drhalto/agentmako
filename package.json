@@ -60,6 +60,10 @@
     "onlyBuiltDependencies": [
       "@vscode/ripgrep",
       "esbuild"
-    ]
+    ],
+    "overrides": {
+      "hono": ">=4.12.14",
+      "jsondiffpatch": ">=0.7.2"
+    }
   }
 }
