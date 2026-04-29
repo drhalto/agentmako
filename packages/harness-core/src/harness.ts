@@ -22,7 +22,7 @@ type ContractFallbackEntry = { provider: string; model: string };
 import { createLogger } from "@mako-ai/logger";
 import type { CallerKind, ProjectStore, HarnessSessionRecord } from "@mako-ai/store";
 import type { ToolServiceOptions } from "@mako-ai/tools";
-import { streamText, type CoreMessage } from "ai";
+import { stepCountIs, streamText, type CoreMessage } from "ai";
 import { runNoAgentTurn } from "./ask-adapter.js";
 import { SessionEventBus, type EmittedSessionEvent } from "./event-bus.js";
 import { classifyProviderError } from "./fallback.js";
@@ -570,7 +570,7 @@ export class Harness {
           model,
           messages: history,
           tools: dispatch.tools,
-          maxSteps: this.options.maxSteps ?? 10,
+          stopWhen: stepCountIs(this.options.maxSteps ?? 10),
           abortSignal: AbortSignal.timeout(DEFAULT_PROVIDER_TIMEOUT_MS),
         });
 
@@ -584,7 +584,11 @@ export class Harness {
           });
         }
 
-        const usage = await result.usage.catch(() => undefined);
+        // ai v5 split usage: `result.usage` is final-step only; `result.totalUsage`
+        // aggregates across all steps. The harness records cumulative tokens
+        // per provider call, so prefer totalUsage and fall back to usage for
+        // single-step calls where they're equivalent.
+        const usage = await (result.totalUsage ?? result.usage).catch(() => undefined);
         const latencyMs = Date.now() - startedAt;
         const tokens = extractTokenBreakdown(usage);
         const costUsdMicro = await this.computeProviderCallCost(entry.provider, entry.model, tokens);
@@ -747,11 +751,13 @@ interface TokenBreakdown {
 }
 
 /**
- * Phase 3.9: pull every token kind we care about out of the ai SDK v4 usage
- * object. The ai SDK v4 surfaces `promptTokens` + `completionTokens`
- * canonically; reasoning + cache tokens are passed through
- * `providerMetadata.*.cachedInputTokens` / `reasoningTokens` when the
- * provider includes them. We read defensively — any missing field stays
+ * Pull every token kind we care about out of the ai SDK usage object. v5
+ * renamed the canonical fields from v4: `promptTokens` -> `inputTokens` and
+ * `completionTokens` -> `outputTokens`. We read both so this stays
+ * forward-compatible if anything downstream still hands us a v4-shaped
+ * record (mocks, persisted snapshots). Reasoning + cache tokens are passed
+ * through `providerMetadata.*.cachedInputTokens` / `reasoningTokens` when
+ * the provider includes them. We read defensively — any missing field stays
  * null rather than defaulting to 0 so the usage UI can distinguish "no
  * data" from "zero tokens".
  */
@@ -765,8 +771,10 @@ function extractTokenBreakdown(usage: unknown): TokenBreakdown {
   };
   if (!usage || typeof usage !== "object") return out;
   const record = usage as Record<string, unknown>;
-  if (typeof record.promptTokens === "number") out.promptTokens = record.promptTokens;
-  if (typeof record.completionTokens === "number") out.completionTokens = record.completionTokens;
+  if (typeof record.inputTokens === "number") out.promptTokens = record.inputTokens;
+  else if (typeof record.promptTokens === "number") out.promptTokens = record.promptTokens;
+  if (typeof record.outputTokens === "number") out.completionTokens = record.outputTokens;
+  else if (typeof record.completionTokens === "number") out.completionTokens = record.completionTokens;
   if (typeof record.reasoningTokens === "number") out.reasoningTokens = record.reasoningTokens;
   if (typeof record.cachedInputTokens === "number") out.cacheReadTokens = record.cachedInputTokens;
   // ai SDK v4 exposes `providerMetadata.anthropic.{cacheReadInputTokens,cacheCreationInputTokens}`

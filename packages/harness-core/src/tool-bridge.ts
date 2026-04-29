@@ -21,7 +21,7 @@
  */
 
 import { randomUUID } from "node:crypto";
-import { tool, type Tool } from "ai";
+import { dynamicTool, type Tool } from "ai";
 import { createLogger } from "@mako-ai/logger";
 import {
   buildRegistryToolExposurePlan,
@@ -48,9 +48,9 @@ export function toolFromDefinition(
   def: MakoToolDefinition,
   ctx: ToolBridgeContext,
 ): Tool {
-  return tool({
+  return dynamicTool({
     description: def.description,
-    parameters: def.inputSchema,
+    inputSchema: def.inputSchema,
     execute: async (args) => {
       const callId = randomUUID();
       ctx.bus.emit(ctx.sessionId, {

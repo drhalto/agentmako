@@ -13,7 +13,7 @@
     "@mako-ai/contracts": "workspace:*",
     "@mako-ai/harness-contracts": "workspace:*",
     "@mako-ai/logger": "workspace:*",
-    "ai": "^4.0.0",
+    "ai": "^5.0.0",
     "diff": "^9.0.0",
     "zod": "^3.25.76"
   }

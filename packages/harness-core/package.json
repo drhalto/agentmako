@@ -10,9 +10,9 @@
     "typecheck": "tsc -p tsconfig.json --noEmit"
   },
   "dependencies": {
-    "@ai-sdk/anthropic": "^1.0.0",
-    "@ai-sdk/openai": "^1.0.0",
-    "@ai-sdk/openai-compatible": "^0.1.0",
+    "@ai-sdk/anthropic": "^2.0.0",
+    "@ai-sdk/openai": "^2.0.0",
+    "@ai-sdk/openai-compatible": "^1.0.0",
     "@mako-ai/config": "workspace:*",
     "@mako-ai/contracts": "workspace:*",
     "@mako-ai/harness-contracts": "workspace:*",
@@ -22,7 +22,7 @@
     "@mako-ai/tools": "workspace:*",
     "@napi-rs/keyring": "^1.1.5",
     "@types/picomatch": "^4.0.3",
-    "ai": "^4.0.0",
+    "ai": "^5.0.0",
     "picomatch": "^4.0.4",
     "zod": "^3.25.76"
   }

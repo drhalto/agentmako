@@ -1,6 +1,6 @@
 /**
  * Model factory — turns a `ProviderSpec` + `modelId` + `apiKey` into an `ai`
- * SDK `LanguageModelV1` instance.
+ * SDK `LanguageModel` instance.
  *
  * Phase 3.1 supports four transports: `anthropic`, `openai`, `openai-compatible`,
  * and `none` (no-agent placeholder). Other transports declared in
@@ -15,7 +15,7 @@ import { createAnthropic } from "@ai-sdk/anthropic";
 import { createOpenAI } from "@ai-sdk/openai";
 import { createOpenAICompatible } from "@ai-sdk/openai-compatible";
 import type { ProviderSpec } from "@mako-ai/harness-contracts";
-import type { LanguageModelV1 } from "ai";
+import type { LanguageModel } from "ai";
 
 export interface ModelFactoryInput {
   spec: ProviderSpec;
@@ -49,7 +49,7 @@ function assertModelDeclared(spec: ProviderSpec, modelId: string): void {
   }
 }
 
-export function createLanguageModel(input: ModelFactoryInput): LanguageModelV1 {
+export function createLanguageModel(input: ModelFactoryInput): LanguageModel {
   const { spec, modelId, apiKey } = input;
   assertModelDeclared(spec, modelId);
 
