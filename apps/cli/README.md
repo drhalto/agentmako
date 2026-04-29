@@ -1,7 +1,7 @@
 # agentmako
 
 [![npm version](https://img.shields.io/npm/v/agentmako.svg?logo=npm)](https://www.npmjs.com/package/agentmako)
-[![Glama](https://img.shields.io/badge/dynamic/json?url=https://glama.ai/mcp/servers/agentmako/badge&query=$.grade&label=glama)](https://glama.ai/mcp/servers/agentmako)
+[![agentmako MCP server](https://glama.ai/mcp/servers/drhalto/agentmako/badges/score.svg)](https://glama.ai/mcp/servers/drhalto/agentmako)
 
 Agentmako is a local project intelligence CLI and MCP server for codebases and databases, with repo-aware indexing, schema snapshots, and secure live database connectivity.
 
