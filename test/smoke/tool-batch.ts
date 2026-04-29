@@ -63,6 +63,37 @@ async function main(): Promise<void> {
     );
     assert.ok(output.results.find((result) => result.label === "map")?.result, "resultMode: full should keep full payload");
 
+    const coercedTransportOutput = await invokeTool(
+      "tool_batch",
+      {
+        projectId: indexed.project.projectId,
+        verbosity: "compact",
+        continueOnError: "true",
+        ops: JSON.stringify([
+          { label: "status", tool: "project_index_status", args: { includeUnindexed: "false" } },
+          {
+            label: "ast",
+            tool: "ast_find_pattern",
+            args: {
+              pattern: "export function $NAME()",
+              languages: JSON.stringify(["ts"]),
+              maxMatches: "5",
+            },
+          },
+        ]),
+      },
+      {
+        projectStoreCache,
+        hotIndexCache,
+        requestContext: { requestId: "req_tool_batch_coerced_smoke" },
+      },
+    ) as ToolBatchToolOutput;
+
+    assert.equal(coercedTransportOutput.summary.requestedOps, 2);
+    assert.equal(coercedTransportOutput.summary.succeededOps, 2);
+    assert.equal(coercedTransportOutput.results.find((result) => result.label === "status")?.ok, true);
+    assert.equal(coercedTransportOutput.results.find((result) => result.label === "ast")?.ok, true);
+
     const mutationInput = ToolBatchInputSchema.safeParse({
       projectId: indexed.project.projectId,
       ops: [{ label: "refresh", tool: "project_index_refresh", args: { mode: "force" } }],

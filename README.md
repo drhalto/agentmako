@@ -128,7 +128,9 @@ Claude skills and includes the same `agentmako mcp` wiring in
 Prerequisites:
 
 - Claude Code installed
-- `agentmako` available on `PATH`
+- Node.js 20+ on `PATH` (the plugin runs `npx -y agentmako mcp`, which fetches
+  the published `agentmako` package automatically — no separate global install
+  required)
 - Your target project already attached with `agentmako connect`
 
 From the agentmako repo root:

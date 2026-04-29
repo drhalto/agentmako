@@ -8,7 +8,8 @@ them, while `.mcp.json` starts the existing `agentmako mcp` stdio server.
 ## Prerequisites
 
 - Claude Code installed.
-- `agentmako` available on `PATH`.
+- Node.js 20+ on `PATH` (the plugin's `.mcp.json` runs `npx -y agentmako mcp`,
+  which fetches and caches the published `agentmako` package automatically).
 - A Mako project already attached or initialized for the repo you are using.
 
 ## Local Development

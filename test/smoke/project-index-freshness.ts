@@ -46,6 +46,14 @@ async function main(): Promise<void> {
     assert.equal(fresh.reefFacts?.kind, "file_snapshot");
     assert.equal(fresh.reefFacts?.truncated, false);
 
+    const coercedBoolean = await invokeTool(
+      "project_index_status",
+      { projectId: indexed.project.projectId, includeUnindexed: "false" },
+      { projectStoreCache: cache },
+    ) as ProjectIndexStatusToolOutput;
+    assert.equal(coercedBoolean.toolName, "project_index_status");
+    assert.equal(coercedBoolean.unindexedScan.status, "skipped");
+
     writeFileSync(path.join(projectRoot, "src", "new-file.ts"), "export const added = true;\n");
 
     const freshWithoutDiskWalk = await invokeTool(

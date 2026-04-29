@@ -1,5 +1,5 @@
 import type { ToolInput, ToolOutput } from "@mako-ai/contracts";
-import { ZodError } from "zod";
+import { ZodError, type ZodTypeAny } from "zod";
 import { MakoToolError } from "./errors.js";
 import {
   getToolDefinition,
@@ -104,7 +104,7 @@ function parseToolInput(definition: MakoToolDefinition<string>, input: unknown):
       throw error;
     }
 
-    const coerced = coerceDeferredScalars(input);
+    const coerced = coerceDeferredInput(definition.inputSchema, input);
     if (coerced !== input) {
       try {
         return definition.inputSchema.parse(coerced) as ToolInput;
@@ -117,64 +117,110 @@ function parseToolInput(definition: MakoToolDefinition<string>, input: unknown):
   }
 }
 
-const NUMERIC_DEFERRED_KEYS = new Set([
-  "budget",
-  "cacheStalenessMs",
-  "factsLimit",
-  "limit",
-  "maxFindings",
-  "maxPerSection",
-  "maxSteps",
-  "traversalDepth",
-]);
-
-const BOOLEAN_DEFERRED_KEYS = new Set([
-  "acknowledgeAdvisory",
-  "continueOnError",
-  "freshen",
-  "includeAcknowledged",
-  "includeAppUsage",
-  "includeEqual",
-  "includeFacts",
-  "includeFindings",
-  "includeFullResults",
-  "includeHeuristicEdges",
-  "includeRawEvidence",
-]);
-
-function coerceDeferredScalars(value: unknown, key?: string): unknown {
-  if (Array.isArray(value)) {
-    let changed = false;
-    const out = value.map((entry) => {
-      const coerced = coerceDeferredScalars(entry);
+function coerceDeferredInput(schema: ZodTypeAny, value: unknown): unknown {
+  const typeName = schema._def.typeName as string;
+  if (
+    typeName === "ZodOptional"
+    || typeName === "ZodNullable"
+    || typeName === "ZodDefault"
+    || typeName === "ZodCatch"
+  ) {
+    return coerceDeferredInput(schema._def.innerType as ZodTypeAny, value);
+  }
+  if (typeName === "ZodEffects") {
+    return coerceDeferredInput(schema._def.schema as ZodTypeAny, value);
+  }
+  if (typeName === "ZodIntersection") {
+    const leftCoerced = coerceDeferredInput(schema._def.left as ZodTypeAny, value);
+    return coerceDeferredInput(schema._def.right as ZodTypeAny, leftCoerced);
+  }
+  if (typeName === "ZodDiscriminatedUnion") {
+    const objectValue = parseJsonObjectLike(value);
+    if (!objectValue || Array.isArray(objectValue)) {
+      return value;
+    }
+    const discriminator = schema._def.discriminator as string;
+    const discriminatorValue = (objectValue as Record<string, unknown>)[discriminator];
+    const option = schema._def.optionsMap.get(discriminatorValue) as ZodTypeAny | undefined;
+    return option ? coerceDeferredInput(option, objectValue) : value;
+  }
+  if (typeName === "ZodUnion") {
+    for (const option of schema._def.options as ZodTypeAny[]) {
+      const coerced = coerceDeferredInput(option, value);
+      if (option.safeParse(coerced).success) {
+        return coerced;
+      }
+    }
+    return value;
+  }
+  if (typeName === "ZodObject") {
+    const objectValue = parseJsonObjectLike(value);
+    if (!objectValue || Array.isArray(objectValue)) {
+      return value;
+    }
+    const shape = schema._def.shape() as Record<string, ZodTypeAny>;
+    let changed = objectValue !== value;
+    const out: Record<string, unknown> = { ...objectValue };
+    for (const [key, entrySchema] of Object.entries(shape)) {
+      if (!(key in out)) continue;
+      const coerced = coerceDeferredInput(entrySchema, out[key]);
+      if (coerced !== out[key]) {
+        out[key] = coerced;
+        changed = true;
+      }
+    }
+    return changed ? out : value;
+  }
+  if (typeName === "ZodArray") {
+    const arrayValue = parseJsonArrayLike(value);
+    if (!Array.isArray(arrayValue)) {
+      return value;
+    }
+    const elementSchema = schema._def.type as ZodTypeAny;
+    let changed = arrayValue !== value;
+    const out = arrayValue.map((entry) => {
+      const coerced = coerceDeferredInput(elementSchema, entry);
       if (coerced !== entry) changed = true;
       return coerced;
     });
     return changed ? out : value;
   }
-
-  if (value && typeof value === "object") {
-    let changed = false;
-    const out: Record<string, unknown> = {};
-    for (const [entryKey, entryValue] of Object.entries(value)) {
-      const coerced = coerceDeferredScalars(entryValue, entryKey);
-      out[entryKey] = coerced;
-      if (coerced !== entryValue) changed = true;
-    }
-    return changed ? out : value;
+  if (typeName === "ZodRecord") {
+    const objectValue = parseJsonObjectLike(value);
+    return objectValue && !Array.isArray(objectValue) ? objectValue : value;
   }
-
-  if (typeof value !== "string" || !key) {
-    return value;
+  if (typeName === "ZodNumber" && typeof value === "string") {
+    const trimmed = value.trim();
+    return /^[+-]?\d+(?:\.\d+)?$/.test(trimmed) ? Number(trimmed) : value;
   }
-
-  const trimmed = value.trim();
-  if (NUMERIC_DEFERRED_KEYS.has(key) && /^[+-]?\d+(?:\.\d+)?$/.test(trimmed)) {
-    return Number(trimmed);
-  }
-  if (BOOLEAN_DEFERRED_KEYS.has(key)) {
+  if (typeName === "ZodBoolean" && typeof value === "string") {
+    const trimmed = value.trim();
     if (trimmed === "true") return true;
     if (trimmed === "false") return false;
   }
   return value;
+}
+
+function parseJsonObjectLike(value: unknown): unknown {
+  if (value && typeof value === "object") return value;
+  if (typeof value !== "string") return value;
+  const trimmed = value.trim();
+  if (!trimmed.startsWith("{")) return value;
+  try {
+    return JSON.parse(trimmed) as unknown;
+  } catch {
+    return value;
+  }
+}
+
+function parseJsonArrayLike(value: unknown): unknown {
+  if (Array.isArray(value)) return value;
+  if (typeof value !== "string") return value;
+  const trimmed = value.trim();
+  if (!trimmed.startsWith("[")) return value;
+  try {
+    return JSON.parse(trimmed) as unknown;
+  } catch {
+    return value;
+  }
 }

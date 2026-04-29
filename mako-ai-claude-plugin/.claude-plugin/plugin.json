@@ -1,7 +1,7 @@
 {
   "name": "mako-ai",
-  "version": "0.1.0",
-  "description": "Project intelligence tools and guidance for Claude Code via the mako-ai MCP server.",
+  "version": "0.2.0",
+  "description": "Project intelligence skills for Claude Code. Teaches Claude when to use Mako's MCP tools (context packets, code and schema search, diagnostics, RLS audits) instead of grep-walking the repo.",
   "author": {
     "name": "mako-ai"
   },

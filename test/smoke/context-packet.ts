@@ -3,7 +3,7 @@ import { mkdirSync, mkdtempSync, rmSync, statSync, writeFileSync } from "node:fs
 import { randomUUID } from "node:crypto";
 import os from "node:os";
 import path from "node:path";
-import type { ContextPacketToolOutput, ProjectFinding } from "../../packages/contracts/src/index.ts";
+import type { AuthPathToolOutput, ContextPacketToolOutput, ProjectFinding } from "../../packages/contracts/src/index.ts";
 import { openGlobalStore, openProjectStore } from "../../packages/store/src/index.ts";
 import { createHotIndexCache } from "../../packages/tools/src/hot-index/index.ts";
 import { invokeTool } from "../../packages/tools/src/registry.ts";
@@ -306,6 +306,36 @@ async function main(): Promise<void> {
     assert.equal(packet.indexFreshness?.state, "fresh");
     assert.ok(packet.limits.providersRun.includes("hot_hint_index"));
     assert.equal(hotIndexCache.size(), 1, "first call should build one hot index");
+
+    const coercedAuthPath = await invokeTool(
+      "auth_path",
+      JSON.stringify({
+        projectId,
+        route: "/api/auth/callback",
+      }),
+      { hotIndexCache, requestContext: { requestId: "req_auth_path_coerced_smoke" } },
+    ) as AuthPathToolOutput;
+    assert.equal(coercedAuthPath.toolName, "auth_path");
+    assert.equal(coercedAuthPath.projectId, projectId);
+
+    const coercedTransportPacket = await invokeTool(
+      "context_packet",
+      {
+        projectId,
+        request: "where is getSession used by the auth callback?",
+        focusSymbols: JSON.stringify(["getSession"]),
+        focusRoutes: JSON.stringify(["/api/auth/callback"]),
+        focusDatabaseObjects: JSON.stringify(["public.user_profiles"]),
+        maxPrimaryContext: "5",
+        maxRelatedContext: "3",
+        budgetTokens: "1024",
+        includeRisks: "false",
+      },
+      { hotIndexCache, requestContext: { requestId: "req_context_packet_coerced_smoke" } },
+    ) as ContextPacketToolOutput;
+    assert.equal(coercedTransportPacket.toolName, "context_packet");
+    assert.ok(coercedTransportPacket.limits.budgetTokens <= 1024);
+    assert.ok(coercedTransportPacket.primaryContext.length <= 5);
 
     await invokeTool(
       "context_packet",

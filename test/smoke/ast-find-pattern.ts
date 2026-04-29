@@ -212,6 +212,18 @@ async function main(): Promise<void> {
     assert.equal(tsOnly.matches.length, 2, "both lib console.logs");
     assert.deepEqual(tsOnly.languagesApplied, ["ts"]);
 
+    // Some MCP clients re-emit selected/deferred tool params as strings.
+    // The registry should recover JSON-stringified arrays and numeric scalars.
+    const coercedTransportArgs = (await invokeTool("ast_find_pattern", {
+      projectId,
+      pattern: "console.log($X)",
+      captures: JSON.stringify(["X"]),
+      languages: JSON.stringify(["ts", "tsx"]),
+      maxMatches: "3",
+    })) as AstFindPatternToolOutput;
+    assert.equal(coercedTransportArgs.matches.length, 3);
+    assert.deepEqual(coercedTransportArgs.languagesApplied, ["ts", "tsx"]);
+
     // --- 3. pathGlob narrows by relative path ---
     const libGlob = (await invokeTool("ast_find_pattern", {
       projectId,
