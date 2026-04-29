@@ -8,6 +8,7 @@
 [![Smoke Tests](https://github.com/drhalto/agentmako/actions/workflows/smoke.yml/badge.svg)](https://github.com/drhalto/agentmako/actions/workflows/smoke.yml)
 [![License: Apache 2.0](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](./LICENSE)
 [![Node.js >=20](https://img.shields.io/badge/node-%3E%3D20-brightgreen.svg)](https://nodejs.org/)
+[![SafeSkill 50/100](https://img.shields.io/badge/SafeSkill-50%2F100_Use%20with%20Caution-orange)](https://safeskill.dev/scan/drhalto-agentmako)
 
 agentmako is a local-first codebase intelligence engine for AI coding
 tools.
