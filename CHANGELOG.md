@@ -7,6 +7,23 @@ it reaches 1.0.
 
 ## [Unreleased]
 
+## [0.2.2] - 2026-04-29
+
+### Fixed
+
+- MCP stdio tool calls now tolerate stringified non-string arguments
+  before Zod validation, fixing boolean, number, and array inputs for
+  tools such as `project_index_status`, `ast_find_pattern`, and
+  `tool_batch`.
+- `agentmako dashboard` now works from installed packages by serving
+  bundled dashboard assets instead of requiring an `apps/web` source
+  checkout next to the CLI binary.
+
+### Changed
+
+- CLI builds now package the web dashboard into `dist/web` and verify
+  those assets before publishing.
+
 ## [0.2.0] - 2026-04-28
 
 ### Added
@@ -70,6 +87,7 @@ Initial public release of `agentmako` under Apache-2.0.
 - `mako-ai-claude-plugin` with Mako-specific Claude Code skills and
   bundled MCP wiring.
 
-[Unreleased]: https://github.com/drhalto/agentmako/compare/v0.2.0...HEAD
+[Unreleased]: https://github.com/drhalto/agentmako/compare/v0.2.2...HEAD
+[0.2.2]: https://github.com/drhalto/agentmako/compare/v0.2.1...v0.2.2
 [0.2.0]: https://github.com/drhalto/agentmako/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/drhalto/agentmako/releases/tag/v0.1.0
