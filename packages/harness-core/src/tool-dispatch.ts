@@ -21,7 +21,7 @@
  */
 
 import { randomUUID } from "node:crypto";
-import { tool, type Tool } from "ai";
+import { dynamicTool, type Tool } from "ai";
 import { createLogger } from "@mako-ai/logger";
 import type { ProjectStore } from "@mako-ai/store";
 import {
@@ -148,9 +148,9 @@ export class ToolDispatch {
       hasSubAgentContext: this.input.subAgentContext != null,
     });
     for (const def of ACTION_TOOLS) {
-      out[def.name] = tool({
+      out[def.name] = dynamicTool({
         description: def.description,
-        parameters: def.parameters,
+        inputSchema: def.parameters,
         execute: async (args) => {
           return this.executeTool(def.name, args);
         },
@@ -158,9 +158,9 @@ export class ToolDispatch {
     }
     if (exposurePlan.includeMemoryTools) {
       for (const def of MEMORY_TOOLS) {
-        out[def.name] = tool({
+        out[def.name] = dynamicTool({
           description: def.description,
-          parameters: def.parameters,
+          inputSchema: def.parameters,
           execute: async (args) => {
             return this.executeMemoryTool(def.name, args);
           },
@@ -169,9 +169,9 @@ export class ToolDispatch {
     }
     if (exposurePlan.includeSemanticTools) {
       for (const def of SEMANTIC_TOOLS) {
-        out[def.name] = tool({
+        out[def.name] = dynamicTool({
           description: def.description,
-          parameters: def.parameters,
+          inputSchema: def.parameters,
           execute: async (args) => {
             return this.executeSemanticTool(def.name, args);
           },
@@ -180,9 +180,9 @@ export class ToolDispatch {
     }
     if (exposurePlan.includeSubAgentTools) {
       for (const def of SUB_AGENT_TOOLS) {
-        out[def.name] = tool({
+        out[def.name] = dynamicTool({
           description: def.description,
-          parameters: def.parameters,
+          inputSchema: def.parameters,
           execute: async (args) => {
             return this.executeSubAgentTool(def.name, args);
           },
@@ -212,10 +212,13 @@ export class ToolDispatch {
         out[name] = bridgedTool;
       }
     }
-    out[exposurePlan.toolSearch.name] = tool({
+    out[exposurePlan.toolSearch.name] = dynamicTool({
       description: exposurePlan.toolSearch.description,
-      parameters: exposurePlan.toolSearch.parameters,
-      execute: exposurePlan.toolSearch.execute,
+      inputSchema: exposurePlan.toolSearch.parameters,
+      execute: async (args: unknown) =>
+        exposurePlan.toolSearch.execute(
+          args as Parameters<typeof exposurePlan.toolSearch.execute>[0],
+        ),
     });
     return out;
   }

@@ -22,7 +22,7 @@ type ContractFallbackEntry = { provider: string; model: string };
 import { createLogger } from "@mako-ai/logger";
 import type { CallerKind, ProjectStore, HarnessSessionRecord } from "@mako-ai/store";
 import type { ToolServiceOptions } from "@mako-ai/tools";
-import { streamText, type CoreMessage } from "ai";
+import { stepCountIs, streamText, type CoreMessage } from "ai";
 import { runNoAgentTurn } from "./ask-adapter.js";
 import { SessionEventBus, type EmittedSessionEvent } from "./event-bus.js";
 import { classifyProviderError } from "./fallback.js";
@@ -570,7 +570,7 @@ export class Harness {
           model,
           messages: history,
           tools: dispatch.tools,
-          maxSteps: this.options.maxSteps ?? 10,
+          stopWhen: stepCountIs(this.options.maxSteps ?? 10),
           abortSignal: AbortSignal.timeout(DEFAULT_PROVIDER_TIMEOUT_MS),
         });
 

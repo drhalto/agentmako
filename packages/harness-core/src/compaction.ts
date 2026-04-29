@@ -22,7 +22,7 @@
  * warning event. Compaction will retry on the next `turn.done` crossing.
  */
 
-import { generateText, type LanguageModelV1 } from "ai";
+import { generateText, type LanguageModel } from "ai";
 import { createLogger } from "@mako-ai/logger";
 import type {
   HarnessMessageRecord,
@@ -118,7 +118,7 @@ export async function maybeCompact(
     threshold,
   });
 
-  let model: LanguageModelV1;
+  let model: LanguageModel;
   try {
     model = await resolveActiveModel(session, ctx.providerRegistry);
   } catch (error) {
@@ -238,7 +238,7 @@ function resolveContextWindow(
 async function resolveActiveModel(
   session: { activeProvider: string | null; activeModel: string | null },
   registry: ProviderRegistry,
-): Promise<LanguageModelV1> {
+): Promise<LanguageModel> {
   if (!session.activeProvider || !session.activeModel) {
     throw new Error(
       "session has no active provider/model — cannot compact (session was never touched by a real provider)",
@@ -253,7 +253,7 @@ async function resolveActiveModel(
 }
 
 async function summarize(
-  model: LanguageModelV1,
+  model: LanguageModel,
   items: MessageWithParts[],
 ): Promise<string> {
   const transcript = items
@@ -274,7 +274,7 @@ async function summarize(
     model,
     system,
     prompt: transcript,
-    maxTokens: 800,
+    maxOutputTokens: 800,
   });
   return result.text.trim();
 }
