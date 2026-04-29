@@ -56,6 +56,8 @@ jobs:
             ${{ runner.os }}-pnpm-store-
 
       - name: Install dependencies
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
         run: pnpm install --frozen-lockfile
 
       - name: Validate release version
