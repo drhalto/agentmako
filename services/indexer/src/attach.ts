@@ -1,5 +1,6 @@
-import { existsSync, realpathSync, statSync } from "node:fs";
-import { resolveGlobalDbPath, resolveProjectDbPath } from "@mako-ai/config";
+import { existsSync, realpathSync, statSync, writeFileSync } from "node:fs";
+import { join } from "node:path";
+import { resolveGlobalDbPath, resolveProjectDbPath, resolveProjectStateDir } from "@mako-ai/config";
 import { createLogger } from "@mako-ai/logger";
 import { createId, normalizePath } from "@mako-ai/store";
 import { ProjectCommandError } from "./errors.js";
@@ -9,6 +10,12 @@ import type { AttachProjectResult, IndexerOptions } from "./types.js";
 import { durationMs, withGlobalStore, withProjectStore } from "./utils.js";
 
 const attachLogger = createLogger("mako-indexer", { component: "attach" });
+
+const PROJECT_STATE_GITIGNORE_CONTENT =
+  "# agentmako project state — local indexes, snapshots, scratch DB.\n" +
+  "# Safe to delete; regenerated on next `agentmako connect`.\n" +
+  "*\n" +
+  "!.gitignore\n";
 
 interface AttachProjectBehaviorOptions {
   logLifecycleEvent?: boolean;
@@ -31,6 +38,16 @@ function assertProjectRoot(projectRoot: string): string {
   return realpathSync(projectRoot);
 }
 
+function ensureProjectStateGitignore(projectRoot: string, stateDirName: string): void {
+  const projectStateDir = resolveProjectStateDir(projectRoot, stateDirName);
+  const gitignorePath = join(projectStateDir, ".gitignore");
+  if (existsSync(gitignorePath)) {
+    return;
+  }
+
+  writeFileSync(gitignorePath, PROJECT_STATE_GITIGNORE_CONTENT, "utf8");
+}
+
 export function attachProject(
   projectRoot: string,
   options: IndexerOptions = {},
@@ -49,6 +66,8 @@ export function attachProject(
   return withGlobalStore(options, ({ config, globalStore }) =>
     withProjectStore(resolvedRootPath, config, (projectStore) => {
       try {
+        ensureProjectStateGitignore(resolvedRootPath, config.stateDirName);
+
         const existingProject = globalStore.getProjectByPath(normalizedRootPath);
         projectId = existingProject?.projectId ?? createId("project");
         profile = detectProjectProfile(resolvedRootPath);

@@ -7,6 +7,16 @@ it reaches 1.0.
 
 ## [Unreleased]
 
+## [0.3.1] - 2026-04-30
+
+### Fixed
+
+- `agentmako connect` now writes a project-local `.mako-ai/.gitignore` so
+  local indexes, snapshots, and scratch DB files are ignored without changing
+  the repository root `.gitignore`. If you previously committed `.mako-ai/`,
+  run `git rm -r --cached .mako-ai/` once to untrack it; new installs are
+  protected automatically.
+
 ## [0.3.0] - 2026-04-30
 
 ### Added
@@ -166,7 +176,8 @@ Initial public release of `agentmako` under Apache-2.0.
 - `mako-ai-claude-plugin` with Mako-specific Claude Code skills and
   bundled MCP wiring.
 
-[Unreleased]: https://github.com/drhalto/agentmako/compare/v0.3.0...HEAD
+[Unreleased]: https://github.com/drhalto/agentmako/compare/v0.3.1...HEAD
+[0.3.1]: https://github.com/drhalto/agentmako/compare/v0.3.0...v0.3.1
 [0.3.0]: https://github.com/drhalto/agentmako/compare/v0.2.3...v0.3.0
 [0.2.2]: https://github.com/drhalto/agentmako/compare/v0.2.1...v0.2.2
 [0.2.0]: https://github.com/drhalto/agentmako/compare/v0.1.0...v0.2.0
