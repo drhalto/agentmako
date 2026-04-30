@@ -14,9 +14,19 @@ import {
   type WorkflowRecipeStep,
   type WorkflowPacketSection,
   type WorkflowPacketSectionKind,
+  type ContextLayoutZone,
 } from "@mako-ai/contracts";
 import { hashJson } from "@mako-ai/store";
+import { orderByContextLayout } from "../context-layout.js";
 import { normalizeStringArray } from "./common.js";
+
+const WORKFLOW_SECTION_LAYOUT: Partial<Record<WorkflowPacketSectionKind, ContextLayoutZone>> = {
+  summary: "start",
+  verification: "end",
+  done_criteria: "end",
+  rerun_triggers: "end",
+  steps: "end",
+};
 
 function buildPacketHashSeed(input: WorkflowPacketInput, discriminator?: unknown): unknown {
   return {
@@ -115,6 +125,7 @@ export function buildWorkflowPacketSection(args: {
   packetId: string;
   kind: WorkflowPacketSectionKind;
   title: string;
+  layoutZone?: ContextLayoutZone;
   entries: ReadonlyArray<{
     text: string;
     citationIds?: readonly string[];
@@ -126,6 +137,7 @@ export function buildWorkflowPacketSection(args: {
     sectionId,
     kind: args.kind,
     title: args.title,
+    layoutZone: args.layoutZone ?? WORKFLOW_SECTION_LAYOUT[args.kind] ?? "middle",
     entries: args.entries.map((entry) =>
       buildWorkflowPacketEntry({
         packetId: args.packetId,
@@ -439,6 +451,7 @@ export class WorkflowPacketRegistry {
       throw new Error(`No workflow packet generator registered for ${input.family}.`);
     }
     const packet = await generator.generate(input);
+    packet.sections = orderByContextLayout(packet.sections);
     return assertWorkflowPacketIntegrity(
       packet as WorkflowPacket,
       input,

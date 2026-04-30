@@ -19,7 +19,7 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { randomUUID } from "node:crypto";
 import os from "node:os";
 import path from "node:path";
-import type { LintFilesToolOutput } from "../../packages/contracts/src/index.ts";
+import type { LintFilesToolOutput, ProjectFindingsToolOutput } from "../../packages/contracts/src/index.ts";
 import { invokeTool } from "../../packages/tools/src/registry.ts";
 import { openGlobalStore, openProjectStore } from "../../packages/store/src/index.ts";
 
@@ -190,6 +190,20 @@ async function main(): Promise<void> {
       projectStore.close();
     }
 
+    const rulePackFilteredFindings = (await invokeTool("project_findings", {
+      projectId,
+      source: "rule_pack:smoke.sensitive_query_tenant_scope",
+      status: "active",
+      freshnessPolicy: "allow_stale_labeled",
+    })) as ProjectFindingsToolOutput;
+    assert.ok(
+      rulePackFilteredFindings.findings.some((finding) =>
+        finding.source === "lint_files" &&
+        finding.ruleId === "smoke.sensitive_query_tenant_scope"
+      ),
+      "project_findings source=rule_pack:<id> should match lint_files findings by ruleId",
+    );
+
     // --- 2. Clean file produces zero findings + "clean" warning ---
     const mathLint = (await invokeTool("lint_files", {
       projectId,
@@ -214,7 +228,42 @@ async function main(): Promise<void> {
       afterCleanStore.close();
     }
 
-    // --- 3. Unresolved files land in unresolvedFiles + warning ---
+    // --- 3. Rule-pack edits are picked up without restarting the process ---
+    const hotReloadedRulePack = [
+      "name: smoke-rules",
+      "rules:",
+      "  - id: smoke.return_value_review",
+      "    category: identity_key_mismatch",
+      "    severity: medium",
+      "    confidence: probable",
+      "    languages: [ts, tsx]",
+      "    message: 'Review return value `{{capture.VALUE}}`'",
+      "    pattern: return $VALUE",
+    ].join("\n");
+    writeFileSync(path.join(projectRoot, ".mako", "rules", "tenant.yaml"), `${hotReloadedRulePack}\n`);
+    const hotReloadLint = (await invokeTool("lint_files", {
+      projectId,
+      files: ["lib/math.ts"],
+    })) as LintFilesToolOutput;
+    assert.ok(
+      hotReloadLint.findings.some((f) => f.code === "smoke.return_value_review"),
+      "editing a rule pack should invalidate the diagnostics rule cache without an MCP restart",
+    );
+
+    const originalRulePack = [
+      "name: smoke-rules",
+      "rules:",
+      "  - id: smoke.sensitive_query_tenant_scope",
+      "    category: identity_key_mismatch",
+      "    severity: high",
+      "    confidence: confirmed",
+      "    languages: [ts, tsx]",
+      "    message: 'Sensitive query receives `{{capture.ARG}}` — confirm it is tenant-scoped'",
+      "    pattern: sensitiveQuery($ARG)",
+    ].join("\n");
+    writeFileSync(path.join(projectRoot, ".mako", "rules", "tenant.yaml"), `${originalRulePack}\n`);
+
+    // --- 4. Unresolved files land in unresolvedFiles + warning ---
     const mixedLint = (await invokeTool("lint_files", {
       projectId,
       files: ["lib/user.ts", "lib/ghost.ts"],
@@ -228,7 +277,7 @@ async function main(): Promise<void> {
     // Resolved file still produces findings; unresolved one is silently dropped.
     assert.ok(mixedLint.findings.length >= 1);
 
-    // --- 4. Truncation when maxFindings < total ---
+    // --- 5. Truncation when maxFindings < total ---
     const truncated = (await invokeTool("lint_files", {
       projectId,
       files: ["lib/user.ts"],

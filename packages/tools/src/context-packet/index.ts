@@ -16,8 +16,16 @@ import { assessFileFreshness, summarizeIndexFreshnessDetails } from "@mako-ai/in
 import type { ProjectStore } from "@mako-ai/store";
 import { getDefaultHotIndexCache } from "../hot-index/index.js";
 import { withProjectContext, type ToolServiceOptions } from "../runtime.js";
+import { ensureProjectFresh } from "../freshness/index.js";
 import { detectContextPacketIntent } from "./intent.js";
 import { buildRecommendedHarnessPattern } from "./harness-patterns.js";
+import { buildExpandableTool } from "./expandable-tools-catalog.js";
+import {
+  contextPacketModePolicySummary,
+  providerEnabled,
+  resolveContextPacketModePolicy,
+  type ContextPacketModePolicy,
+} from "./modes.js";
 import { collectContextPacketProviders } from "./providers.js";
 import { rankContextCandidates } from "./ranking.js";
 import { detectContextPacketRisks } from "./risks.js";
@@ -146,50 +154,12 @@ function collectDatabaseObjects(
 function expandableTools(
   input: ContextPacketToolInput,
   projectId: string,
-  args: { dirty: boolean; needsWorkingTreeOverlay: boolean },
+  args: { dirty: boolean; needsWorkingTreeOverlay: boolean; policy: ContextPacketModePolicy },
 ): ContextPacketExpandableTool[] {
-  const locator = { projectId } satisfies JsonObject;
-  const tools: ContextPacketExpandableTool[] = [
-    {
-      toolName: "repo_map",
-      suggestedArgs: locator,
-      reason: "Expand from the packet into a broader ranked project map.",
-      whenToUse: "Use when primary and related context are too narrow.",
-      readOnly: true,
-    },
-    {
-      toolName: "live_text_search",
-      suggestedArgs: {
-        projectId,
-        query: input.request,
-        fixedStrings: true,
-      } as unknown as JsonObject,
-      reason: "Verify exact live filesystem text when indexed rows may be stale.",
-      whenToUse: "Use before trusting suspicious line numbers or post-edit checks.",
-      readOnly: true,
-    },
-    {
-      toolName: "project_open_loops",
-      suggestedArgs: locator,
-      reason: "Check unresolved Reef findings, stale facts, and failed diagnostics related to the project.",
-      whenToUse: "Use when the task may inherit unresolved work or stale evidence.",
-      readOnly: true,
-    },
-    {
-      toolName: "verification_state",
-      suggestedArgs: locator,
-      reason: "See which diagnostics are fresh and which changed files need verification.",
-      whenToUse: "Use before declaring a change verified.",
-      readOnly: true,
-    },
-    {
-      toolName: "evidence_confidence",
-      suggestedArgs: locator,
-      reason: "Inspect Reef confidence labels for facts and findings before trusting ambiguous evidence.",
-      whenToUse: "Use when indexed, historical, or semantic evidence may need cross-checking.",
-      readOnly: true,
-    },
-  ];
+  const ctx = { input, projectId };
+  const tools: ContextPacketExpandableTool[] = args.policy.expandableTools.map(
+    (name) => buildExpandableTool(name, ctx),
+  );
 
   if (args.needsWorkingTreeOverlay) {
     tools.unshift({
@@ -493,7 +463,23 @@ export async function contextPacketTool(
   return withProjectContext(input, options, async ({ project, projectStore }) => {
     const startedAtMs = Date.now();
     const reefBacked = isReefBackedToolViewEnabled("context_packet");
+    const policy = resolveContextPacketModePolicy(input.mode);
+    const enabledProviders = new Set(policy.enabledProviders);
+    const includeRisks = input.includeRisks ?? policy.includeRisks;
+    const risksMinConfidence = input.risksMinConfidence ?? 0;
+    const includeInstructions = input.includeInstructions ?? policy.includeInstructions;
+    const includeActiveFindings = policy.includeActiveFindings;
+    const includeExpandableTools = policy.includeExpandableTools;
     const intent = detectContextPacketIntent(input);
+    const freshnessGate = await ensureProjectFresh({
+      project,
+      projectStore,
+      options,
+      reason: input.freshnessPolicy === "prefer_fresh"
+        ? "context_packet prefer_fresh"
+        : "context_packet",
+      waitWhenIdle: input.freshnessPolicy === "prefer_fresh",
+    });
     const latestRun = projectStore.getLatestIndexRun();
     const hotIndexCache = options.hotIndexCache ?? getDefaultHotIndexCache();
     // Watcher-driven dirty paths trigger a path-scoped refresh in the
@@ -512,15 +498,18 @@ export async function contextPacketTool(
       intent,
       projectStore,
       hotIndex,
+      enabledProviders,
     });
     const workingTreeOverlayFacts = reefBacked
       ? collectWorkingTreeOverlayFacts(projectStore, project.projectId)
       : new Map<string, ProjectFact>();
-    const overlayCandidates = overlayFactCandidateSeeds({
-      input,
-      factsByPath: workingTreeOverlayFacts,
-    });
-    const conventionCandidates = reefBacked
+    const overlayCandidates = providerEnabled(policy, "working_tree_overlay")
+      ? overlayFactCandidateSeeds({
+          input,
+          factsByPath: workingTreeOverlayFacts,
+        })
+      : [];
+    const conventionCandidates = reefBacked && providerEnabled(policy, "reef_convention")
       ? conventionFactCandidateSeeds({
           input,
           projectStore,
@@ -533,9 +522,9 @@ export async function contextPacketTool(
     const indexFreshness = summarizeIndexFreshnessDetails([...freshnessByPath.values()]);
     const dirty = indexFreshness.state !== "fresh";
     const changedFilesMissingOverlay = missingChangedOverlayFacts(input, workingTreeOverlayFacts);
-    const maxPrimaryContext = input.maxPrimaryContext ?? DEFAULT_MAX_PRIMARY_CONTEXT;
-    const maxRelatedContext = input.maxRelatedContext ?? DEFAULT_MAX_RELATED_CONTEXT;
-    const budgetTokens = input.budgetTokens ?? DEFAULT_BUDGET_TOKENS;
+    const maxPrimaryContext = input.maxPrimaryContext ?? policy.defaultMaxPrimaryContext ?? DEFAULT_MAX_PRIMARY_CONTEXT;
+    const maxRelatedContext = input.maxRelatedContext ?? policy.defaultMaxRelatedContext ?? DEFAULT_MAX_RELATED_CONTEXT;
+    const budgetTokens = input.budgetTokens ?? policy.defaultBudgetTokens ?? DEFAULT_BUDGET_TOKENS;
     const ranked = rankContextCandidates(candidateSeeds, {
       maxPrimaryContext,
       maxRelatedContext,
@@ -548,7 +537,7 @@ export async function contextPacketTool(
     const primaryContext = annotateContextOverlay(ranked.primaryContext, workingTreeOverlayFacts);
     const relatedContext = annotateContextOverlay(ranked.relatedContext, workingTreeOverlayFacts);
     const allContext = [...primaryContext, ...relatedContext];
-    const rawActiveFindings = reefBacked
+    const rawActiveFindings = reefBacked && (includeActiveFindings || includeRisks)
       ? collectRelevantActiveFindings({
           input,
           projectStore,
@@ -556,9 +545,10 @@ export async function contextPacketTool(
           candidates: allContext,
         })
       : [];
-    const activeFindings = rawActiveFindings.filter((finding) => finding.freshness.state === "fresh");
-    const staleActiveFindingsDropped = rawActiveFindings.length - activeFindings.length;
-    const warnings = [...collected.warnings];
+    const relevantFreshFindings = rawActiveFindings.filter((finding) => finding.freshness.state === "fresh");
+    const activeFindings = includeActiveFindings ? relevantFreshFindings : [];
+    const staleActiveFindingsDropped = rawActiveFindings.length - relevantFreshFindings.length;
+    const warnings = [...collected.warnings, ...freshnessGate.warnings];
     if (ranked.budgetExhausted) {
       warnings.push("context packet was truncated by budgetTokens.");
     }
@@ -577,15 +567,19 @@ export async function contextPacketTool(
     if (staleActiveFindingsDropped > 0) {
       warnings.push(`Dropped ${staleActiveFindingsDropped} stale active finding(s) from edit-guiding context.`);
     }
-    const risks = input.includeRisks === false
+    if (freshnessGate.status === "stale" || freshnessGate.status === "degraded") {
+      warnings.push(`Project freshness gate is ${freshnessGate.status}: ${freshnessGate.reason}`);
+    }
+    const risks = !includeRisks
       ? []
       : detectContextPacketRisks({
           request: input.request,
           intent,
           candidates: allContext,
           indexFreshness,
-        });
-    const scopedInstructions = input.includeInstructions === false
+          activeFindings: relevantFreshFindings,
+        }).filter((risk) => risk.confidence >= risksMinConfidence);
+    const scopedInstructions = !includeInstructions
       ? []
       : loadScopedInstructions({
           projectRoot: project.canonicalPath,
@@ -624,6 +618,14 @@ export async function contextPacketTool(
       projectId: project.projectId,
       projectRoot: project.canonicalPath,
       request: input.request,
+      mode: policy.mode,
+      modePolicy: contextPacketModePolicySummary({
+        policy,
+        includeInstructions,
+        includeRisks,
+        includeActiveFindings,
+        includeExpandableTools,
+      }),
       intent,
       primaryContext,
       relatedContext,
@@ -639,10 +641,14 @@ export async function contextPacketTool(
         risks,
         indexFreshness,
       }),
-      expandableTools: expandableTools(input, project.projectId, {
-        dirty,
-        needsWorkingTreeOverlay: changedFilesMissingOverlay.length > 0,
-      }),
+      expandableTools: includeExpandableTools
+        ? expandableTools(input, project.projectId, {
+            dirty: dirty || freshnessGate.status === "stale" || freshnessGate.status === "degraded",
+            needsWorkingTreeOverlay: changedFilesMissingOverlay.length > 0,
+            policy,
+          })
+        : [],
+      freshnessGate,
       indexFreshness,
       reefExecution,
       limits: {
@@ -654,6 +660,11 @@ export async function contextPacketTool(
           ...collected.providersRun,
           ...(overlayCandidates.length > 0 ? ["working_tree_overlay"] : []),
           ...(conventionCandidates.length > 0 ? ["reef_convention"] : []),
+        ],
+        providersSkipped: [
+          ...collected.providersSkipped,
+          ...(!providerEnabled(policy, "working_tree_overlay") ? ["working_tree_overlay"] : []),
+          ...(!providerEnabled(policy, "reef_convention") ? ["reef_convention"] : []),
         ],
         providersFailed: collected.providersFailed,
         candidatesConsidered: ranked.candidatesConsidered,

@@ -1,5 +1,5 @@
 import type { AnswerTrustState, QueryKind } from "./answer.js";
-import type { EvidenceStatus, JsonObject, SupportLevel } from "./common.js";
+import type { ContextLayoutZone, EvidenceStatus, JsonObject, SupportLevel } from "./common.js";
 import type { WorkflowPacketFamily, WorkflowPacketInput } from "./workflow-context.js";
 
 export type WorkflowPacketSectionKind =
@@ -38,6 +38,7 @@ export interface WorkflowPacketSection {
   sectionId: string;
   kind: WorkflowPacketSectionKind;
   title: string;
+  layoutZone?: ContextLayoutZone;
   entries: WorkflowPacketEntry[];
 }
 

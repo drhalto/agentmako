@@ -6,6 +6,7 @@ import type {
   AttachedProject,
   AuthPathToolInput,
   AuthPathToolOutput,
+  JsonObject,
   FileHealthToolInput,
   FileHealthToolOutput,
   ProjectProfile,
@@ -190,18 +191,81 @@ export async function fileHealthTool(input: FileHealthToolInput, options: ToolSe
   );
 }
 
+function authPathInputText(input: AuthPathToolInput): string {
+  return input.route ?? input.file ?? input.feature ?? "auth path";
+}
+
+function isAuthPathNoMatch(error: unknown): boolean {
+  return isMakoToolError(error) && (
+    error.code === "route_not_found" ||
+    error.code === "file_not_found" ||
+    error.code === "feature_not_found"
+  );
+}
+
 export async function authPathTool(input: AuthPathToolInput, options: ToolServiceOptions = {}): Promise<AuthPathToolOutput> {
-  return runAnswerTool(
-    "auth_path",
-    input,
-    (context) =>
-      [
-        input.route ? resolveRouteIdentifier(resolveIndexedRoute(context.projectStore, input.route)) : undefined,
-        input.file ? resolveIndexedFilePath(context.project.canonicalPath, context.projectStore, input.file) : undefined,
-        input.feature ? resolveAuthFeature(context, input.feature) : undefined,
+  return withProjectContext(input, options, async ({ project, profile, projectStore }) => {
+    const supportLevel = profile?.supportLevel ?? "best_effort";
+    const requestedText = authPathInputText(input);
+    try {
+      const queryText = [
+        input.route ? resolveRouteIdentifier(resolveIndexedRoute(projectStore, input.route)) : undefined,
+        input.file ? resolveIndexedFilePath(project.canonicalPath, projectStore, input.file) : undefined,
+        input.feature ? resolveAuthFeature({ project, profile, projectStore }, input.feature) : undefined,
       ]
         .filter((value): value is string => Boolean(value))
-        .join(" "),
-    options,
-  );
+        .join(" ");
+      const packet = createFreshAnswerPacket(project.projectId, "auth_path", queryText, supportLevel);
+      const result = await answerWithStores(
+        packet,
+        profile,
+        {
+          packet,
+          project,
+          profile: profile ?? createFallbackProfile(project),
+          projectStore,
+        },
+        options,
+      );
+
+      return {
+        toolName: "auth_path",
+        projectId: project.projectId,
+        result,
+        matched: true,
+      };
+    } catch (error) {
+      if (!isAuthPathNoMatch(error)) {
+        throw error;
+      }
+
+      const reason = error instanceof Error ? error.message : "No indexed auth target matched.";
+      const packet = createFreshAnswerPacket(project.projectId, "auth_path", requestedText, supportLevel);
+      const result = answerEngine.createFallbackResult({
+        ...packet,
+        evidenceStatus: "partial",
+        missingInformation: [reason],
+      });
+      const suggestedArgs: JsonObject = {
+        projectId: project.projectId,
+        term: requestedText,
+        limit: 8,
+        verbosity: "compact",
+      };
+
+      return {
+        toolName: "auth_path",
+        projectId: project.projectId,
+        result,
+        matched: false,
+        reason,
+        fallbackReason: reason,
+        suggestedNext: {
+          tool: "cross_search",
+          args: suggestedArgs,
+          reason: "No exact auth target matched; search indexed evidence for the requested route, file, or feature.",
+        },
+      };
+    }
+  });
 }

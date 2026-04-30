@@ -127,6 +127,10 @@ export const CLAUDE_CODE_TOOL_HINTS: Record<
   db_table_schema: {
     searchHint: "complete table columns constraints indexes",
   },
+  mako_help: {
+    searchHint: "mako workflow recipe tool sequence",
+    alwaysLoad: true,
+  },
   ask: {
     searchHint: "answer question one round answer loop",
     alwaysLoad: true,
@@ -162,7 +166,7 @@ export const CLAUDE_CODE_TOOL_HINTS: Record<
     searchHint: "live ripgrep text search filesystem",
   },
   lint_files: {
-    searchHint: "diagnostics findings rule packs files",
+    searchHint: "diagnostics findings rule packs canonical helper files",
   },
   typescript_diagnostics: {
     searchHint: "typescript compiler diagnostics reef ingest",
@@ -226,6 +230,9 @@ export const CLAUDE_CODE_TOOL_HINTS: Record<
   file_findings: {
     searchHint: "reef diagnostics for one file",
   },
+  file_preflight: {
+    searchHint: "reef pre edit file gate",
+  },
   project_facts: {
     searchHint: "reef facts calculated project state",
   },
@@ -238,6 +245,9 @@ export const CLAUDE_CODE_TOOL_HINTS: Record<
   reef_overlay_diff: {
     searchHint: "reef compare indexed working tree overlay facts",
   },
+  reef_diff_impact: {
+    searchHint: "reef changed files impact callers findings conventions",
+  },
   reef_instructions: {
     searchHint: "reef scoped AGENTS mako project instructions",
   },
@@ -245,7 +255,10 @@ export const CLAUDE_CODE_TOOL_HINTS: Record<
     searchHint: "reef rule descriptor metadata",
   },
   rule_pack_validate: {
-    searchHint: "reef validate mako yaml rule packs",
+    searchHint: "reef validate mako yaml rule packs canonical helper",
+  },
+  extract_rule_template: {
+    searchHint: "reef mine rule pack yaml from git fix diff",
   },
   project_diagnostic_runs: {
     searchHint: "reef diagnostic source run status cache age",

@@ -23,7 +23,8 @@ import { withProjectContext, type ToolServiceOptions } from "../runtime.js";
  *   `truncated: true` + a warning explaining which cap fired.
  */
 
-const DEFAULT_MAX_FINDINGS = 500;
+const DEFAULT_COMPACT_MAX_FINDINGS = 100;
+const DEFAULT_FULL_MAX_FINDINGS = 500;
 const LINT_FILES_REEF_SOURCE = "lint_files";
 
 function reefSeverity(issue: AnswerSurfaceIssue): ProjectFinding["severity"] {
@@ -130,7 +131,9 @@ export async function lintFilesTool(
     const startedAt = new Date().toISOString();
     const inputRevision = projectStore.loadReefAnalysisState(project.projectId, project.canonicalPath)?.currentRevision;
     const warnings: string[] = [];
-    const maxFindings = input.maxFindings ?? DEFAULT_MAX_FINDINGS;
+    const verbosity = input.verbosity ?? "compact";
+    const maxFindings = input.maxFindings ??
+      (verbosity === "full" ? DEFAULT_FULL_MAX_FINDINGS : DEFAULT_COMPACT_MAX_FINDINGS);
 
     const resolvedFiles: string[] = [];
     const unresolvedFiles: string[] = [];
@@ -220,6 +223,7 @@ export async function lintFilesTool(
         requestedFileCount: input.files.length,
         unresolvedFiles,
         unresolvedFileCount: unresolvedFiles.length,
+        verbosity,
         maxFindings,
         truncated,
       },

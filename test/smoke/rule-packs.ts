@@ -19,6 +19,9 @@ function seedProject(projectRoot: string, projectId: string): void {
     JSON.stringify({ name: "rule-packs-smoke", version: "0.0.0" }),
   );
   mkdirSync(path.join(projectRoot, "lib"), { recursive: true });
+  mkdirSync(path.join(projectRoot, "lib", "auth"), { recursive: true });
+  mkdirSync(path.join(projectRoot, "app", "api", "admin", "users", "roles"), { recursive: true });
+  mkdirSync(path.join(projectRoot, "app", "api", "admin", "users", "compliant"), { recursive: true });
   mkdirSync(path.join(projectRoot, ".mako", "rules"), { recursive: true });
 
   const globalStore = openGlobalStore();
@@ -40,8 +43,35 @@ function seedProject(projectRoot: string, projectId: string): void {
     "  auditLog(userId);",
     "}",
   ].join("\n");
+  const helperContent = [
+    "export async function enforceAccountStatus(userId: string) {",
+    "  return { userId };",
+    "}",
+  ].join("\n");
+  const bypassContent = [
+    "export async function updateRole(supabase: any, userId: string) {",
+    "  const profile = await supabase.from(\"profiles\").select(\"id\").eq(\"id\", userId);",
+    "  return profile;",
+    "}",
+  ].join("\n");
+  const compliantContent = [
+    "import { enforceAccountStatus } from \"../../../../../lib/auth/dal\";",
+    "export async function updateRole(supabase: any, userId: string) {",
+    "  await enforceAccountStatus(userId);",
+    "  return supabase.from(\"profiles\").select(\"id\");",
+    "}",
+  ].join("\n");
 
   writeFileSync(path.join(projectRoot, "lib", "target.ts"), `${targetContent}\n`);
+  writeFileSync(path.join(projectRoot, "lib", "auth", "dal.ts"), `${helperContent}\n`);
+  writeFileSync(
+    path.join(projectRoot, "app", "api", "admin", "users", "roles", "route.ts"),
+    `${bypassContent}\n`,
+  );
+  writeFileSync(
+    path.join(projectRoot, "app", "api", "admin", "users", "compliant", "route.ts"),
+    `${compliantContent}\n`,
+  );
 
   const rulePack = [
     "name: smoke-custom-rules",
@@ -56,6 +86,16 @@ function seedProject(projectRoot: string, projectId: string): void {
     "    metadata:",
     "      cwe: 'CWE-284'",
     "      reference: 'internal://security/tenant-scope-guide'",
+    "  - id: smoke.auth.helper_bypass",
+    "    category: rpc_helper_reuse",
+    "    severity: high",
+    "    confidence: confirmed",
+    "    languages: [ts]",
+    "    message: 'Direct profiles query should go through enforceAccountStatus'",
+    "    pattern: $CLIENT.from(\"profiles\")",
+    "    canonicalHelper:",
+    "      symbol: enforceAccountStatus",
+    "      path: lib/auth/dal.ts",
   ].join("\n");
 
   writeFileSync(path.join(projectRoot, ".mako", "rules", "security.yaml"), `${rulePack}\n`);
@@ -107,6 +147,79 @@ function seedProject(projectRoot: string, projectId: string): void {
           imports: [],
           routes: [],
         },
+        {
+          path: "lib/auth/dal.ts",
+          sha256: "helper",
+          language: "typescript",
+          sizeBytes: helperContent.length,
+          lineCount: helperContent.split("\n").length,
+          chunks: [
+            {
+              chunkKind: "file",
+              name: "lib/auth/dal.ts",
+              lineStart: 1,
+              lineEnd: helperContent.split("\n").length,
+              content: helperContent,
+            },
+          ],
+          symbols: [
+            {
+              name: "enforceAccountStatus",
+              kind: "function",
+              exportName: "enforceAccountStatus",
+              lineStart: 1,
+              lineEnd: 3,
+              signatureText: "export async function enforceAccountStatus(userId: string)",
+            },
+          ],
+          imports: [],
+          routes: [],
+        },
+        {
+          path: "app/api/admin/users/roles/route.ts",
+          sha256: "bypass",
+          language: "typescript",
+          sizeBytes: bypassContent.length,
+          lineCount: bypassContent.split("\n").length,
+          chunks: [
+            {
+              chunkKind: "file",
+              name: "app/api/admin/users/roles/route.ts",
+              lineStart: 1,
+              lineEnd: bypassContent.split("\n").length,
+              content: bypassContent,
+            },
+          ],
+          symbols: [],
+          imports: [],
+          routes: [],
+        },
+        {
+          path: "app/api/admin/users/compliant/route.ts",
+          sha256: "compliant",
+          language: "typescript",
+          sizeBytes: compliantContent.length,
+          lineCount: compliantContent.split("\n").length,
+          chunks: [
+            {
+              chunkKind: "file",
+              name: "app/api/admin/users/compliant/route.ts",
+              lineStart: 1,
+              lineEnd: compliantContent.split("\n").length,
+              content: compliantContent,
+            },
+          ],
+          symbols: [],
+          imports: [
+            {
+              specifier: "../../../../../lib/auth/dal",
+              targetPath: "lib/auth/dal.ts",
+              importKind: "named",
+              isTypeOnly: false,
+            },
+          ],
+          routes: [],
+        },
       ],
       schemaObjects: [],
       schemaUsages: [],
@@ -137,9 +250,14 @@ async function main(): Promise<void> {
       path.join(projectRoot, ".mako", "rules", "security.yaml"),
     );
     assert.equal(direct.pack.name, "smoke-custom-rules");
-    assert.equal(direct.pack.rules.length, 1);
+    assert.equal(direct.pack.rules.length, 2);
     assert.equal(direct.pack.rules[0]!.id, "smoke.sensitive_query_user_scope");
     assert.equal(direct.pack.rules[0]!.pattern, "sensitiveQuery($ARG)");
+    assert.deepEqual(direct.pack.rules[1]!.canonicalHelper, {
+      symbol: "enforceAccountStatus",
+      path: "lib/auth/dal.ts",
+      mode: "absent_in_consumer",
+    });
 
     // --- 2. Discovery walks .mako/rules ---
     const discovered = discoverRulePacks(projectRoot);
@@ -148,10 +266,17 @@ async function main(): Promise<void> {
 
     // --- 3. Compile resolves defaults (confidence stays confirmed) ---
     const compiled = compileRulePacks(discovered);
-    assert.equal(compiled.length, 1);
+    assert.equal(compiled.length, 2);
     assert.equal(compiled[0]!.confidence, "confirmed");
     assert.deepEqual(compiled[0]!.languages, ["ts", "tsx"]);
     assert.deepEqual(compiled[0]!.patterns, ["sensitiveQuery($ARG)"]);
+    const helperBypassRule = compiled.find((rule) => rule.id === "smoke.auth.helper_bypass");
+    assert.ok(helperBypassRule, "expected helper-bypass rule to compile");
+    assert.deepEqual(helperBypassRule.canonicalHelper, {
+      symbol: "enforceAccountStatus",
+      path: "lib/auth/dal.ts",
+      mode: "absent_in_consumer",
+    });
 
     // --- 4. Direct evaluator emits issues for matches ---
     const projectStore = openProjectStore({ projectRoot });
@@ -178,6 +303,35 @@ async function main(): Promise<void> {
       assert.equal(
         (directIssue.metadata as { ruleSource?: unknown } | undefined)?.ruleSource,
         direct.sourcePath,
+      );
+
+      const crossFileIssues = runRulePacks({
+        rules: compiled,
+        projectStore,
+        focusFiles: [
+          "app/api/admin/users/roles/route.ts",
+          "app/api/admin/users/compliant/route.ts",
+          "lib/auth/dal.ts",
+        ],
+      });
+      assert.equal(crossFileIssues.length, 1, "expected only the helper-bypass consumer to fire");
+      const crossFileIssue = crossFileIssues[0]!;
+      assert.equal(crossFileIssue.code, "smoke.auth.helper_bypass");
+      assert.equal(crossFileIssue.category, "rpc_helper_reuse");
+      assert.equal(crossFileIssue.path, "app/api/admin/users/roles/route.ts");
+      assert.equal(crossFileIssue.producerPath, "lib/auth/dal.ts");
+      assert.equal(crossFileIssue.consumerPath, "app/api/admin/users/roles/route.ts");
+      assert.ok(
+        crossFileIssue.evidenceRefs.includes("lib/auth/dal.ts"),
+        "producer path should be included in evidence refs",
+      );
+      assert.deepEqual(
+        (crossFileIssue.metadata as { canonicalHelper?: unknown } | undefined)?.canonicalHelper,
+        {
+          symbol: "enforceAccountStatus",
+          path: "lib/auth/dal.ts",
+          mode: "absent_in_consumer",
+        },
       );
     } finally {
       projectStore.close();

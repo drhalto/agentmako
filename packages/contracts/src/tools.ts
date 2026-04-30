@@ -14,6 +14,7 @@ import {
   ToolAnnotationsSchema,
   ToolCategorySchema,
   ToolDefinitionSummarySchema,
+  ToolHintsSchema,
   ToolNameSchema,
 } from "./tool-registry.js";
 import type {
@@ -22,6 +23,7 @@ import type {
   ToolAnnotations,
   ToolCategory,
   ToolDefinitionSummary,
+  ToolHints,
   ToolName,
 } from "./tool-registry.js";
 import {
@@ -140,6 +142,10 @@ import type {
   AstFindPatternToolOutput,
 } from "./tool-ast-schemas.js";
 import type {
+  MakoHelpToolInput,
+  MakoHelpToolOutput,
+} from "./tool-mako-help-schemas.js";
+import type {
   LiveTextSearchToolInput,
   LiveTextSearchToolOutput,
 } from "./tool-live-text-search-schemas.js";
@@ -222,6 +228,8 @@ import type {
   EvidenceConfidenceToolOutput,
   EvidenceConflictsToolInput,
   EvidenceConflictsToolOutput,
+  ExtractRuleTemplateToolInput,
+  ExtractRuleTemplateToolOutput,
   DiagnosticRefreshToolInput,
   DiagnosticRefreshToolOutput,
   DbReefRefreshToolInput,
@@ -232,6 +240,8 @@ import type {
   DbReviewCommentsToolOutput,
   FileFindingsToolInput,
   FileFindingsToolOutput,
+  FilePreflightToolInput,
+  FilePreflightToolOutput,
   FileFactsToolInput,
   FileFactsToolOutput,
   ListReefRulesToolInput,
@@ -246,6 +256,8 @@ import type {
   ProjectFindingsToolOutput,
   ProjectOpenLoopsToolInput,
   ProjectOpenLoopsToolOutput,
+  ReefDiffImpactToolInput,
+  ReefDiffImpactToolOutput,
   ReefOverlayDiffToolInput,
   ReefOverlayDiffToolOutput,
   ReefInstructionsToolInput,
@@ -278,6 +290,7 @@ export {
   ToolAnnotationsSchema,
   ToolCategorySchema,
   ToolDefinitionSummarySchema,
+  ToolHintsSchema,
   ToolNameSchema,
 } from "./tool-registry.js";
 export type {
@@ -286,6 +299,7 @@ export type {
   ToolAnnotations,
   ToolCategory,
   ToolDefinitionSummary,
+  ToolHints,
   ToolName,
 } from "./tool-registry.js";
 export {
@@ -301,6 +315,7 @@ export * from "./tool-artifact-schemas.js";
 export * from "./tool-workflow-schemas.js";
 export * from "./tool-power-schemas.js";
 export * from "./tool-db-schemas.js";
+export * from "./tool-mako-help-schemas.js";
 export * from "./tool-ast-schemas.js";
 export * from "./tool-live-text-search-schemas.js";
 export * from "./tool-lint-schemas.js";
@@ -482,6 +497,7 @@ export type ToolInput =
   | DbRlsToolInput
   | DbRpcToolInput
   | DbTableSchemaToolInput
+  | MakoHelpToolInput
   | TraceFileToolInput
   | PreflightTableToolInput
   | CrossSearchToolInput
@@ -513,13 +529,16 @@ export type ToolInput =
   | FindingAcksReportToolInput
   | ProjectFindingsToolInput
   | FileFindingsToolInput
+  | FilePreflightToolInput
   | ProjectFactsToolInput
   | FileFactsToolInput
   | WorkingTreeOverlayToolInput
   | ReefOverlayDiffToolInput
+  | ReefDiffImpactToolInput
   | ReefInstructionsToolInput
   | ListReefRulesToolInput
   | RulePackValidateToolInput
+  | ExtractRuleTemplateToolInput
   | ProjectDiagnosticRunsToolInput
   | ReefScoutToolInput
   | ReefInspectToolInput
@@ -533,7 +552,7 @@ export type ToolInput =
   | ReefKnownIssuesToolInput
   | ReefAgentStatusToolInput;
 
-export type ToolOutput =
+export type ToolOutput = (
   | TaskPreflightArtifactToolOutput
   | ImplementationHandoffArtifactToolOutput
   | ReviewBundleArtifactToolOutput
@@ -572,6 +591,7 @@ export type ToolOutput =
   | DbRlsToolOutput
   | DbRpcToolOutput
   | DbTableSchemaToolOutput
+  | MakoHelpToolOutput
   | TraceFileToolOutput
   | PreflightTableToolOutput
   | CrossSearchToolOutput
@@ -603,13 +623,16 @@ export type ToolOutput =
   | FindingAcksReportToolOutput
   | ProjectFindingsToolOutput
   | FileFindingsToolOutput
+  | FilePreflightToolOutput
   | ProjectFactsToolOutput
   | FileFactsToolOutput
   | WorkingTreeOverlayToolOutput
   | ReefOverlayDiffToolOutput
+  | ReefDiffImpactToolOutput
   | ReefInstructionsToolOutput
   | ListReefRulesToolOutput
   | RulePackValidateToolOutput
+  | ExtractRuleTemplateToolOutput
   | ProjectDiagnosticRunsToolOutput
   | ReefScoutToolOutput
   | ReefInspectToolOutput
@@ -621,6 +644,7 @@ export type ToolOutput =
   | EvidenceConfidenceToolOutput
   | EvidenceConflictsToolOutput
   | ReefKnownIssuesToolOutput
-  | ReefAgentStatusToolOutput;
+  | ReefAgentStatusToolOutput
+) & Partial<ToolHints>;
 
 export type AnswerToolQueryKind = Extract<QueryKind, AnswerToolName>;

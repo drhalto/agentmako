@@ -34,8 +34,9 @@ process.env.MAKO_LOG_LEVEL ??= "warn";
   } as typeof process.emit;
 }
 
-import { realpathSync } from "node:fs";
-import { pathToFileURL } from "node:url";
+import { readFileSync, realpathSync } from "node:fs";
+import { dirname, resolve } from "node:path";
+import { fileURLToPath, pathToFileURL } from "node:url";
 import { createApiService } from "@mako-ai/api";
 import { runConnectCommand } from "./commands/connect.js";
 import { runDefaultCommand } from "./commands/default.js";
@@ -81,15 +82,34 @@ import { CLI_COMMANDS, COLORS, color, computeNextStepHints, parseGlobalArgs, pri
 export { CLI_COMMANDS, computeNextStepHints };
 export type { ProjectStatusResultFromApi } from "./shared.js";
 
+function readCliVersion(): string {
+  try {
+    const packagePath = resolve(dirname(fileURLToPath(import.meta.url)), "..", "package.json");
+    const packageJson = JSON.parse(readFileSync(packagePath, "utf8")) as { version?: unknown };
+    return typeof packageJson.version === "string" && packageJson.version.trim().length > 0
+      ? packageJson.version
+      : "unknown";
+  } catch {
+    return "unknown";
+  }
+}
+
 export async function main(argv: string[] = process.argv.slice(2)): Promise<void> {
   const options = parseGlobalArgs(argv);
-  const api = createApiService();
+  let api: ReturnType<typeof createApiService> | undefined;
 
   try {
     if (options.commandArgs[0] === "help" || options.commandArgs[0] === "--help" || options.commandArgs[0] === "-h") {
       printUsage();
       return;
     }
+
+    if (options.commandArgs[0] === "version" || options.commandArgs[0] === "--version" || options.commandArgs[0] === "-v") {
+      console.log(readCliVersion());
+      return;
+    }
+
+    api = createApiService();
 
     if (options.commandArgs.length === 0) {
       await runDefaultCommand(api, options);
@@ -285,7 +305,7 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<void
 
     throw new Error(`Unknown command: ${cmd.join(" ")}. Supported commands: ${CLI_COMMANDS.join(", ")}`);
   } finally {
-    api.close();
+    api?.close();
   }
 }
 

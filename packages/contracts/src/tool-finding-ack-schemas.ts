@@ -27,6 +27,7 @@ import { ProjectLocatorInputObjectSchema } from "./tool-project-locator.js";
 export interface FindingAckToolInput {
   projectId?: string;
   projectRef?: string;
+  preview?: boolean;
   category: string;
   subjectKind: FindingAckSubjectKind;
   filePath?: string;
@@ -41,6 +42,7 @@ export interface FindingAckToolInput {
 }
 
 export const FindingAckToolInputSchema = ProjectLocatorInputObjectSchema.extend({
+  preview: z.boolean().optional(),
   category: z.string().trim().min(1),
   subjectKind: FindingAckSubjectKindSchema,
   filePath: z.string().trim().min(1).optional(),
@@ -56,16 +58,48 @@ export const FindingAckToolInputSchema = ProjectLocatorInputObjectSchema.extend(
   sourceIdentityMatchBasedId: z.string().trim().min(1).optional(),
 }).strict() satisfies z.ZodType<FindingAckToolInput>;
 
+export interface FindingAckPreview {
+  category: string;
+  subjectKind: FindingAckSubjectKind;
+  filePath?: string;
+  fingerprint: string;
+  snippet?: string;
+  status: FindingAckStatus;
+  reason: string;
+  acknowledgedBy?: string;
+  sourceToolName?: string;
+  sourceRuleId?: string;
+  sourceIdentityMatchBasedId?: string;
+}
+
+export const FindingAckPreviewSchema = z.object({
+  category: z.string().min(1),
+  subjectKind: FindingAckSubjectKindSchema,
+  filePath: z.string().min(1).optional(),
+  fingerprint: z.string().min(1),
+  snippet: z.string().optional(),
+  status: FindingAckStatusSchema,
+  reason: z.string().min(1),
+  acknowledgedBy: z.string().min(1).optional(),
+  sourceToolName: z.string().min(1).optional(),
+  sourceRuleId: z.string().min(1).optional(),
+  sourceIdentityMatchBasedId: z.string().min(1).optional(),
+}) satisfies z.ZodType<FindingAckPreview>;
+
 export interface FindingAckToolOutput {
   toolName: "finding_ack";
   projectId: string;
-  ack: FindingAck;
+  preview: boolean;
+  ack?: FindingAck;
+  wouldApply?: FindingAckPreview;
 }
 
 export const FindingAckToolOutputSchema = z.object({
   toolName: z.literal("finding_ack"),
   projectId: z.string().min(1),
-  ack: FindingAckSchema,
+  preview: z.boolean(),
+  ack: FindingAckSchema.optional(),
+  wouldApply: FindingAckPreviewSchema.optional(),
 }) satisfies z.ZodType<FindingAckToolOutput>;
 
 // ===== finding_ack_batch =====
@@ -103,6 +137,7 @@ export const FindingAckBatchRowSchema = z.object({
 export interface FindingAckBatchToolInput {
   projectId?: string;
   projectRef?: string;
+  preview?: boolean;
   category?: string;
   subjectKind?: FindingAckSubjectKind;
   status?: FindingAckStatus;
@@ -117,6 +152,7 @@ export interface FindingAckBatchToolInput {
 export const FindingAckBatchToolInputSchema =
   ProjectLocatorInputObjectSchema.extend({
     category: z.string().trim().min(1).optional(),
+    preview: z.boolean().optional(),
     subjectKind: FindingAckSubjectKindSchema.optional(),
     status: FindingAckStatusSchema.optional(),
     reason: z.string().trim().min(1).optional(),
@@ -144,11 +180,14 @@ export const FindingAckBatchRejectedRowSchema = z.object({
 export interface FindingAckBatchToolOutput {
   toolName: "finding_ack_batch";
   projectId: string;
+  preview: boolean;
   acks: FindingAck[];
+  wouldApply?: FindingAckPreview[];
   rejected: FindingAckBatchRejectedRow[];
   summary: {
     requestedRows: number;
     ackedRows: number;
+    previewedRows?: number;
     rejectedRows: number;
   };
   warnings: string[];
@@ -157,11 +196,14 @@ export interface FindingAckBatchToolOutput {
 export const FindingAckBatchToolOutputSchema = z.object({
   toolName: z.literal("finding_ack_batch"),
   projectId: z.string().min(1),
+  preview: z.boolean(),
   acks: z.array(FindingAckSchema),
+  wouldApply: z.array(FindingAckPreviewSchema).optional(),
   rejected: z.array(FindingAckBatchRejectedRowSchema),
   summary: z.object({
     requestedRows: z.number().int().nonnegative(),
     ackedRows: z.number().int().nonnegative(),
+    previewedRows: z.number().int().nonnegative().optional(),
     rejectedRows: z.number().int().nonnegative(),
   }),
   warnings: z.array(z.string().min(1)),

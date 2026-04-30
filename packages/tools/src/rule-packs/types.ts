@@ -8,9 +8,10 @@
  * (find a shape, report it) rather than porting the full Semgrep pattern DSL.
  *
  * Compared to the built-in TS-aware / structural diagnostic rules, rule
- * packs trade expressive power (no cross-file joins, no type-aware checks,
- * no metavariable-* constraints) for authoring ergonomics (no TypeScript,
- * no package release). They complement the built-ins, not replace them.
+ * packs trade expressive power (only primitive cross-file helper canonicality,
+ * no type-aware checks, no metavariable-* constraints) for authoring ergonomics
+ * (no TypeScript, no package release). They complement the built-ins, not
+ * replace them.
  */
 
 import type {
@@ -20,6 +21,29 @@ import type {
   JsonObject,
 } from "@mako-ai/contracts";
 import type { SupportedLang } from "../code-intel/ast-patterns.js";
+
+export type RuleCanonicalHelperMode = "absent_in_consumer";
+
+export interface RuleCanonicalHelper {
+  /**
+   * Canonical helper symbol expected in consumer files that match this rule's
+   * local AST shape. If the consumer already references this identifier, the
+   * match is suppressed as compliant.
+   */
+  symbol: string;
+
+  /**
+   * Optional project-relative file that owns the helper. When present, emitted
+   * issues include it as `producerPath` and suppress matches in that file.
+   */
+  path?: string;
+
+  /**
+   * Currently only one mode is supported: a local match becomes a finding when
+   * the consumer file does not reference `symbol`.
+   */
+  mode?: RuleCanonicalHelperMode;
+}
 
 /**
  * A single author-facing rule. Materializes into zero or more
@@ -71,6 +95,14 @@ export interface RuleDefinition {
   patterns?: string[];
 
   /**
+   * Primitive cross-file guard for helper-bypass rules. The rule still matches
+   * a local AST shape, but the evaluator suppresses matches in files that
+   * already reference the canonical helper and emits producer/consumer context
+   * when the helper path is known.
+   */
+  canonicalHelper?: RuleCanonicalHelper;
+
+  /**
    * Free-form metadata attached to every emitted issue's `metadata` field.
    * Not inspected by the engine; passes through verbatim. Good home for
    * `cwe`, `owasp`, `references`, or custom taxonomy fields.
@@ -105,6 +137,7 @@ export interface CompiledRule {
   languages: SupportedLang[] | null;
   message: string;
   patterns: string[];
+  canonicalHelper?: RuleCanonicalHelper;
   metadata?: JsonObject;
   sourcePath: string;
 }

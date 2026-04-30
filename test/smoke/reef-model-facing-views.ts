@@ -6,6 +6,7 @@ import type {
   EvidenceConfidenceToolOutput,
   EvidenceConflictsToolOutput,
   ContextPacketToolOutput,
+  FilePreflightToolOutput,
   JsonObject,
   ProjectConventionsToolOutput,
   ProjectFact,
@@ -58,6 +59,99 @@ async function main(): Promise<void> {
     const fresh = { state: "fresh" as const, checkedAt: now(), reason: "fixture fresh" };
     const stale = { state: "stale" as const, checkedAt: now(), reason: "fixture stale indexed snapshot" };
 
+    seeded.store.saveProjectProfile({
+      name: "reef-model-facing-views-smoke",
+      rootPath: projectRoot,
+      framework: "nextjs",
+      orm: "supabase",
+      srcRoot: ".",
+      entryPoints: [routePath],
+      pathAliases: {},
+      middlewareFiles: ["middleware.ts"],
+      serverOnlyModules: ["src/server/session.ts"],
+      authGuardSymbols: ["verifySession"],
+      supportLevel: "native",
+      detectedAt: now(),
+    });
+    const indexRun = seeded.store.beginIndexRun("smoke_seed");
+    seeded.store.replaceIndexSnapshot({
+      files: [
+        {
+          path: routePath,
+          sha256: "auth-route",
+          language: "typescript",
+          sizeBytes: 220,
+          lineCount: 9,
+          chunks: [{
+            chunkKind: "file",
+            name: routePath,
+            lineStart: 1,
+            lineEnd: 9,
+            content: "export async function verifySession() { return true; }\nexport async function GET() { return verifySession(); }",
+          }],
+          symbols: [
+            {
+              name: "verifySession",
+              kind: "function",
+              exportName: "verifySession",
+              lineStart: 1,
+              lineEnd: 1,
+              signatureText: "export async function verifySession()",
+            },
+            {
+              name: "GET",
+              kind: "function",
+              exportName: "GET",
+              lineStart: 2,
+              lineEnd: 2,
+              signatureText: "export async function GET()",
+            },
+          ],
+          imports: [],
+          routes: [{
+            routeKey: "GET /auth",
+            framework: "next",
+            pattern: "/auth",
+            method: "GET",
+            handlerName: "GET",
+            isApi: true,
+          }],
+        },
+        {
+          path: "src/generated/database.types.ts",
+          sha256: "generated-db-types",
+          language: "typescript",
+          sizeBytes: 80,
+          lineCount: 2,
+          isGenerated: true,
+          chunks: [{
+            chunkKind: "file",
+            name: "src/generated/database.types.ts",
+            lineStart: 1,
+            lineEnd: 2,
+            content: "export type Database = { public: unknown };",
+          }],
+          symbols: [],
+          imports: [],
+          routes: [],
+        },
+      ],
+      schemaObjects: [{
+        objectKey: "table:public.user_profiles",
+        objectType: "table",
+        schemaName: "public",
+        objectName: "user_profiles",
+      }],
+      schemaUsages: [{
+        objectKey: "table:public.user_profiles",
+        filePath: routePath,
+        usageKind: "read",
+        line: 2,
+        excerpt: "verifySession reads user_profiles",
+      }],
+    });
+    seeded.store.finishIndexRun(indexRun.runId, "succeeded");
+
     const makeFact = (args: {
       kind: string;
       source: string;
@@ -90,7 +184,41 @@ async function main(): Promise<void> {
       data: args.data,
     });
 
+    const schemaSubject = { kind: "schema_object" as const, schemaName: "public", objectName: "user_profiles" };
+    const schemaSubjectFingerprint = seeded.store.computeReefSubjectFingerprint(schemaSubject);
+    const schemaFact: ProjectFact = {
+      projectId: seeded.projectId,
+      kind: "db_rls_policy",
+      subject: schemaSubject,
+      subjectFingerprint: schemaSubjectFingerprint,
+      overlay: "working_tree",
+      source: "db_reef_refresh",
+      confidence: 0.99,
+      fingerprint: seeded.store.computeReefFactFingerprint({
+        projectId: seeded.projectId,
+        kind: "db_rls_policy",
+        subjectFingerprint: schemaSubjectFingerprint,
+        overlay: "working_tree",
+        source: "db_reef_refresh",
+        data: {
+          table: "user_profiles",
+          note: "auth route verifySession dashboard flow policy",
+        },
+      }),
+      freshness: fresh,
+      provenance: {
+        source: "db_reef_refresh",
+        capturedAt: now(),
+        dependencies: [{ kind: "schema_snapshot", source: "fixture" }],
+      },
+      data: {
+        table: "user_profiles",
+        note: "auth route verifySession dashboard flow policy",
+      },
+    };
+
     const facts = [
+      schemaFact,
       makeFact({
         kind: "file_snapshot",
         source: "working_tree_overlay",
@@ -328,7 +456,22 @@ async function main(): Promise<void> {
     }) as ReefScoutToolOutput;
     assert.equal(scout.toolName, "reef_scout");
     assert.ok(scout.candidates.some((candidate) => candidate.filePath === routePath));
+    assert.notEqual(
+      scout.candidates[0]?.id,
+      `fact:${schemaFact.fingerprint}`,
+      "app-flow scout queries should not rank schema facts ahead of app evidence just because text overlaps",
+    );
     assertReefExecution(scout.reefExecution, "reef_scout", "allow_stale_labeled");
+
+    const schemaScout = await toolService.callTool("reef_scout", {
+      projectId: seeded.projectId,
+      query: "rls policy table user_profiles",
+    }) as ReefScoutToolOutput;
+    assert.equal(
+      schemaScout.candidates[0]?.id,
+      `fact:${schemaFact.fingerprint}`,
+      "schema scout queries should still rank schema evidence first",
+    );
 
     const inspect = await toolService.callTool("reef_inspect", {
       projectId: seeded.projectId,
@@ -371,11 +514,50 @@ async function main(): Promise<void> {
     assert.ok(verification.changedFiles.some((file) => file.filePath === routePath && file.staleForSources.includes("eslint")));
     assertReefExecution(verification.reefExecution, "verification_state", "allow_stale_labeled");
 
+    const preflight = await toolService.callTool("file_preflight", {
+      projectId: seeded.projectId,
+      filePath: routePath,
+      cacheStalenessMs: 30_000,
+    }) as FilePreflightToolOutput;
+    assert.equal(preflight.toolName, "file_preflight");
+    assert.equal(preflight.filePath, routePath);
+    assert.ok(preflight.findings.some((finding) => finding.status === "active" && finding.fingerprint === conflictFindingFingerprint));
+    assert.ok(preflight.findings.some((finding) => finding.status === "acknowledged" && finding.fingerprint === authFindingFingerprint));
+    assert.ok(preflight.diagnostics.staleSources.includes("eslint"));
+    assert.ok(preflight.diagnostics.failedSources.includes("typescript"));
+    assert.ok(preflight.diagnostics.changedFile?.staleForSources.includes("eslint"));
+    assert.ok(preflight.diagnostics.recentRuns.length >= 3);
+    assert.ok(preflight.conventions.some((convention) => convention.kind === "auth_guard"));
+    assert.equal(preflight.ackHistory[0]?.fingerprint, authFindingFingerprint);
+    assert.equal(preflight.summary.ackCount, 1);
+    assertReefExecution(preflight.reefExecution, "file_preflight", "allow_stale_labeled");
+
     const conventions = await toolService.callTool("project_conventions", {
       projectId: seeded.projectId,
       kind: "auth_guard",
     }) as ProjectConventionsToolOutput;
     assert.ok(conventions.conventions.some((convention) => convention.status === "accepted"));
+
+    const allConventions = await toolService.callTool("project_conventions", {
+      projectId: seeded.projectId,
+    }) as ProjectConventionsToolOutput;
+    assert.ok(allConventions.conventions.some((convention) =>
+      convention.source === "project_profile" &&
+      convention.kind === "auth_guard" &&
+      convention.evidence.includes("verifySession")
+    ));
+    assert.ok(allConventions.conventions.some((convention) =>
+      convention.source === "index:routes" &&
+      convention.kind === "route_pattern"
+    ));
+    assert.ok(allConventions.conventions.some((convention) =>
+      convention.source === "index:files" &&
+      convention.kind === "generated_path"
+    ));
+    assert.ok(allConventions.conventions.some((convention) =>
+      convention.source === "index:schema_usage" &&
+      convention.kind === "schema_pattern"
+    ));
 
     const contextPacket = await toolService.callTool("context_packet", {
       projectId: seeded.projectId,
@@ -438,6 +620,7 @@ async function main(): Promise<void> {
     assert.ok(loggedTools.has("context_packet"));
     assert.ok(loggedTools.has("project_open_loops"));
     assert.ok(loggedTools.has("verification_state"));
+    assert.ok(loggedTools.has("file_preflight"));
     assert.ok(loggedTools.has("evidence_confidence"));
     assert.ok(loggedTools.has("evidence_conflicts"));
 

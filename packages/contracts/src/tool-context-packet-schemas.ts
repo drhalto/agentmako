@@ -1,6 +1,10 @@
 import { z } from "zod";
-import type { IndexFreshnessDetail, IndexFreshnessSummary } from "./index-freshness.js";
-import { IndexFreshnessDetailSchema, IndexFreshnessSummarySchema } from "./index-freshness.js";
+import type { IndexFreshnessDetail, IndexFreshnessSummary, ProjectFreshnessGate } from "./index-freshness.js";
+import {
+  IndexFreshnessDetailSchema,
+  IndexFreshnessSummarySchema,
+  ProjectFreshnessGateSchema,
+} from "./index-freshness.js";
 import type { JsonObject } from "./common.js";
 import type { ProjectFinding } from "./reef.js";
 import { ProjectFindingSchema } from "./reef.js";
@@ -52,8 +56,17 @@ export const ContextPacketIntentFamilySchema = z.enum([
 ]);
 export type ContextPacketIntentFamily = z.infer<typeof ContextPacketIntentFamilySchema>;
 
+export const ContextPacketModeSchema = z.enum([
+  "explore",
+  "plan",
+  "implement",
+  "review",
+]);
+export type ContextPacketMode = z.infer<typeof ContextPacketModeSchema>;
+
 export interface ContextPacketToolInput extends ProjectLocatorInput {
   request: string;
+  mode?: ContextPacketMode;
   focusFiles?: string[];
   focusSymbols?: string[];
   focusRoutes?: string[];
@@ -64,12 +77,14 @@ export interface ContextPacketToolInput extends ProjectLocatorInput {
   budgetTokens?: number;
   includeInstructions?: boolean;
   includeRisks?: boolean;
+  risksMinConfidence?: number;
   includeLiveHints?: boolean;
   freshnessPolicy?: "report" | "prefer_fresh";
 }
 
 export const ContextPacketToolInputSchema = ProjectLocatorInputObjectSchema.extend({
   request: z.string().trim().min(1),
+  mode: ContextPacketModeSchema.optional(),
   focusFiles: z.array(z.string().trim().min(1)).max(50).optional(),
   focusSymbols: z.array(z.string().trim().min(1)).max(50).optional(),
   focusRoutes: z.array(z.string().trim().min(1)).max(50).optional(),
@@ -80,6 +95,7 @@ export const ContextPacketToolInputSchema = ProjectLocatorInputObjectSchema.exte
   budgetTokens: z.number().int().min(256).max(12_000).optional(),
   includeInstructions: z.boolean().optional(),
   includeRisks: z.boolean().optional(),
+  risksMinConfidence: z.number().min(0).max(1).optional(),
   includeLiveHints: z.boolean().optional(),
   freshnessPolicy: z.enum(["report", "prefer_fresh"]).optional(),
 }) satisfies z.ZodType<ContextPacketToolInput>;
@@ -215,7 +231,7 @@ export const ContextPacketDatabaseObjectSchema = z.object({
 export interface ContextPacketRisk {
   code: string;
   reason: string;
-  source: "risk_detector" | "freshness" | "finding_ack_memory";
+  source: "risk_detector" | "freshness" | "finding_ack_memory" | "open_loop";
   severity: "info" | "low" | "medium" | "high";
   recommendedHarnessStep?: string;
   confidence: number;
@@ -224,7 +240,7 @@ export interface ContextPacketRisk {
 export const ContextPacketRiskSchema = z.object({
   code: z.string().min(1),
   reason: z.string().min(1),
-  source: z.enum(["risk_detector", "freshness", "finding_ack_memory"]),
+  source: z.enum(["risk_detector", "freshness", "finding_ack_memory", "open_loop"]),
   severity: z.enum(["info", "low", "medium", "high"]),
   recommendedHarnessStep: z.string().min(1).optional(),
   confidence: z.number().min(0).max(1),
@@ -268,6 +284,7 @@ export interface ContextPacketLimits {
   maxPrimaryContext: number;
   maxRelatedContext: number;
   providersRun: string[];
+  providersSkipped: string[];
   providersFailed: string[];
   candidatesConsidered: number;
   candidatesReturned: number;
@@ -279,16 +296,37 @@ export const ContextPacketLimitsSchema = z.object({
   maxPrimaryContext: z.number().int().nonnegative(),
   maxRelatedContext: z.number().int().nonnegative(),
   providersRun: z.array(z.string().min(1)),
+  providersSkipped: z.array(z.string().min(1)),
   providersFailed: z.array(z.string().min(1)),
   candidatesConsidered: z.number().int().nonnegative(),
   candidatesReturned: z.number().int().nonnegative(),
 }) satisfies z.ZodType<ContextPacketLimits>;
+
+export interface ContextPacketModePolicySummary {
+  enabledProviders: string[];
+  disabledProviders: string[];
+  includeInstructions: boolean;
+  includeRisks: boolean;
+  includeActiveFindings: boolean;
+  includeExpandableTools: boolean;
+}
+
+export const ContextPacketModePolicySummarySchema = z.object({
+  enabledProviders: z.array(z.string().min(1)),
+  disabledProviders: z.array(z.string().min(1)),
+  includeInstructions: z.boolean(),
+  includeRisks: z.boolean(),
+  includeActiveFindings: z.boolean(),
+  includeExpandableTools: z.boolean(),
+}) satisfies z.ZodType<ContextPacketModePolicySummary>;
 
 export interface ContextPacketToolOutput {
   toolName: "context_packet";
   projectId: string;
   projectRoot: string;
   request: string;
+  mode: ContextPacketMode;
+  modePolicy: ContextPacketModePolicySummary;
   intent: ContextPacketIntent;
   primaryContext: ContextPacketReadableCandidate[];
   relatedContext: ContextPacketReadableCandidate[];
@@ -300,6 +338,7 @@ export interface ContextPacketToolOutput {
   scopedInstructions: ContextPacketInstruction[];
   recommendedHarnessPattern: string[];
   expandableTools: ContextPacketExpandableTool[];
+  freshnessGate: ProjectFreshnessGate;
   indexFreshness?: IndexFreshnessSummary;
   reefExecution: ReefToolExecution;
   limits: ContextPacketLimits;
@@ -311,6 +350,8 @@ export const ContextPacketToolOutputSchema = z.object({
   projectId: z.string().min(1),
   projectRoot: z.string().min(1),
   request: z.string().min(1),
+  mode: ContextPacketModeSchema,
+  modePolicy: ContextPacketModePolicySummarySchema,
   intent: ContextPacketIntentSchema,
   primaryContext: z.array(ContextPacketReadableCandidateSchema),
   relatedContext: z.array(ContextPacketReadableCandidateSchema),
@@ -322,6 +363,7 @@ export const ContextPacketToolOutputSchema = z.object({
   scopedInstructions: z.array(ContextPacketInstructionSchema),
   recommendedHarnessPattern: z.array(z.string().min(1)),
   expandableTools: z.array(ContextPacketExpandableToolSchema),
+  freshnessGate: ProjectFreshnessGateSchema,
   indexFreshness: IndexFreshnessSummarySchema.optional(),
   reefExecution: ReefToolExecutionSchema,
   limits: ContextPacketLimitsSchema,

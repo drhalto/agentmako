@@ -21,6 +21,7 @@ const CATEGORY = z.enum([
 const SEVERITY = z.enum(["low", "medium", "high", "critical"]);
 const CONFIDENCE = z.enum(["possible", "probable", "confirmed"]);
 const LANGUAGE = z.enum(["ts", "tsx", "js", "jsx"]);
+const CANONICAL_HELPER_MODE = z.enum(["absent_in_consumer"]);
 
 const jsonLiteral = z.union([z.string(), z.number(), z.boolean(), z.null()]);
 type JsonValue = z.infer<typeof jsonLiteral> | { [key: string]: JsonValue } | JsonValue[];
@@ -28,6 +29,11 @@ const jsonValue: z.ZodType<JsonValue> = z.lazy(() =>
   z.union([jsonLiteral, z.array(jsonValue), z.record(z.string(), jsonValue)]),
 );
 const jsonObject: z.ZodType<Record<string, JsonValue>> = z.record(z.string(), jsonValue);
+const canonicalHelper = z.object({
+  symbol: z.string().min(1, "canonical helper symbol must be non-empty"),
+  path: z.string().min(1, "canonical helper path must be non-empty").optional(),
+  mode: CANONICAL_HELPER_MODE.optional(),
+});
 
 export const ruleDefinitionSchema = z
   .object({
@@ -39,6 +45,7 @@ export const ruleDefinitionSchema = z
     message: z.string().min(1, "rule message must be non-empty"),
     pattern: z.string().min(1).optional(),
     patterns: z.array(z.string().min(1)).nonempty().optional(),
+    canonicalHelper: canonicalHelper.optional(),
     metadata: jsonObject.optional(),
   })
   .refine(

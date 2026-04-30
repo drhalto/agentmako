@@ -91,10 +91,9 @@ export function searchFilesImpl(
         f.is_generated,
         f.last_modified_at,
         f.indexed_at,
-        substr(c.content, 1, 240) AS snippet
+        NULL AS snippet
       FROM files f
-      LEFT JOIN chunks c ON c.file_id = f.file_id
-      WHERE f.path LIKE ? OR c.content LIKE ?
+      WHERE f.path LIKE ?
       ORDER BY
         CASE
           WHEN f.path = ? THEN 0
@@ -104,7 +103,7 @@ export function searchFilesImpl(
         f.path ASC
       LIMIT ?
     `)
-    .all(likeQuery, likeQuery, normalized, likeQuery, limit * 2) as unknown as FileSearchRow[];
+    .all(likeQuery, normalized, likeQuery, limit * 2) as unknown as FileSearchRow[];
 
   const rankedRows: RankedFileSearchRow[] = directRows.map((row, index) => ({
     ...row,

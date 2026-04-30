@@ -211,6 +211,16 @@ export interface ProjectIndexWatchState {
   lastOverlayResolvedFindingCount?: number;
   lastOverlayFactDurationMs?: number;
   lastOverlayFactError?: string;
+  lastDiagnosticRefreshStartedAt?: Timestamp;
+  lastDiagnosticRefreshFinishedAt?: Timestamp;
+  lastDiagnosticRefreshDurationMs?: number;
+  lastDiagnosticRefreshFileCount?: number;
+  lastDiagnosticRefreshSources?: string[];
+  lastDiagnosticRefreshSucceededSources?: number;
+  lastDiagnosticRefreshFailedSources?: number;
+  lastDiagnosticRefreshUnavailableSources?: number;
+  lastDiagnosticRefreshSkippedReason?: string;
+  lastDiagnosticRefreshError?: string;
   switchFromProjectId?: string;
   disabledReason?: string;
   lastError?: string;
@@ -242,10 +252,63 @@ export const ProjectIndexWatchStateSchema = z.object({
   lastOverlayResolvedFindingCount: z.number().int().nonnegative().optional(),
   lastOverlayFactDurationMs: z.number().int().nonnegative().optional(),
   lastOverlayFactError: z.string().min(1).optional(),
+  lastDiagnosticRefreshStartedAt: TimestampSchema.optional(),
+  lastDiagnosticRefreshFinishedAt: TimestampSchema.optional(),
+  lastDiagnosticRefreshDurationMs: z.number().int().nonnegative().optional(),
+  lastDiagnosticRefreshFileCount: z.number().int().nonnegative().optional(),
+  lastDiagnosticRefreshSources: z.array(z.string().min(1)).optional(),
+  lastDiagnosticRefreshSucceededSources: z.number().int().nonnegative().optional(),
+  lastDiagnosticRefreshFailedSources: z.number().int().nonnegative().optional(),
+  lastDiagnosticRefreshUnavailableSources: z.number().int().nonnegative().optional(),
+  lastDiagnosticRefreshSkippedReason: z.string().min(1).optional(),
+  lastDiagnosticRefreshError: z.string().min(1).optional(),
   switchFromProjectId: z.string().min(1).optional(),
   disabledReason: z.string().min(1).optional(),
   lastError: z.string().min(1).optional(),
 }) satisfies z.ZodType<ProjectIndexWatchState>;
+
+export const PROJECT_FRESHNESS_GATE_STATUSES = [
+  "fresh",
+  "stale",
+  "degraded",
+  "skipped",
+] as const;
+
+export type ProjectFreshnessGateStatus = (typeof PROJECT_FRESHNESS_GATE_STATUSES)[number];
+
+export const ProjectFreshnessGateStatusSchema = z.enum(PROJECT_FRESHNESS_GATE_STATUSES);
+
+export const PROJECT_FRESHNESS_GATE_SOURCES = [
+  "watcher",
+  "metadata",
+  "none",
+] as const;
+
+export type ProjectFreshnessGateSource = (typeof PROJECT_FRESHNESS_GATE_SOURCES)[number];
+
+export const ProjectFreshnessGateSourceSchema = z.enum(PROJECT_FRESHNESS_GATE_SOURCES);
+
+export interface ProjectFreshnessGate {
+  status: ProjectFreshnessGateStatus;
+  source: ProjectFreshnessGateSource;
+  reason: string;
+  checkedAt: Timestamp;
+  warnings: string[];
+  catchUp?: ProjectIndexWatchCatchUpResult;
+  watch?: ProjectIndexWatchState;
+  indexFreshness: IndexFreshnessSummary;
+}
+
+export const ProjectFreshnessGateSchema = z.object({
+  status: ProjectFreshnessGateStatusSchema,
+  source: ProjectFreshnessGateSourceSchema,
+  reason: z.string().min(1),
+  checkedAt: TimestampSchema,
+  warnings: z.array(z.string().min(1)),
+  catchUp: ProjectIndexWatchCatchUpResultSchema.optional(),
+  watch: ProjectIndexWatchStateSchema.optional(),
+  indexFreshness: IndexFreshnessSummarySchema,
+}) satisfies z.ZodType<ProjectFreshnessGate>;
 
 export interface IndexRunSurface {
   runId: string;

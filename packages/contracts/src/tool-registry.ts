@@ -41,6 +41,7 @@ export const MAKO_TOOL_NAMES = [
   "db_rls",
   "db_rpc",
   "db_table_schema",
+  "mako_help",
   "ask",
   "trace_file",
   "preflight_table",
@@ -73,13 +74,16 @@ export const MAKO_TOOL_NAMES = [
   "finding_acks_report",
   "project_findings",
   "file_findings",
+  "file_preflight",
   "project_facts",
   "file_facts",
   "working_tree_overlay",
   "reef_overlay_diff",
+  "reef_diff_impact",
   "reef_instructions",
   "list_reef_rules",
   "rule_pack_validate",
+  "extract_rule_template",
   "project_diagnostic_runs",
   "reef_scout",
   "reef_inspect",
@@ -118,11 +122,16 @@ export const ToolCategorySchema = z.enum(MAKO_TOOL_CATEGORIES);
 export type ToolAnnotations =
   | {
       readOnlyHint: true;
+      idempotentHint?: true;
+      openWorldHint?: true;
       advisoryOnly?: true;
       derivedOnly?: true;
   }
   | {
       mutation: true;
+      destructiveHint?: true;
+      idempotentHint?: true;
+      openWorldHint?: true;
       advisoryOnly?: true;
       derivedOnly?: true;
     };
@@ -130,15 +139,25 @@ export type ToolAnnotations =
 export const ToolAnnotationsSchema: z.ZodType<ToolAnnotations> = z.union([
   z.object({
     readOnlyHint: z.literal(true),
+    idempotentHint: z.literal(true).optional(),
+    openWorldHint: z.literal(true).optional(),
     advisoryOnly: z.literal(true).optional(),
     derivedOnly: z.literal(true).optional(),
   }),
   z.object({
     mutation: z.literal(true),
+    destructiveHint: z.literal(true).optional(),
+    idempotentHint: z.literal(true).optional(),
+    openWorldHint: z.literal(true).optional(),
     advisoryOnly: z.literal(true).optional(),
     derivedOnly: z.literal(true).optional(),
   }),
 ]);
+
+export const ToolHintsSchema = z.object({
+  _hints: z.array(z.string().min(1)).max(8),
+});
+export type ToolHints = z.infer<typeof ToolHintsSchema>;
 
 export interface ToolDefinitionSummary {
   name: ToolName;

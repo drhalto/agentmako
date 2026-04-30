@@ -7,6 +7,7 @@ import type { MakoApiService } from "@mako-ai/api";
 
 export const CLI_COMMANDS = [
   "connect",
+  "version",
   "status",
   "verify",
   "refresh",
@@ -92,6 +93,7 @@ export function printUsage(): void {
 
 ${color("Get started:", COLORS.bright)}
   ${color("agentmako connect", COLORS.yellow)} [path]       Attach + index + optional live DB connect + refresh
+  ${color("agentmako --version", COLORS.yellow)}             Print the CLI version
   ${color("agentmako status", COLORS.yellow)} [ref]         Show project status, snapshot, and DB binding state
   ${color("agentmako verify", COLORS.yellow)} [ref]         Verify the local schema snapshot against the live DB
   ${color("agentmako refresh", COLORS.yellow)} [ref]        Refresh the local schema snapshot from the live DB

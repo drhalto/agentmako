@@ -73,10 +73,12 @@ export const ProjectIndexReefFactsSummarySchema = z.object({
 
 export interface ProjectIndexStatusToolInput extends ProjectLocatorInput {
   includeUnindexed?: boolean;
+  verbosity?: "compact" | "full";
 }
 
 export const ProjectIndexStatusToolInputSchema = ProjectLocatorInputObjectSchema.extend({
   includeUnindexed: z.boolean().optional(),
+  verbosity: z.enum(["compact", "full"]).optional(),
 }).strict() satisfies z.ZodType<ProjectIndexStatusToolInput>;
 
 export interface ProjectIndexStatusToolOutput {

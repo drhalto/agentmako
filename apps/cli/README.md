@@ -39,6 +39,7 @@ agentmako connect
 ## Day-to-day commands
 
 ```bash
+agentmako --version  # print CLI version
 agentmako status     # project state, schema snapshot, db binding
 agentmako verify     # compare local snapshot against the live db (uses saved scope)
 agentmako refresh    # refresh the local snapshot from the live db (uses saved scope)

@@ -27,9 +27,35 @@ export const AST_FIND_PATTERN_LANGUAGES = ["ts", "tsx", "js", "jsx"] as const;
 export type AstFindPatternLanguage = (typeof AST_FIND_PATTERN_LANGUAGES)[number];
 export const AstFindPatternLanguageSchema = z.enum(AST_FIND_PATTERN_LANGUAGES);
 
+export const AstFindPatternVariantSchema = z.enum(["original", "auto_anchored"]);
+export type AstFindPatternVariant = z.infer<typeof AstFindPatternVariantSchema>;
+
+export interface AstFindPatternAttempt {
+  variant: AstFindPatternVariant;
+  pattern: string;
+  context?: string;
+  selector?: string;
+  languages: AstFindPatternLanguage[];
+  filesTried: number;
+  matchCount: number;
+}
+
+export const AstFindPatternAttemptSchema = z.object({
+  variant: AstFindPatternVariantSchema,
+  pattern: z.string().min(1),
+  context: z.string().min(1).optional(),
+  selector: z.string().min(1).optional(),
+  languages: z.array(AstFindPatternLanguageSchema),
+  filesTried: z.number().int().nonnegative(),
+  matchCount: z.number().int().nonnegative(),
+}) satisfies z.ZodType<AstFindPatternAttempt>;
+
 export interface AstFindPatternMatch {
   filePath: string;
   language: AstFindPatternLanguage;
+  patternVariant: AstFindPatternVariant;
+  patternContext?: string;
+  patternSelector?: string;
   lineStart: number;
   lineEnd: number;
   columnStart: number;
@@ -49,6 +75,9 @@ export interface AstFindPatternMatch {
 export const AstFindPatternMatchSchema = z.object({
   filePath: z.string().min(1),
   language: AstFindPatternLanguageSchema,
+  patternVariant: AstFindPatternVariantSchema,
+  patternContext: z.string().min(1).optional(),
+  patternSelector: z.string().min(1).optional(),
   lineStart: z.number().int().nonnegative(),
   lineEnd: z.number().int().nonnegative(),
   columnStart: z.number().int().nonnegative(),
@@ -108,6 +137,7 @@ export interface AstFindPatternToolOutput {
   pattern: string;
   languagesApplied: AstFindPatternLanguage[];
   filesScanned: number;
+  patternAttempts: AstFindPatternAttempt[];
   matches: AstFindPatternMatch[];
   /**
    * Matches filtered out by acks for the requested category. Always 0
@@ -126,6 +156,7 @@ export const AstFindPatternToolOutputSchema = z.object({
   pattern: z.string().min(1),
   languagesApplied: z.array(AstFindPatternLanguageSchema).min(1),
   filesScanned: z.number().int().nonnegative(),
+  patternAttempts: z.array(AstFindPatternAttemptSchema),
   matches: z.array(AstFindPatternMatchSchema),
   acknowledgedCount: z.number().int().nonnegative(),
   reefFreshness: ReefQueryFreshnessSchema,

@@ -184,6 +184,7 @@ async function main(): Promise<void> {
 
     const ackBatch = await toolService.callTool("finding_ack_batch", {
       projectId: seeded.projectId,
+      preview: false,
       category: "reef:smoke",
       subjectKind: "diagnostic_issue",
       reason: "fixture batch ack",
@@ -193,6 +194,7 @@ async function main(): Promise<void> {
       ],
     }) as FindingAckBatchToolOutput;
     assert.equal(ackBatch.toolName, "finding_ack_batch");
+    assert.equal(ackBatch.preview, false);
     assert.equal(ackBatch.summary.ackedRows, 2);
     assert.equal(ackBatch.summary.rejectedRows, 0);
 
@@ -503,6 +505,7 @@ async function main(): Promise<void> {
 
     const replicationComment = await toolService.callTool("db_review_comment", {
       projectId: seeded.projectId,
+      preview: false,
       objectType: "replication",
       objectName: "supabase_database_replication",
       category: "review",
@@ -511,9 +514,12 @@ async function main(): Promise<void> {
       tags: ["supabase", "replication"],
     }) as DbReviewCommentToolOutput;
     assert.equal(replicationComment.toolName, "db_review_comment");
-    assert.equal(replicationComment.comment.target.objectType, "replication");
-    assert.equal(replicationComment.comment.category, "review");
-    assert.deepEqual(replicationComment.comment.tags, ["supabase", "replication"]);
+    assert.equal(replicationComment.preview, false);
+    assert.ok(replicationComment.comment);
+    const replicationCommentRow = replicationComment.comment;
+    assert.equal(replicationCommentRow.target.objectType, "replication");
+    assert.equal(replicationCommentRow.category, "review");
+    assert.deepEqual(replicationCommentRow.tags, ["supabase", "replication"]);
 
     const replicationComments = await toolService.callTool("db_review_comments", {
       projectId: seeded.projectId,
@@ -522,7 +528,7 @@ async function main(): Promise<void> {
     }) as DbReviewCommentsToolOutput;
     assert.equal(replicationComments.toolName, "db_review_comments");
     assert.equal(replicationComments.totalReturned, 1);
-    assert.equal(replicationComments.comments[0]?.commentId, replicationComment.comment.commentId);
+    assert.equal(replicationComments.comments[0]?.commentId, replicationCommentRow.commentId);
 
     const scoutReplication = await toolService.callTool("reef_scout", {
       projectId: seeded.projectId,
@@ -531,7 +537,7 @@ async function main(): Promise<void> {
     }) as ReefScoutToolOutput;
     assert.ok(
       scoutReplication.candidates.some((candidate) =>
-        candidate.id === `db_review_comment:${replicationComment.comment.commentId}`),
+        candidate.id === `db_review_comment:${replicationCommentRow.commentId}`),
       "reef_scout should surface matching database review comments",
     );
 

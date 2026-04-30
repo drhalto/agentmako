@@ -1,0 +1,13 @@
+{
+  "name": "mako-ai",
+  "version": "0.2.3",
+  "description": "Project intelligence skills and MCP wiring for agentmako.",
+  "author": {
+    "name": "mako-ai"
+  },
+  "keywords": ["mcp", "code-intel", "project-intelligence", "mako"],
+  "interface": {
+    "displayName": "Mako AI",
+    "description": "Use agentmako for deterministic repo context, diagnostics, graph, workflow, and database intelligence."
+  }
+}

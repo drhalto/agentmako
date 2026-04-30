@@ -82,44 +82,6 @@ export function extractRoutineSelector(value: string): { name: string; argTypes?
   return identifier ? { name: identifier } : null;
 }
 
-const SEARCH_STOP_WORDS = new Set([
-  "a",
-  "an",
-  "and",
-  "are",
-  "be",
-  "belong",
-  "current",
-  "does",
-  "for",
-  "from",
-  "how",
-  "i",
-  "in",
-  "is",
-  "it",
-  "me",
-  "my",
-  "of",
-  "on",
-  "or",
-  "show",
-  "showing",
-  "that",
-  "the",
-  "their",
-  "there",
-  "this",
-  "to",
-  "valid",
-  "what",
-  "when",
-  "where",
-  "which",
-  "why",
-  "with",
-]);
-
 export function extractQuotedTerm(question: string): string | null {
   const match = question.match(/["'`](.+?)["'`]/);
   return match?.[1]?.trim() || null;
@@ -131,46 +93,8 @@ export function extractDebugSearchTerm(question: string): string | null {
     return quoted;
   }
 
-  if (/\bnot registered\b/i.test(question)) {
-    return "not registered";
-  }
-
-  const tokens = normalizeQuestion(question)
-    .toLowerCase()
-    .replace(/[^a-z0-9_./-]+/g, " ")
-    .split(/\s+/)
-    .filter((token) => token.length >= 2 && !SEARCH_STOP_WORDS.has(token));
-
-  if (tokens.length === 0) {
-    return null;
-  }
-
-  if (tokens.includes("attendance") && tokens.includes("window")) {
-    return "attendance window";
-  }
-
-  const unknownIndex = tokens.indexOf("unknown");
-  if (unknownIndex >= 0 && tokens[unknownIndex + 1]) {
-    return `unknown ${tokens[unknownIndex + 1]}`;
-  }
-
-  if (tokens.includes("support") && tokens.includes("tickets")) {
-    return "support tickets";
-  }
-
-  if (tokens.includes("admin") && tokens.includes("dashboard")) {
-    return "admin dashboard";
-  }
-
-  if (tokens.includes("dashboard") && tokens.includes("sidebar")) {
-    return "dashboard sidebar";
-  }
-
-  if (tokens.includes("access") && tokens.includes("checks")) {
-    return "access checks";
-  }
-
-  return tokens.slice(0, Math.min(tokens.length, 2)).join(" ");
+  const normalized = normalizeQuestion(question);
+  return normalized.length > 0 ? normalized : null;
 }
 
 function selectDbQuestion(question: string, input: AskToolInput): AskToolSelection | null {

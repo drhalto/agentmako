@@ -20,6 +20,7 @@ import type { ZodTypeAny, z } from "zod";
 import { withProjectContext, type ToolServiceOptions } from "../../runtime.js";
 import { ensureFreshSchemaSnapshot } from "../../schema-freshness.js";
 import type { MakoToolDefinition } from "../../tool-definitions.js";
+import { toolAnnotations } from "../../tool-operational-metadata.js";
 import { persistAndEnrichAnswerResult } from "../../trust/enrich-answer-result.js";
 import { readFreshness, type ComposerContext } from "./context.js";
 
@@ -49,7 +50,7 @@ export function defineComposer<
     name: def.name,
     category: "composer",
     description: def.description,
-    annotations: { readOnlyHint: true },
+    annotations: toolAnnotations(def.name),
     inputSchema: def.inputSchema,
     outputSchema: def.outputSchema,
     execute: async (input, options: ToolServiceOptions) => {

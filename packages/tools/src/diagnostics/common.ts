@@ -83,6 +83,23 @@ export interface RoleSourceRecord {
 }
 
 const diagnosticAstCache = new WeakMap<ProjectStore, Map<string, { content: string; sourceFile: ts.SourceFile }>>();
+// Issue identities must survive reruns so finding acknowledgements remain
+// attached. Strip runtime-only fields before hashing `matchBasedId`/`codeHash`.
+const VOLATILE_IDENTITY_KEYS = new Set([
+  "capturedAt",
+  "checkedAt",
+  "checkedAtMs",
+  "createdAt",
+  "durationMs",
+  "finishedAt",
+  "queryId",
+  "requestId",
+  "resolvedAt",
+  "runId",
+  "startedAt",
+  "traceId",
+  "updatedAt",
+]);
 
 export function readDiagnosticFiles(
   projectStore: ProjectStore,
@@ -127,6 +144,8 @@ function scriptKindForPath(filePath: string): ts.ScriptKind {
 }
 
 export function buildSurfaceIssue(input: DiagnosticIssueInput): AnswerSurfaceIssue {
+  const stableMatchKey = stableIdentityValue(input.matchKey);
+  const stableCodeFingerprint = stableIdentityValue(input.codeFingerprint);
   return {
     severity: input.severity,
     confidence: input.confidence,
@@ -142,13 +161,28 @@ export function buildSurfaceIssue(input: DiagnosticIssueInput): AnswerSurfaceIss
       matchBasedId: hashJson({
         category: input.category,
         code: input.code,
-        matchKey: input.matchKey,
+        matchKey: stableMatchKey,
       }),
-      codeHash: hashJson(input.codeFingerprint),
+      codeHash: hashJson(stableCodeFingerprint),
       patternHash: hashJson({ category: input.category, code: input.code, version: 1 }),
     },
     metadata: input.metadata,
   };
+}
+
+function stableIdentityValue(value: unknown): unknown {
+  if (Array.isArray(value)) {
+    return value.map(stableIdentityValue);
+  }
+
+  if (value != null && typeof value === "object") {
+    const stableEntries = Object.entries(value as Record<string, unknown>)
+      .filter(([key]) => !VOLATILE_IDENTITY_KEYS.has(key))
+      .map(([key, entryValue]) => [key, stableIdentityValue(entryValue)] as const);
+    return Object.fromEntries(stableEntries);
+  }
+
+  return value;
 }
 
 export function dedupeIssuesByMatchBasedId(issues: AnswerSurfaceIssue[]): AnswerSurfaceIssue[] {

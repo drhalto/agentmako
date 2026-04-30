@@ -8,6 +8,8 @@ import {
   type AnswerTrustState,
   type AnswerTrustSurface,
   type JsonObject,
+  type ProjectFinding,
+  type ReefRuleDescriptor,
 } from "@mako-ai/contracts";
 import { createLogger } from "@mako-ai/logger";
 import type { ProjectStore } from "@mako-ai/store";
@@ -28,6 +30,96 @@ interface Input {
   result: AnswerResult;
   projectStore: ProjectStore;
   options?: import("../runtime.js").ToolServiceOptions;
+}
+
+function reefSeverity(issue: AnswerSurfaceIssue): ProjectFinding["severity"] {
+  switch (issue.severity) {
+    case "critical":
+    case "high":
+      return "error";
+    case "medium":
+      return "warning";
+    case "low":
+      return "info";
+  }
+}
+
+function issueFilePath(issue: AnswerSurfaceIssue): string | undefined {
+  return issue.path ?? issue.consumerPath ?? issue.producerPath;
+}
+
+function persistAnswerDiagnosticsToReef(args: {
+  result: AnswerResult;
+  diagnostics: readonly AnswerSurfaceIssue[];
+  projectStore: ProjectStore;
+}): void {
+  if (args.diagnostics.length === 0) return;
+
+  const source = args.result.queryKind;
+  const capturedAt = new Date().toISOString();
+  const freshness = {
+    state: "fresh" as const,
+    checkedAt: capturedAt,
+    reason: `query-time diagnostics collected by ${source}`,
+  };
+  const descriptors = new Map<string, ReefRuleDescriptor>();
+  const findings: ProjectFinding[] = [];
+
+  for (const issue of args.diagnostics) {
+    const filePath = issueFilePath(issue);
+    if (!filePath) continue;
+
+    const subjectFingerprint = args.projectStore.computeReefSubjectFingerprint({
+      kind: "file",
+      path: filePath,
+    });
+    descriptors.set(issue.code, {
+      id: issue.code,
+      version: "1.0.0",
+      source,
+      sourceNamespace: source,
+      type: "problem",
+      severity: reefSeverity(issue),
+      title: issue.code,
+      description: `Query-time diagnostic produced by ${source}.`,
+      factKinds: [source],
+      enabledByDefault: true,
+    });
+    findings.push({
+      projectId: args.result.projectId,
+      fingerprint: `${source}:${issue.identity.matchBasedId}`,
+      source,
+      subjectFingerprint,
+      overlay: "indexed",
+      severity: reefSeverity(issue),
+      status: "active",
+      filePath,
+      ...(issue.line ? { line: issue.line } : {}),
+      ruleId: issue.code,
+      evidenceRefs: issue.evidenceRefs,
+      freshness,
+      capturedAt,
+      message: issue.message,
+      factFingerprints: [],
+    });
+  }
+
+  if (findings.length === 0) return;
+  if (descriptors.size > 0) {
+    args.projectStore.saveReefRuleDescriptors([...descriptors.values()]);
+  }
+  args.projectStore.replaceReefFindingsForSource({
+    projectId: args.result.projectId,
+    source,
+    overlay: "indexed",
+    // Composer/search diagnostics are opportunistic over the returned
+    // evidence, not a complete per-file diagnostic pass. Persist what the
+    // query saw, but do not resolve prior query-time findings just because a
+    // different query did not reproduce them.
+    subjectFingerprints: [],
+    findings,
+    reason: `${source} query-time diagnostic upsert`,
+  });
 }
 
 export async function persistAndEnrichAnswerResult(input: Input): Promise<AnswerResult> {
@@ -66,6 +158,11 @@ export async function enrichAnswerResultSurface(input: Input): Promise<AnswerRes
   const diagnostics = collectAnswerDiagnostics({
     projectStore: input.projectStore,
     result: input.result,
+  });
+  persistAnswerDiagnosticsToReef({
+    result: input.result,
+    diagnostics,
+    projectStore: input.projectStore,
   });
   const trust = buildTrustSurface({
     snapshot: trustSnapshot,

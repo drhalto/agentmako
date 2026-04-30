@@ -44,25 +44,49 @@ still be stale relative to disk. Check `project_index_status`,
 per-evidence freshness fields, or `live_text_search` before relying on
 exact lines after edits.
 
+Every tool result includes `_hints: string[]`. Read those hints before
+deciding the next call; they are generated from the returned result and are
+often more specific than the static tool description.
+
 ## First Tool To Use
+
+When you are unsure which Mako workflow fits the task, call `mako_help` first.
+It returns an ordered recipe with pre-filled `suggestedArgs`, batchable
+follow-ups, and post-edit verification steps.
+
+```json
+{
+  "task": "audit auth flow for tenant-scoped dashboard role checks",
+  "focusFiles": ["app/dashboard/layout.tsx"],
+  "changedFiles": ["app/dashboard/layout.tsx"]
+}
+```
 
 For a vague task, start with `context_packet`.
 
 ```json
 {
   "request": "debug why manager onboarding role checks are failing",
+  "mode": "explore",
   "includeInstructions": true,
   "includeRisks": true,
+  "risksMinConfidence": 0.7,
   "includeLiveHints": true,
   "freshnessPolicy": "prefer_fresh",
   "budgetTokens": 4000
 }
 ```
 
+Use `mode: "explore"` for discovery, `"plan"` before writing an
+implementation plan, `"implement"` before editing code, and `"review"` for
+verification or change review. The returned `modePolicy` explains which
+providers and follow-up tools were emphasized.
+
 Read the returned `primaryContext`, `relatedContext`, `activeFindings`,
-`risks`, `scopedInstructions`, `recommendedHarnessPattern`, and
-`expandableTools`. Then follow the normal harness loop: read the primary
-files, search references, edit surgically, and verify.
+`risks`, `scopedInstructions`, `freshnessGate`,
+`recommendedHarnessPattern`, and `expandableTools`. Then follow the normal
+harness loop: read the primary files, search references, edit surgically,
+and verify.
 
 When the task already names files, include them:
 
@@ -74,6 +98,9 @@ When the task already names files, include them:
   "includeRisks": true
 }
 ```
+
+Use `risksMinConfidence` when risk output is too speculative. For example,
+`0.7` keeps strong risk signals and drops low-confidence guesses.
 
 ## Fast Follow-Up Batches
 
@@ -109,17 +136,34 @@ round trips and keeps results labeled.
 `db_reef_refresh`, `finding_ack`, and `finding_ack_batch`.
 
 Use `verbosity: "compact"` or per-op `resultMode: "summary"` when
-querying noisy tools like `cross_search`, `recall_tool_runs`, or
-project-wide Reef views.
+querying noisy tools like `cross_search`, `lint_files`,
+`project_index_status`, `recall_tool_runs`, or project-wide Reef views.
+`cross_search`, `lint_files`, and `project_index_status` already default
+to compact output; pass `verbosity: "full"` only when you need broader
+debug detail.
 
 ## Freshness And Indexing
 
-Use `project_index_status` before trusting indexed line numbers or after
-large edits.
+In long-running MCP sessions, Mako's watcher refreshes changed files and
+reruns scoped diagnostics in the background. Normal coding flow should
+not require calling `project_index_refresh` or `diagnostic_refresh` after
+every edit. Use `project_index_status` before trusting indexed line
+numbers, after large edits, or when a tool reports stale/degraded
+freshness.
 
 ```json
 {
   "includeUnindexed": false
+}
+```
+
+`project_index_status` is compact by default and omits the freshness
+sample. Use this when you need specific stale paths:
+
+```json
+{
+  "includeUnindexed": false,
+  "verbosity": "full"
 }
 ```
 
@@ -136,6 +180,8 @@ one of these:
   AST/search results appear wrong.
 - `working_tree_overlay` to snapshot working-tree file facts without
   reparsing AST/imports/routes/schema.
+- `diagnostic_refresh` when `verification_state` still reports stale,
+  failed, unavailable, or unknown sources after the watcher settles.
 
 Example:
 
@@ -157,6 +203,9 @@ schema objects, RPC/trigger bodies, and memories.
   "limit": 20
 }
 ```
+
+`cross_search` defaults to compact output. Pass an explicit `limit` or
+`verbosity: "full"` when you need a wider result set.
 
 Use `live_text_search` for exact current text on disk. It defaults to
 fixed-string search.
@@ -181,6 +230,12 @@ Use `ast_find_pattern` for structural TS/JS/TSX/JSX matches.
 }
 ```
 
+For TSX/JSX, ambiguous snippets that start with `{`, `[`, or `<` are
+also run with `const _ = ...` parser context; the auto-anchored form wins
+when it matches. Check `patternAttempts` and each match's `patternVariant`
+to see whether the original or auto-anchored form matched. You still need to
+list metavariables in `captures` when you want captured values returned.
+
 Use these focused code tools when the shape is known:
 
 - `repo_map`: token-budgeted project outline.
@@ -192,6 +247,9 @@ Use these focused code tools when the shape is known:
 - `trace_file`: explain one file.
 - `route_trace`, `route_context`: route resolution and route
   neighborhood.
+- `auth_path`: auth/authorization path evidence. If no exact route, file,
+  or feature matches, it returns `matched: false`, `reason`, and a suggested
+  `cross_search` fallback instead of breaking the batch.
 - `schema_usage`: direct app-code references to schema objects. It does not
   report RPC-mediated or graph-transitive touches; use `trace_rpc`,
   `route_context`, `table_neighborhood`, or `flow_map` for those.
@@ -213,6 +271,12 @@ Common Reef reads:
 - `project_findings`: active durable findings for the project.
 - `file_findings`: durable findings for a specific file before editing
   it.
+- `file_preflight`: one-call pre-edit gate for a file. Returns durable
+  findings, file-scoped diagnostic freshness flags, recent diagnostic runs,
+  applicable conventions, and finding acknowledgement history.
+- `reef_diff_impact`: mid-edit changed-file impact packet. For files in the
+  working tree, returns downstream import callers, active findings on those
+  callers that may need re-checking, and conventions the diff may violate.
 - `project_facts`, `file_facts`: lower-level facts behind findings.
 - `project_diagnostic_runs`: recent lint/type adapter runs and whether
   they succeeded, failed, or are stale.
@@ -229,18 +293,50 @@ Common Reef reads:
   cross-checking.
 - `reef_instructions`: scoped `.mako/instructions.md` and `AGENTS.md`
   instructions for requested files.
+- `rule_pack_validate`: validate `.mako/rules` YAML packs and preview rule
+  descriptors before relying on new or edited project rules.
+- `extract_rule_template`: mine a local git fix diff and propose a
+  reviewable `.mako/rules` YAML draft from removed TS/JS anti-pattern
+  shapes. It does not write files or mutate Reef.
+
+`reef_scout` ranks with a light intent classifier: app-flow requests favor
+file, route, and finding evidence; RLS/schema requests favor database evidence.
+Use `project_conventions` for extracted profile/index/rule conventions such as
+auth guards, runtime boundaries, generated paths, route patterns, and schema
+usage patterns.
+
+`file_findings` includes durable findings produced by full diagnostic tools
+and persisted query-time diagnostics from answer/composer tools such as
+`cross_search` and `trace_file`. For
+`project_findings` and `file_findings`, the `source` filter matches the
+producer source, such as `lint_files` or `cross_search`, the bare rule ID, such
+as `identity.boundary_mismatch`, or a rule-pack alias such as
+`rule_pack:courseconnect.hydration.dynamic_ssr_false_owns_trigger`.
 
 Before editing a risky file, prefer:
 
 ```json
 {
   "filePath": "lib/auth/dal.ts",
-  "limit": 50
+  "findingsLimit": 50
 }
 ```
 
-with `file_findings`, then `reef_inspect` if a finding needs
-explanation.
+with `file_preflight`. Use `reef_inspect` only when one returned finding or
+fact needs its deeper evidence trail.
+
+Mid-edit or before review, ask for changed-file impact:
+
+```json
+{
+  "filePaths": ["src/util.ts", "app/api/users/route.ts"],
+  "depth": 2
+}
+```
+
+with `reef_diff_impact`. It is read-only and does not run
+`working_tree_overlay`; if overlay facts are missing, run
+`working_tree_overlay` or wait for the watcher first.
 
 ## Diagnostics
 
@@ -267,6 +363,44 @@ For changed files:
 ```
 
 with `lint_files`.
+
+`lint_files` defaults to compact output. Pass `verbosity: "full"` or an
+explicit `maxFindings` when investigating broad diagnostics. Custom YAML
+rule packs under `.mako/rules` are hot-reloaded; editing a rule should not
+require restarting the MCP server.
+
+After fixing a repeated bug pattern, use `extract_rule_template` with the fix
+commit to propose a rule-pack draft:
+
+```json
+{
+  "fixCommit": "HEAD",
+  "filePath": "components/nav-main.tsx",
+  "ruleIdPrefix": "courseconnect.hydration"
+}
+```
+
+Review the returned `draftYaml`, adjust overly broad patterns, then place it
+under `.mako/rules` and run `rule_pack_validate` / `lint_files`.
+
+For helper-bypass bugs, rule packs can add a primitive cross-file guard with
+`canonicalHelper`. The `pattern` still matches the local bad shape; Mako
+suppresses files that already reference the helper symbol and emits
+producer/consumer context when the helper path is declared:
+
+```yaml
+rules:
+  - id: project.auth.helper_bypass
+    category: rpc_helper_reuse
+    severity: high
+    confidence: confirmed
+    languages: [ts]
+    message: Direct profiles query should go through enforceAccountStatus.
+    pattern: $CLIENT.from("profiles")
+    canonicalHelper:
+      symbol: enforceAccountStatus
+      path: lib/auth/dal.ts
+```
 
 For staged changes before commit:
 

@@ -19,6 +19,129 @@ import {
 } from "./shared.js";
 import { buildReefToolExecution } from "./tool-execution.js";
 
+type ScoutIntent = "app_flow" | "schema" | "mixed";
+type ScoutCandidateDomain = "app" | "schema" | "unknown";
+
+const APP_FLOW_TOKENS = new Set([
+  "api",
+  "auth",
+  "button",
+  "client",
+  "component",
+  "controller",
+  "dashboard",
+  "flow",
+  "handler",
+  "hook",
+  "layout",
+  "login",
+  "middleware",
+  "onboarding",
+  "page",
+  "route",
+  "routes",
+  "screen",
+  "server",
+  "service",
+  "session",
+  "ui",
+]);
+
+const SCHEMA_TOKENS = new Set([
+  "column",
+  "columns",
+  "constraint",
+  "database",
+  "db",
+  "foreign",
+  "function",
+  "index",
+  "indexes",
+  "migration",
+  "migrations",
+  "policy",
+  "policies",
+  "postgres",
+  "rls",
+  "rpc",
+  "schema",
+  "sql",
+  "storage",
+  "supabase",
+  "table",
+  "tables",
+  "trigger",
+]);
+
+function classifyScoutIntent(query: string, tokens: readonly string[]): ScoutIntent {
+  const lower = query.toLowerCase();
+  let appScore = 0;
+  let schemaScore = 0;
+
+  for (const token of tokens) {
+    if (APP_FLOW_TOKENS.has(token)) appScore += 1;
+    if (SCHEMA_TOKENS.has(token)) schemaScore += 1;
+  }
+
+  if (/\brow[-\s]+level\b|\brls\b|\bpolicy\b|\bpolicies\b|\bforeign[-\s]+key\b|\bpublic\.[a-z0-9_]+\b/.test(lower)) {
+    schemaScore += 3;
+  }
+  if (/\b(route|page|layout|component|handler|middleware|dashboard|onboarding|flow)\b/.test(lower)) {
+    appScore += 2;
+  }
+
+  if (schemaScore >= appScore + 2) return "schema";
+  if (appScore >= schemaScore + 1) return "app_flow";
+  return "mixed";
+}
+
+function textDomain(text: string): ScoutCandidateDomain {
+  const lower = text.toLowerCase();
+  if (/(^|[^a-z0-9])(db|database|schema|table|column|rls|policy|rpc|sql|trigger|migration|constraint)([^a-z0-9]|$)/.test(lower)) {
+    return "schema";
+  }
+  if (/(^|[^a-z0-9])(route|page|layout|component|handler|middleware|auth|session|dashboard|flow|client|server)([^a-z0-9]|$)/.test(lower)) {
+    return "app";
+  }
+  return "unknown";
+}
+
+function factDomain(fact: Parameters<typeof factSearchText>[0]): ScoutCandidateDomain {
+  if (fact.subject.kind === "schema_object") return "schema";
+  const lowerKind = fact.kind.toLowerCase();
+  if (/(^|[^a-z0-9])(db|schema|table|column|rls|policy|rpc|sql|trigger|migration|constraint)([^a-z0-9]|$)/.test(lowerKind)) {
+    return "schema";
+  }
+  if (filePathFromFact(fact) || fact.subject.kind === "route" || fact.subject.kind === "import_edge" || fact.subject.kind === "symbol") {
+    return "app";
+  }
+  return textDomain(factSearchText(fact));
+}
+
+function findingDomain(finding: Parameters<typeof findingSearchText>[0]): ScoutCandidateDomain {
+  if (finding.filePath) return "app";
+  return textDomain(findingSearchText(finding));
+}
+
+function ruleDomain(rule: Parameters<typeof ruleSearchText>[0]): ScoutCandidateDomain {
+  return textDomain(ruleSearchText(rule));
+}
+
+function adjustScoutScore(score: number, intent: ScoutIntent, domain: ScoutCandidateDomain): number {
+  if (intent === "app_flow") {
+    if (domain === "app") return score + 5;
+    if (domain === "schema") return score - 8;
+  }
+  if (intent === "schema") {
+    if (domain === "schema") return score + 6;
+    if (domain === "app") return score - 3;
+  }
+  if (intent === "mixed" && domain !== "unknown") {
+    return score + 1;
+  }
+  return score;
+}
+
 export async function reefScoutTool(
   input: ReefScoutToolInput,
   options: ToolServiceOptions,
@@ -28,6 +151,7 @@ export async function reefScoutTool(
     const limit = input.limit ?? 20;
     const focusFiles = new Set((input.focusFiles ?? []).map((filePath) => normalizeFileQuery(project.canonicalPath, filePath)));
     const queryTokens = tokenizeQuery(input.query);
+    const intent = classifyScoutIntent(input.query, queryTokens);
     const facts = projectStore.queryReefFacts({ projectId: project.projectId, limit: 500 });
     const findings = projectStore.queryReefFindings({
       projectId: project.projectId,
@@ -52,7 +176,11 @@ export async function reefScoutTool(
     for (const finding of findings) {
       const text = findingSearchText(finding);
       const filePath = finding.filePath;
-      const score = scoreText(text, queryTokens) + (filePath && focusFiles.has(filePath) ? 10 : 0) + severityWeight(finding.severity);
+      const score = adjustScoutScore(
+        scoreText(text, queryTokens) + (filePath && focusFiles.has(filePath) ? 10 : 0) + severityWeight(finding.severity),
+        intent,
+        findingDomain(finding),
+      );
       if (score <= 0) continue;
       addCandidate(candidates, {
         id: `finding:${finding.fingerprint}`,
@@ -73,7 +201,11 @@ export async function reefScoutTool(
 
     for (const fact of facts) {
       const filePath = filePathFromFact(fact);
-      const score = scoreText(factSearchText(fact), queryTokens) + (filePath && focusFiles.has(filePath) ? 8 : 0);
+      const score = adjustScoutScore(
+        scoreText(factSearchText(fact), queryTokens) + (filePath && focusFiles.has(filePath) ? 8 : 0),
+        intent,
+        factDomain(fact),
+      );
       if (score <= 0) continue;
       addCandidate(candidates, {
         id: `fact:${fact.fingerprint}`,
@@ -93,7 +225,11 @@ export async function reefScoutTool(
     }
 
     for (const rule of rules) {
-      const score = scoreText(ruleSearchText(rule), queryTokens) + (rule.enabledByDefault ? 1 : 0);
+      const score = adjustScoutScore(
+        scoreText(ruleSearchText(rule), queryTokens) + (rule.enabledByDefault ? 1 : 0),
+        intent,
+        ruleDomain(rule),
+      );
       if (score <= 0) continue;
       addCandidate(candidates, {
         id: `rule:${rule.source}:${rule.id}`,
@@ -115,7 +251,11 @@ export async function reefScoutTool(
     }
 
     for (const run of runs) {
-      const score = scoreText(diagnosticRunSearchText(run), queryTokens) + (run.status !== "succeeded" ? 2 : 0);
+      const score = adjustScoutScore(
+        scoreText(diagnosticRunSearchText(run), queryTokens) + (run.status !== "succeeded" ? 2 : 0),
+        intent,
+        textDomain(diagnosticRunSearchText(run)),
+      );
       if (score <= 0) continue;
       addCandidate(candidates, {
         id: `diagnostic_run:${run.runId}`,
@@ -138,7 +278,11 @@ export async function reefScoutTool(
     }
 
     for (const comment of dbReviewComments) {
-      const score = scoreText(dbReviewCommentSearchText(comment), queryTokens) + severityWeight(comment.severity ?? "info");
+      const score = adjustScoutScore(
+        scoreText(dbReviewCommentSearchText(comment), queryTokens) + severityWeight(comment.severity ?? "info"),
+        intent,
+        "schema",
+      );
       if (score <= 0) continue;
       addCandidate(candidates, {
         id: `db_review_comment:${comment.commentId}`,

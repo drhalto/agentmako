@@ -28,12 +28,20 @@ Mako is built for the first mile of coding-agent work:
 
 - MCP server for coding agents: `agentmako mcp`
 - Local dashboard: `agentmako dashboard`
+- Queryable workflow orientation: `mako_help`
 - Deterministic context packets: `context_packet`, `reef_scout`
+- `_hints` on tool results so agents get result-specific next steps
+- Central MCP annotations so clients can distinguish safe reads, live reads,
+  and local-state mutations
 - Code search and structure tools: `cross_search`, `live_text_search`,
   `ast_find_pattern`, `repo_map`
 - [Reef Engine](./docs/reef-engine.md) facts and findings across indexed,
   working-tree, and staged state
+- Reef convention extraction for auth guards, runtime boundaries, generated
+  paths, route patterns, and schema usage
 - TypeScript, ESLint, Oxlint, Biome, and staged git diagnostic ingestion
+- Hot-reloaded `.mako/rules` YAML rule packs, including primitive
+  cross-file helper-bypass rules via `canonicalHelper`
 - Optional Postgres/Supabase schema snapshots and read-only DB inspection
 - Local DB review comments for notes on tables, RLS, triggers,
   publications, subscriptions, and replication
@@ -52,6 +60,7 @@ npm install -g agentmako
 Confirm the CLI is available:
 
 ```bash
+agentmako --version
 agentmako doctor
 ```
 
@@ -96,6 +105,14 @@ agentmako --json tool call . reef_scout "{\"query\":\"where should I inspect aut
 If that returns ranked candidates, facts, or findings, the core setup is
 working.
 
+`reef_scout` classifies broad requests before ranking. App-flow questions favor
+file, route, and finding evidence; RLS/schema questions favor database facts
+and review comments. To inspect project rules of thumb directly:
+
+```bash
+agentmako --json tool call . project_conventions "{}"
+```
+
 ### 3. Configure your MCP client
 
 Add this to your MCP client config:
@@ -117,14 +134,21 @@ In the agent, start with one of these tools:
 
 - `tool_search` when you need to find the right Mako tool
 - `context_packet` when you have a coding task and want starting context
-- `reef_scout` when you want ranked project facts/findings/history
+- `reef_scout` when you want intent-ranked project facts/findings/history
+- `file_preflight` before editing one risky file and you need findings,
+  diagnostic freshness, conventions, recent runs, and ack history together
+- `reef_diff_impact` mid-edit or before review when you need changed-file
+  callers, caller findings, and convention risks in one packet
+- `extract_rule_template` after a fix lands and you want a reviewable
+  `.mako/rules` YAML draft for the same bug shape next time
+- `project_conventions` when you need discovered auth, runtime, route,
+  generated-file, or schema-usage conventions
 - `ask` when you have a natural-language repo question
 
-### 4. Optional: use the Claude Code plugin
+### 4. Optional: use an agent plugin
 
-Plain MCP works with Claude Code, but the bundled plugin adds Mako-specific
-Claude skills and includes the same `agentmako mcp` wiring in
-`mako-ai-claude-plugin/.mcp.json`.
+Plain MCP works anywhere, but the bundled plugins add Mako-specific skills and
+include the same `agentmako mcp` wiring.
 
 Prerequisites:
 
@@ -134,14 +158,23 @@ Prerequisites:
   required)
 - Your target project already attached with `agentmako connect`
 
-From the agentmako repo root:
+Claude Code stable path:
 
 ```powershell
 claude plugin validate .\mako-ai-claude-plugin
 claude --plugin-dir .\mako-ai-claude-plugin
 ```
 
-Inside Claude Code, run `/mcp` and confirm `mako-ai` is connected.
+New generated plugin layouts:
+
+```bash
+claude plugin validate ./plugins/claude-code
+codex marketplace add ./plugins
+ln -s "$(pwd)/plugins/cursor" ~/.cursor/plugins/local/mako-ai
+gemini extensions install ./plugins/gemini
+```
+
+Inside the agent, confirm the `mako-ai` MCP server is connected.
 
 The plugin exposes these skills:
 
@@ -290,6 +323,8 @@ mako-ai-claude-plugin/ Claude Code plugin with Mako skills
 - [Tool overview](./TOOLS.md)
 - [CLI docs](./apps/cli/README.md)
 - [Reef Engine](./docs/reef-engine.md)
+- [Tool annotations](./docs/tool-annotations.md)
+- [Write tool convention](./docs/write-tool-convention.md)
 - [Claude Code plugin](./mako-ai-claude-plugin/README.md)
 - [Agent guidance to paste into CLAUDE.md / AGENTS.md](./AGENTS.md)
 - [Contributing](./CONTRIBUTING.md)

@@ -37,7 +37,8 @@ import { defineComposer } from "./_shared/define.js";
 import { makePacket } from "./_shared/packet.js";
 
 const QUERY_KIND: ComposerQueryKind = "cross_search";
-const DEFAULT_LIMIT = 15;
+const DEFAULT_COMPACT_LIMIT = 8;
+const DEFAULT_FULL_LIMIT = 15;
 const SOURCE_FILE_RE = /\.(?:ts|tsx|js|jsx|mjs|cjs|sql)$/i;
 
 function isRelevantSourceFile(filePath: string): boolean {
@@ -274,7 +275,8 @@ export const crossSearchTool = defineComposer({
     ctx,
   ): Promise<CrossSearchToolOutput> => {
     const term = input.term;
-    const limit = input.limit ?? DEFAULT_LIMIT;
+    const verbosity = input.verbosity ?? "compact";
+    const limit = input.limit ?? (verbosity === "full" ? DEFAULT_FULL_LIMIT : DEFAULT_COMPACT_LIMIT);
     const searchTerms = expandSearchTerms(term);
     const schemaTerms = schemaSearchTerms(term);
     const requireExactSchemaTerm = /\s/.test(term.trim());

@@ -154,6 +154,7 @@ async function main(): Promise<void> {
 
   const ackResult = (await invokeTool("finding_ack", {
     projectId,
+    preview: false,
     category: target.code,
     subjectKind: "diagnostic_issue",
     ...(target.path ? { filePath: target.path } : {}),
@@ -163,6 +164,7 @@ async function main(): Promise<void> {
     sourceRuleId: target.code,
     sourceIdentityMatchBasedId: target.identity.matchBasedId,
   })) as FindingAckToolOutput;
+  assert.ok(ackResult.ack);
   assert.equal(ackResult.ack.category, RULE_CODE);
   assert.equal(ackResult.ack.fingerprint, target.identity.matchBasedId);
   const reefStore = openProjectStore({ projectRoot });

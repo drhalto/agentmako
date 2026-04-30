@@ -160,7 +160,7 @@ export async function resolveProject(
     if (locator.projectId) {
       const projectById = globalStore.getProjectById(locator.projectId);
       if (projectById) {
-        options.requestContext?.onProjectResolved?.(projectById);
+        await notifyProjectResolved(options, projectById);
         return projectById;
       }
 
@@ -178,7 +178,7 @@ export async function resolveProject(
         globalStore.getProjectByPath(resolvedReference) ??
         globalStore.getProjectById(locator.projectRef);
       if (projectByPath) {
-        options.requestContext?.onProjectResolved?.(projectByPath);
+        await notifyProjectResolved(options, projectByPath);
         return projectByPath;
       }
 
@@ -196,6 +196,7 @@ export async function resolveProject(
     if (options.requestContext?.sessionProjectId) {
       const sessionProject = globalStore.getProjectById(options.requestContext.sessionProjectId);
       if (sessionProject) {
+        await notifyProjectResolved(options, sessionProject);
         return sessionProject;
       }
     }
@@ -203,6 +204,7 @@ export async function resolveProject(
     const roots = (await options.requestContext?.getRoots?.()) ?? [];
     const rootResolution = resolveProjectFromLocations(globalStore, roots);
     if (rootResolution.project) {
+      await notifyProjectResolved(options, rootResolution.project);
       return rootResolution.project;
     }
 
@@ -211,6 +213,7 @@ export async function resolveProject(
       ? resolveProjectFromLocations(globalStore, [metaCwd])
       : { project: null, detachedProject: null, ambiguousCandidates: [] };
     if (cwdResolution.project) {
+      await notifyProjectResolved(options, cwdResolution.project);
       return cwdResolution.project;
     }
 
@@ -250,4 +253,8 @@ export async function resolveProjectFromToolContext(
   options: ToolServiceOptions,
 ): Promise<AttachedProject> {
   return resolveProject(locator, options);
+}
+
+async function notifyProjectResolved(options: ToolServiceOptions, project: AttachedProject): Promise<void> {
+  await options.requestContext?.onProjectResolved?.(project);
 }

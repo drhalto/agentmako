@@ -25,6 +25,7 @@ export interface LintFilesToolInput {
   projectId?: string;
   projectRef?: string;
   files: string[];
+  verbosity?: "compact" | "full";
   // Optional "primary" focus file. When set, findings are filtered to only
   // those that touch it (same semantics as `collectAnswerDiagnostics` when
   // the query kind is `file_health` / `trace_file`).
@@ -48,6 +49,7 @@ export interface LintFilesToolInput {
 
 export const LintFilesToolInputSchema = ProjectLocatorInputObjectSchema.extend({
   files: z.array(z.string().trim().min(1)).min(1).max(200),
+  verbosity: z.enum(["compact", "full"]).optional(),
   primaryFocusFile: z.string().trim().min(1).optional(),
   // Cost class: byte-cost. Default 500 in tool implementation; hard max unchanged.
   maxFindings: z.number().int().positive().max(1000).optional(),

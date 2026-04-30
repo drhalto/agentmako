@@ -94,6 +94,37 @@ async function main(): Promise<void> {
     assert.equal(coercedTransportOutput.results.find((result) => result.label === "status")?.ok, true);
     assert.equal(coercedTransportOutput.results.find((result) => result.label === "ast")?.ok, true);
 
+    const noMatchLiveSearch = await invokeTool(
+      "tool_batch",
+      {
+        projectId: indexed.project.projectId,
+        verbosity: "compact",
+        ops: [
+          {
+            label: "live-no-match",
+            tool: "live_text_search",
+            args: {
+              query: "definitely_not_present_tool_batch_smoke",
+              fixedStrings: true,
+              pathGlob: "src/**/*.ts",
+              maxMatches: 5,
+            },
+          },
+        ],
+      },
+      {
+        projectStoreCache,
+        hotIndexCache,
+        requestContext: { requestId: "req_tool_batch_live_no_match_smoke" },
+      },
+    ) as ToolBatchToolOutput;
+
+    const liveNoMatchResult = noMatchLiveSearch.results.find((result) => result.label === "live-no-match");
+    assert.equal(noMatchLiveSearch.summary.succeededOps, 1);
+    assert.equal(liveNoMatchResult?.ok, true);
+    assert.deepEqual(liveNoMatchResult?.resultSummary?.matches, { count: 0 });
+    assert.deepEqual(liveNoMatchResult?.resultSummary?.filesMatched, { count: 0 });
+
     const mutationInput = ToolBatchInputSchema.safeParse({
       projectId: indexed.project.projectId,
       ops: [{ label: "refresh", tool: "project_index_refresh", args: { mode: "force" } }],

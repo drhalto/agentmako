@@ -3,7 +3,13 @@ import { randomUUID } from "node:crypto";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import type { TraceFileToolOutput } from "../../packages/contracts/src/index.ts";
+import type {
+  CrossSearchToolOutput,
+  FileFindingsToolOutput,
+  ProjectFindingsToolOutput,
+  TraceFileToolOutput,
+} from "../../packages/contracts/src/index.ts";
+import { buildSurfaceIssue } from "../../packages/tools/src/diagnostics/common.ts";
 import { invokeTool } from "../../packages/tools/src/registry.ts";
 import { openGlobalStore, openProjectStore } from "../../packages/store/src/index.ts";
 
@@ -422,6 +428,65 @@ function diagnosticCodes(result: { diagnostics?: Array<{ code: string }> | undef
   return result.diagnostics?.map((item) => item.code).sort((left, right) => left.localeCompare(right)) ?? [];
 }
 
+function assertVolatileFreshnessDoesNotAffectIssueIdentity(): void {
+  const first = buildSurfaceIssue({
+    category: "rpc_helper_reuse",
+    code: "reuse.helper_bypass",
+    message: "same finding",
+    severity: "high",
+    confidence: "confirmed",
+    path: "app/api/events/route.ts",
+    line: 4,
+    evidenceRefs: ["app/api/events/route.ts:L4"],
+    matchKey: {
+      producerPath: "lib/dashboard.ts",
+      consumerPath: "app/api/events/route.ts",
+      freshness: {
+        state: "fresh",
+        checkedAt: "2026-04-30T01:00:00.000Z",
+      },
+    },
+    codeFingerprint: {
+      directQuery: "events",
+      checkedAt: "2026-04-30T01:00:00.000Z",
+    },
+  });
+  const second = buildSurfaceIssue({
+    category: "rpc_helper_reuse",
+    code: "reuse.helper_bypass",
+    message: "same finding",
+    severity: "high",
+    confidence: "confirmed",
+    path: "app/api/events/route.ts",
+    line: 4,
+    evidenceRefs: ["app/api/events/route.ts:L4"],
+    matchKey: {
+      producerPath: "lib/dashboard.ts",
+      consumerPath: "app/api/events/route.ts",
+      freshness: {
+        state: "fresh",
+        checkedAt: "2026-04-30T02:00:00.000Z",
+      },
+    },
+    codeFingerprint: {
+      directQuery: "events",
+      checkedAt: "2026-04-30T02:00:00.000Z",
+    },
+  });
+
+  assert.equal(first.identity.matchBasedId, second.identity.matchBasedId);
+  assert.equal(first.identity.codeHash, second.identity.codeHash);
+}
+
+function findDiagnosticIdentity(
+  output: CrossSearchToolOutput,
+  code: string,
+): string {
+  const diagnostic = output.result.diagnostics?.find((issue) => issue.code === code);
+  assert.ok(diagnostic, `expected ${code} diagnostic`);
+  return diagnostic.identity.matchBasedId;
+}
+
 async function main(): Promise<void> {
   const tmp = mkdtempSync(path.join(os.tmpdir(), "mako-alignment-diagnostics-"));
   const stateHome = path.join(tmp, "state");
@@ -436,6 +501,8 @@ async function main(): Promise<void> {
   seedProject(projectRoot, projectId);
 
   try {
+    assertVolatileFreshnessDoesNotAffectIssueIdentity();
+
     const dashboardOutput = (await invokeTool("trace_file", {
       projectId,
       file: "lib/dashboard.ts",
@@ -464,6 +531,76 @@ async function main(): Promise<void> {
     })) as TraceFileToolOutput;
     const routeCodes = diagnosticCodes(routeOutput.result);
     assert.ok(routeCodes.includes("reuse.helper_bypass"));
+
+    const eventSearchOutput = (await invokeTool("cross_search", {
+      projectId,
+      term: "events",
+      verbosity: "full",
+    })) as CrossSearchToolOutput;
+    const eventSearchCodes = diagnosticCodes(eventSearchOutput.result);
+    assert.ok(
+      eventSearchCodes.includes("reuse.helper_bypass"),
+      "cross_search should surface helper reuse diagnostics for returned evidence",
+    );
+
+    const routeFindings = (await invokeTool("file_findings", {
+      projectId,
+      filePath: "app/api/events/route.ts",
+      freshnessPolicy: "allow_stale_labeled",
+    })) as FileFindingsToolOutput;
+    assert.ok(
+      routeFindings.findings.some((finding) =>
+        finding.source === "cross_search" &&
+        finding.ruleId === "reuse.helper_bypass"
+      ),
+      "file_findings should include persisted cross_search helper reuse diagnostics",
+    );
+
+    const crossSearchOutput = (await invokeTool("cross_search", {
+      projectId,
+      term: "loadAdminDashboard",
+      verbosity: "full",
+    })) as CrossSearchToolOutput;
+    const crossSearchCodes = diagnosticCodes(crossSearchOutput.result);
+    assert.ok(
+      crossSearchCodes.includes("identity.boundary_mismatch"),
+      "cross_search should surface alignment diagnostics for returned evidence",
+    );
+    const repeatedCrossSearchOutput = (await invokeTool("cross_search", {
+      projectId,
+      term: "loadAdminDashboard",
+      verbosity: "full",
+    })) as CrossSearchToolOutput;
+    assert.equal(
+      findDiagnosticIdentity(crossSearchOutput, "identity.boundary_mismatch"),
+      findDiagnosticIdentity(repeatedCrossSearchOutput, "identity.boundary_mismatch"),
+      "cross_search alignment diagnostic identity should be stable across reruns",
+    );
+
+    const adminFindings = (await invokeTool("file_findings", {
+      projectId,
+      filePath: "app/dashboard/admin/page.tsx",
+      freshnessPolicy: "allow_stale_labeled",
+    })) as FileFindingsToolOutput;
+    assert.ok(
+      adminFindings.findings.some((finding) =>
+        finding.source === "cross_search" &&
+        finding.ruleId === "identity.boundary_mismatch"
+      ),
+      "file_findings should include persisted cross_search diagnostics",
+    );
+
+    const ruleFilteredFindings = (await invokeTool("project_findings", {
+      projectId,
+      source: "identity.boundary_mismatch",
+      freshnessPolicy: "allow_stale_labeled",
+    })) as ProjectFindingsToolOutput;
+    assert.ok(
+      ruleFilteredFindings.findings.some((finding) =>
+        finding.ruleId === "identity.boundary_mismatch"
+      ),
+      "project_findings source filter should match rule IDs as well as producer sources",
+    );
 
     console.log("alignment-diagnostics: PASS");
   } finally {
