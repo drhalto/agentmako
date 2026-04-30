@@ -106,4 +106,4 @@ Use `agent_feedback_report` and `runtime_telemetry_report` for inspection:
 - prepare roadmap or implementation review notes.
 
 Do not use telemetry reports as an automatic ranking system for tool selection
-unless a future Mako phase explicitly implements that behavior.
+unless Mako explicitly implements that behavior.

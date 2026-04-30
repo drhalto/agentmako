@@ -54,8 +54,8 @@ modules.
 
 Use for first-mile task context before reading or editing.
 
-- Use `mode: "explore"` for discovery, `"plan"` before writing an
-  implementation plan, `"implement"` before editing code, and `"review"` for
+- Use `mode: "explore"` for discovery, `"plan"` before outlining
+  implementation work, `"implement"` before editing code, and `"review"` for
   verification or change review.
 - Read `modePolicy` to understand which providers and follow-up tools were
   emphasized.

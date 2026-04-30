@@ -7,7 +7,7 @@ description: >-
   `exports_of`.
 when_to_use: >-
   Use for relationship questions, dependency traversal, import/symbol impact,
-  end-to-end flows, and implementation planning across multiple files.
+  end-to-end flows, and planning multi-file changes.
 allowed-tools: "mcp__mako-ai__*"
 ---
 
