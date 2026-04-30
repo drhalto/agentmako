@@ -97,6 +97,10 @@ In long-running MCP sessions, Mako's watcher refreshes changed files and runs
 scoped diagnostics in the background. Normal edits should not require manual
 `project_index_refresh` or `diagnostic_refresh`.
 
+When MCP is spawned through the `agentmako` CLI, the first Reef-backed request
+lazy-starts the local Reef daemon if it is not already running. Manual
+`agentmako reef start` is a recovery/debug command, not a normal session step.
+
 Use `project_index_status` before trusting indexed line numbers, after large
 edits, or when a tool reports stale/degraded evidence. Use
 `includeUnindexed: true` only when discovering new files; it walks the
@@ -149,6 +153,10 @@ Reef is Mako's durable fact/finding layer.
 - Mid-edit or before review, use `reef_diff_impact` for changed files. It
   reports downstream callers, active caller findings that may need re-checking,
   and convention risks. It does not refresh Reef.
+- Use `reef_where_used` for definitions/usages of a symbol, component, file, or
+  route. For symbols/components it now includes indexed identifier-text
+  references plus related durable findings, and `coverage` explains what is
+  direct usage versus related diagnostic signal.
 - Use `project_findings` / `file_findings` for durable findings. Source filters
   accept producer sources, bare rule IDs, and `rule_pack:<ruleId>` aliases.
 - Use `project_open_loops`, `project_diagnostic_runs`, `verification_state`,

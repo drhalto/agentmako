@@ -506,7 +506,7 @@ export const TOOL_DEFINITIONS: readonly MakoToolDefinition[] = [
   {
     name: "auth_path",
     category: "answer",
-    description: "Answer tool for auth questions: trace likely auth boundaries for a route, file, or feature without overclaiming.",
+    description: "Answer tool for auth questions: trace likely auth boundaries for a route, file, or feature without overclaiming. When no exact route/file/feature match exists, returns matched:false with suggestedNext:{ tool:\"cross_search\", args:{...} } instead of throwing, so batches and agent workflows can continue.",
     annotations: toolAnnotations("auth_path"),
     inputSchema: AuthPathToolInputSchema,
     outputSchema: AuthPathToolOutputSchema,
@@ -920,7 +920,7 @@ export const TOOL_DEFINITIONS: readonly MakoToolDefinition[] = [
   {
     name: "reef_where_used",
     category: "context",
-    description: "Reef maintained structural query: answer where a symbol, component, route, file, or indexed pattern is defined and used from maintained symbols/imports/routes first. Does not run grep; returns a fallback recommendation when maintained state has no answer.",
+    description: "Reef maintained structural query: answer where a symbol, component, route, file, or indexed pattern is defined and used from maintained symbols/imports/routes first, then supplement symbol/component answers with indexed identifier-text references and related durable findings. Does not run grep; coverage explains import-graph/text/finding limits and returns fallback tool args when maintained state has no answer.",
     annotations: toolAnnotations("reef_where_used"),
     inputSchema: ReefWhereUsedToolInputSchema,
     outputSchema: ReefWhereUsedToolOutputSchema,

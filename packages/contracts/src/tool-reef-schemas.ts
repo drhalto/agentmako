@@ -1201,7 +1201,7 @@ export const ReefStructuralDefinitionSchema = z.object({
 
 export interface ReefStructuralUsage {
   filePath: string;
-  usageKind: "import" | "dependent" | "route_owner" | "definition";
+  usageKind: "import" | "dependent" | "route_owner" | "definition" | "text_reference";
   targetPath?: string;
   specifier?: string;
   line?: number;
@@ -1215,7 +1215,7 @@ export interface ReefStructuralUsage {
 
 export const ReefStructuralUsageSchema = z.object({
   filePath: z.string().min(1),
-  usageKind: z.enum(["import", "dependent", "route_owner", "definition"]),
+  usageKind: z.enum(["import", "dependent", "route_owner", "definition", "text_reference"]),
   targetPath: z.string().min(1).optional(),
   specifier: z.string().min(1).optional(),
   line: z.number().int().positive().optional(),
@@ -1227,6 +1227,32 @@ export const ReefStructuralUsageSchema = z.object({
   }),
 }) satisfies z.ZodType<ReefStructuralUsage>;
 
+export interface ReefWhereUsedFallbackTool {
+  tool: "ast_find_pattern" | "live_text_search" | "cross_search";
+  reason: string;
+  args: JsonObject;
+}
+
+export const ReefWhereUsedFallbackToolSchema = z.object({
+  tool: z.enum(["ast_find_pattern", "live_text_search", "cross_search"]),
+  reason: z.string().min(1),
+  args: JsonObjectSchema,
+}) satisfies z.ZodType<ReefWhereUsedFallbackTool>;
+
+export interface ReefWhereUsedCoverage {
+  directUsageSources: Array<"definitions" | "import_edges" | "indexed_identifier_text">;
+  relatedSignalSources: Array<"project_findings">;
+  limitations: string[];
+  fallbackTools: ReefWhereUsedFallbackTool[];
+}
+
+export const ReefWhereUsedCoverageSchema = z.object({
+  directUsageSources: z.array(z.enum(["definitions", "import_edges", "indexed_identifier_text"])),
+  relatedSignalSources: z.array(z.enum(["project_findings"])),
+  limitations: z.array(z.string().min(1)),
+  fallbackTools: z.array(ReefWhereUsedFallbackToolSchema),
+}) satisfies z.ZodType<ReefWhereUsedCoverage>;
+
 export interface ReefWhereUsedToolOutput {
   toolName: "reef_where_used";
   projectId: string;
@@ -1235,6 +1261,8 @@ export interface ReefWhereUsedToolOutput {
   targetKind?: ReefStructuralTargetKind;
   definitions: ReefStructuralDefinition[];
   usages: ReefStructuralUsage[];
+  relatedFindings: ProjectFinding[];
+  coverage: ReefWhereUsedCoverage;
   totalReturned: number;
   reefExecution: ReefToolExecution;
   fallbackRecommendation?: string;
@@ -1249,6 +1277,8 @@ export const ReefWhereUsedToolOutputSchema = z.object({
   targetKind: ReefStructuralTargetKindSchema.optional(),
   definitions: z.array(ReefStructuralDefinitionSchema),
   usages: z.array(ReefStructuralUsageSchema),
+  relatedFindings: z.array(ProjectFindingSchema),
+  coverage: ReefWhereUsedCoverageSchema,
   totalReturned: z.number().int().nonnegative(),
   reefExecution: ReefToolExecutionSchema,
   fallbackRecommendation: z.string().min(1).optional(),

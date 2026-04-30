@@ -361,7 +361,7 @@ async function main(): Promise<void> {
 
     // --- tools/call requestId logging ---
     //
-    // Regression guard for the CourseConnect live-session UX issue:
+    // Regression guard for live-session UX:
     // stdio MCP calls must pass a requestId through ToolServiceOptions
     // so `recall_tool_runs` exposes the id needed by
     // `agent_feedback.referencedRequestId`.

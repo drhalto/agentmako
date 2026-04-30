@@ -47,6 +47,8 @@ interface AskGoldenCase {
   expectedCompanionFamily?: string;
   expectedAttachmentReasonPattern?: RegExp;
   expectedNoCompanion?: boolean;
+  expectedToolMatched?: boolean;
+  expectedSuggestedNextTool?: string;
 }
 
 async function runAskCase(
@@ -66,6 +68,20 @@ async function runAskCase(
 
   if (result.mode === "tool") {
     assert.equal((result.result as { toolName: string }).toolName, testCase.selectedTool);
+    if (testCase.expectedToolMatched !== undefined) {
+      assert.equal(
+        (result.result as { matched?: boolean }).matched,
+        testCase.expectedToolMatched,
+        `expected ${testCase.selectedTool} matched=${testCase.expectedToolMatched}`,
+      );
+    }
+    if (testCase.expectedSuggestedNextTool) {
+      assert.equal(
+        (result.result as { suggestedNext?: { tool?: string } }).suggestedNext?.tool,
+        testCase.expectedSuggestedNextTool,
+        `expected ${testCase.selectedTool} to suggest ${testCase.expectedSuggestedNextTool}`,
+      );
+    }
     if (testCase.expectedCompanionFamily) {
       const answerResult = extractAnswerResultFromToolOutput(result.result);
       assert.ok(
@@ -225,6 +241,18 @@ async function main(): Promise<void> {
       confidence: 0.95,
       requiresProject: true,
       expectedNoCompanion: true,
+    },
+    {
+      question: "auth path for /api/does-not-exist",
+      selectedFamily: "answers",
+      selectedTool: "auth_path",
+      selectedArgs: { projectId, route: "/api/does-not-exist" },
+      mode: "tool",
+      confidence: 0.96,
+      requiresProject: true,
+      expectedNoCompanion: true,
+      expectedToolMatched: false,
+      expectedSuggestedNextTool: "cross_search",
     },
   ];
 
@@ -393,19 +421,31 @@ async function main(): Promise<void> {
       requiresProject: true,
     },
     {
-      question: "why is instructor attendance window missing on the dashboard",
+      question: "why is a saved item missing from the list view",
       selectedFamily: "composer",
       selectedTool: "cross_search",
-      selectedArgs: { projectId, term: "why is instructor attendance window missing on the dashboard" },
+      selectedArgs: { projectId, term: "why is a saved item missing from the list view" },
       mode: "tool",
       confidence: 0.72,
       requiresProject: true,
     },
     {
-      question: "why does the dashboard sidebar disagree with the page access checks",
+      question: "why does the navigation state disagree with the access checks",
       selectedFamily: "composer",
       selectedTool: "cross_search",
-      selectedArgs: { projectId, term: "why does the dashboard sidebar disagree with the page access checks" },
+      selectedArgs: { projectId, term: "why does the navigation state disagree with the access checks" },
+      mode: "tool",
+      confidence: 0.72,
+      requiresProject: true,
+    },
+    {
+      question: "Why is authentication behaving differently after a recent change? Include entry points, policy checks, error handling, and files to inspect.",
+      selectedFamily: "composer",
+      selectedTool: "cross_search",
+      selectedArgs: {
+        projectId,
+        term: "Why is authentication behaving differently after a recent change? Include entry points, policy checks, error handling, and files to inspect",
+      },
       mode: "tool",
       confidence: 0.72,
       requiresProject: true,

@@ -73,6 +73,14 @@ export interface ReefDaemonOptions extends IndexerOptions {
   onReady?: (info: ReefDaemonProcessInfo) => Promise<void> | void;
 }
 
+interface ReefDaemonStartOptions extends ReefDaemonOptions {
+  foreground?: boolean;
+  force?: boolean;
+  requireCliEntrypoint?: boolean;
+}
+
+const lazyStartInFlight = new Map<string, Promise<ReefDaemonProcessInfo | null>>();
+
 export class ReefDaemonUnavailableError extends Error {
   constructor(message: string) {
     super(message);
@@ -533,24 +541,79 @@ export class ReefClient implements ReefAnalysisHost {
     if (mode === "legacy") {
       return this.inProcess;
     }
+    let daemonError: unknown;
     try {
       await this.daemon.handshake();
       return this.daemon;
     } catch (error) {
-      if (mode === "required") {
-        throw error;
+      daemonError = error;
+    }
+
+    const started = await maybeLazyStartReefDaemon(this.options, mode === "required");
+    if (started) {
+      try {
+        await this.daemon.handshake();
+        return this.daemon;
+      } catch (error) {
+        daemonError = error;
       }
-      await appendReefOperation(this.options, {
+    }
+
+    if (mode === "required") {
+      throw daemonError;
+    }
+
+    await appendReefOperation(this.options, {
+      kind: "fallback_used",
+      severity: "warning",
+      message: "reef daemon unavailable; using in-process service",
+      data: {
+        error: daemonError instanceof Error ? daemonError.message : String(daemonError),
+      },
+    }).catch(() => undefined);
+    return this.inProcess;
+  }
+}
+
+async function maybeLazyStartReefDaemon(
+  options: ReefDaemonOptions,
+  throwOnFailure: boolean,
+): Promise<ReefDaemonProcessInfo | null> {
+  if (!process.env.MAKO_CLI_ENTRYPOINT?.trim()) {
+    return null;
+  }
+
+  const key = resolveReefDaemonPaths(options).stateDir;
+  const existing = lazyStartInFlight.get(key);
+  if (existing) {
+    return existing;
+  }
+
+  const started = startReefDaemon({
+    ...options,
+    requireCliEntrypoint: true,
+  })
+    .then((result) => result.process ?? null)
+    .catch(async (error) => {
+      await appendReefOperation(options, {
         kind: "fallback_used",
         severity: "warning",
-        message: "reef daemon unavailable; using in-process service",
+        message: "reef daemon lazy-start failed; using in-process service",
         data: {
           error: error instanceof Error ? error.message : String(error),
         },
       }).catch(() => undefined);
-      return this.inProcess;
-    }
-  }
+      if (throwOnFailure) {
+        throw error;
+      }
+      return null;
+    })
+    .finally(() => {
+      lazyStartInFlight.delete(key);
+    });
+
+  lazyStartInFlight.set(key, started);
+  return started;
 }
 
 export function createReefClient(options: ReefDaemonOptions = {}): ReefClient {
@@ -558,7 +621,7 @@ export function createReefClient(options: ReefDaemonOptions = {}): ReefClient {
 }
 
 export async function startReefDaemon(
-  options: ReefDaemonOptions & { foreground?: boolean; force?: boolean } = {},
+  options: ReefDaemonStartOptions = {},
 ): Promise<ReefDaemonStartResult> {
   const mode = resolveReefMode(options);
   if (mode === "legacy" && !options.force) {
@@ -591,7 +654,7 @@ export async function startReefDaemon(
     };
   }
 
-  const entry = process.argv[1];
+  const entry = resolveReefDaemonCliEntrypoint(options);
   if (!entry) {
     throw new Error("Cannot start Reef daemon in the background without a CLI entrypoint.");
   }
@@ -613,6 +676,17 @@ export async function startReefDaemon(
     process: info,
     message: `Reef daemon started on ${info.endpoint}`,
   };
+}
+
+function resolveReefDaemonCliEntrypoint(options: Pick<ReefDaemonStartOptions, "requireCliEntrypoint">): string | undefined {
+  const cliEntrypoint = process.env.MAKO_CLI_ENTRYPOINT?.trim();
+  if (cliEntrypoint) {
+    return cliEntrypoint;
+  }
+  if (options.requireCliEntrypoint) {
+    return undefined;
+  }
+  return process.argv[1];
 }
 
 export async function stopReefDaemon(

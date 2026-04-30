@@ -95,6 +95,10 @@ function readCliVersion(): string {
 }
 
 export async function main(argv: string[] = process.argv.slice(2)): Promise<void> {
+  if (isDirectInvocation()) {
+    registerCliEntrypoint();
+  }
+
   const options = parseGlobalArgs(argv);
   let api: ReturnType<typeof createApiService> | undefined;
 
@@ -318,6 +322,18 @@ function isDirectInvocation(): boolean {
     return import.meta.url === pathToFileURL(realpathSync(entry)).href;
   } catch {
     return import.meta.url === pathToFileURL(entry).href;
+  }
+}
+
+function registerCliEntrypoint(): void {
+  const entry = process.argv[1];
+  if (!entry) {
+    return;
+  }
+  try {
+    process.env.MAKO_CLI_ENTRYPOINT ??= realpathSync(entry);
+  } catch {
+    process.env.MAKO_CLI_ENTRYPOINT ??= entry;
   }
 }
 
