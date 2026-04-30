@@ -2,7 +2,6 @@ import { REEF_DIAGNOSTIC_CACHE_STALE_AFTER_MS } from "@mako-ai/contracts";
 import type {
   FilePreflightToolInput,
   FilePreflightToolOutput,
-  JsonObject,
   ProjectConvention,
   ReefDiagnosticRun,
   VerificationChangedFile,
@@ -13,11 +12,14 @@ import type { ToolServiceOptions } from "../runtime.js";
 import { collectProjectConventions } from "./conventions.js";
 import {
   diagnosticRunCache,
+  diagnosticRunCheckedBeforeFileModified,
+  diagnosticRunTouchesFile,
   latestDiagnosticRunsBySource,
   overallVerificationStatus,
   stringDataValue,
   verificationStateForSource,
   verificationSuggestedActions,
+  watcherDiagnosticWarnings,
 } from "./shared.js";
 import { applyReefToolFreshnessPolicy, buildReefToolExecution } from "./tool-execution.js";
 
@@ -38,6 +40,7 @@ export async function filePreflightTool(
     const cacheStalenessMs = input.cacheStalenessMs ?? REEF_DIAGNOSTIC_CACHE_STALE_AFTER_MS;
     const checkedAtMs = Date.now();
     const checkedAt = new Date(checkedAtMs).toISOString();
+    const watcher = options.indexRefreshCoordinator?.getWatchState(project.projectId);
     const findingsLimit = input.findingsLimit ?? DEFAULT_FINDINGS_LIMIT;
     const conventionsLimit = input.conventionsLimit ?? DEFAULT_CONVENTIONS_LIMIT;
     const diagnosticRunsLimit = input.diagnosticRunsLimit ?? DEFAULT_DIAGNOSTIC_RUNS_LIMIT;
@@ -60,10 +63,14 @@ export async function filePreflightTool(
       ...run,
       cache: diagnosticRunCache(run, { checkedAt, checkedAtMs, staleAfterMs: cacheStalenessMs }),
     }));
-    const fileRuns = allRuns.filter((run) => diagnosticRunTouchesFile(project.canonicalPath, run, filePath));
-    const recentRuns = fileRuns.slice(0, diagnosticRunsLimit);
+    const fileRuns = allRuns.filter((run) =>
+      diagnosticRunTouchesFile(project.canonicalPath, run, filePath, normalizeFileQuery)
+    );
     const latestBySource = latestDiagnosticRunsBySource(fileRuns);
     const sourceNames = input.sources ?? [...latestBySource.keys()];
+    const recentRuns = fileRuns
+      .filter((run) => sourceNames.includes(run.source))
+      .slice(0, diagnosticRunsLimit);
     const sourceStates = sourceNames.map((source) => verificationStateForSource(source, latestBySource.get(source)));
     const changedFile = changedFileForSourceRuns({
       projectId: project.projectId,
@@ -82,6 +89,7 @@ export async function filePreflightTool(
     if (sourceNames.length === 0) {
       warnings.push(`no Reef diagnostic runs were found for ${filePath}`);
     }
+    warnings.push(...watcherDiagnosticWarnings(watcher, [filePath], changedFile?.lastModifiedAt));
 
     const conventions = applicableConventionsForFile(
       collectProjectConventions(projectStore, project.projectId, { limit: 200 }),
@@ -129,6 +137,7 @@ export async function filePreflightTool(
         unknownSources,
         ...(changedFile ? { changedFile } : {}),
         recentRuns,
+        ...(watcher ? { watcher } : {}),
         suggestedActions: verificationSuggestedActions(sourceStates, changedFiles),
       },
       conventions,
@@ -154,19 +163,6 @@ export async function filePreflightTool(
       warnings,
     };
   });
-}
-
-function diagnosticRunTouchesFile(
-  projectRoot: string,
-  run: ReefDiagnosticRun,
-  filePath: string,
-): boolean {
-  const requestedFiles = stringArrayMetadataValue(run.metadata, "requestedFiles");
-  if (!requestedFiles) return true;
-  const normalized = requestedFiles
-    .map((requestedFile) => normalizeFileQuery(projectRoot, requestedFile))
-    .filter((requestedFile) => requestedFile.length > 0);
-  return normalized.length === 0 || normalized.includes(filePath);
 }
 
 function changedFileForSourceRuns(args: {
@@ -195,10 +191,7 @@ function changedFileForSourceRuns(args: {
   const staleForSources = args.sourceStates
     .map((state) => [state.source, state.lastRun] as const)
     .filter((entry): entry is readonly [string, ReefDiagnosticRun] => Boolean(entry[1] && entry[1].status === "succeeded"))
-    .filter(([, run]) => {
-      const finishedAtMs = Date.parse(run.finishedAt);
-      return Number.isFinite(finishedAtMs) && modifiedMs > finishedAtMs;
-    })
+    .filter(([, run]) => diagnosticRunCheckedBeforeFileModified(run, modifiedMs))
     .map(([source]) => source);
 
   if (staleForSources.length === 0) return undefined;
@@ -242,11 +235,4 @@ function isLikelyGeneratedPath(filePath: string): boolean {
   return /(^|\/)(?:__generated__|generated|gen)\//i.test(filePath) ||
     /(?:^|[./-])generated\.[jt]sx?$/i.test(filePath) ||
     /(?:database|schema)\.types\.ts$/i.test(filePath);
-}
-
-function stringArrayMetadataValue(metadata: JsonObject | undefined, key: string): string[] | undefined {
-  if (!metadata) return undefined;
-  const value = metadata[key];
-  if (!Array.isArray(value)) return undefined;
-  return value.filter((entry): entry is string => typeof entry === "string" && entry.trim().length > 0);
 }

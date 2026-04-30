@@ -33,7 +33,9 @@ import {
 } from "./reef-service.js";
 import {
   ReefFreshnessPolicySchema,
+  ProjectIndexWatchStateSchema,
   type ReefFreshnessPolicy,
+  type ProjectIndexWatchState,
 } from "./index-freshness.js";
 import {
   ReefToolExecutionSchema,
@@ -1383,8 +1385,10 @@ export interface VerificationStateToolOutput {
   projectRoot: string;
   status: "fresh" | "stale" | "unknown" | "failed";
   sources: VerificationSourceState[];
+  recentRuns: ReefDiagnosticRun[];
   changedFiles: VerificationChangedFile[];
   suggestedActions: string[];
+  watcher?: ProjectIndexWatchState;
   reefExecution: ReefToolExecution;
   warnings: string[];
 }
@@ -1395,8 +1399,10 @@ export const VerificationStateToolOutputSchema = z.object({
   projectRoot: z.string().min(1),
   status: z.enum(["fresh", "stale", "unknown", "failed"]),
   sources: z.array(VerificationSourceStateSchema),
+  recentRuns: z.array(ReefDiagnosticRunSchema),
   changedFiles: z.array(VerificationChangedFileSchema),
   suggestedActions: z.array(z.string().min(1)),
+  watcher: ProjectIndexWatchStateSchema.optional(),
   reefExecution: ReefToolExecutionSchema,
   warnings: z.array(z.string().min(1)),
 }) satisfies z.ZodType<VerificationStateToolOutput>;
@@ -1487,6 +1493,7 @@ export interface FilePreflightDiagnostics {
   unknownSources: string[];
   changedFile?: VerificationChangedFile;
   recentRuns: ReefDiagnosticRun[];
+  watcher?: ProjectIndexWatchState;
   suggestedActions: string[];
 }
 
@@ -1498,6 +1505,7 @@ export const FilePreflightDiagnosticsSchema = z.object({
   unknownSources: z.array(z.string().min(1)),
   changedFile: VerificationChangedFileSchema.optional(),
   recentRuns: z.array(ReefDiagnosticRunSchema),
+  watcher: ProjectIndexWatchStateSchema.optional(),
   suggestedActions: z.array(z.string().min(1)),
 }) satisfies z.ZodType<FilePreflightDiagnostics>;
 

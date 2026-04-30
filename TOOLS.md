@@ -61,11 +61,11 @@ plane.
 | `context_packet` | "what should I read before fixing auth?" | First-mile task packet. Supports `mode: "explore" | "plan" | "implement" | "review"` and returns `modePolicy`, ranked context, risks, freshness gate, instructions, and expandable follow-up tools. |
 | `reef_scout` | "where should I inspect auth route state?" | Intent-weighted scout over durable Reef facts, findings, rules, diagnostic runs, and review comments. App-flow queries prefer files/routes/findings; RLS/schema queries prefer database evidence. |
 | `reef_inspect` | "show the Reef evidence for this file" | Returns the facts, findings, and diagnostic runs for one file or subject fingerprint. Use after `reef_scout` when you need the evidence trail. |
-| `file_preflight` | "what should I know before editing this file?" | Pre-edit file gate: durable findings, file-scoped diagnostic freshness and recent runs, applicable conventions, and acknowledgement history in one packet. |
+| `file_preflight` | "what should I know before editing this file?" | Pre-edit file gate: durable findings, file-scoped diagnostic freshness, source-filtered recent runs, watcher diagnostic state, applicable conventions, and acknowledgement history in one packet. |
 | `reef_diff_impact` | "what did my changed files affect?" | Mid-edit impact packet for working-tree files: downstream import callers, active findings on those callers that may be invalidated, and conventions the diff may violate. |
 | `project_conventions` | "what conventions should I follow?" | Surfaces conventions from explicit Reef facts plus profile/index/rule-derived signals: auth guards, runtime boundaries, generated paths, route patterns, and schema usage. |
 | `project_open_loops` | "what unresolved work is known?" | Lists active findings, stale facts, and failed/stale diagnostics without launching broad checks. |
-| `verification_state` | "are diagnostics fresh for changed files?" | Summarizes cached diagnostic freshness and changed files that need verification. In MCP sessions, the watcher refreshes scoped in-process diagnostics after TS/JS edits, so ordinary changed-file checks should usually be fresh once the watcher settles. |
+| `verification_state` | "are diagnostics fresh for changed files?" | Summarizes cached diagnostic freshness, file-scoped recent runs, watcher diagnostic state, and changed files that need verification. With `files`, runs only count when project-wide or scoped to those files. |
 
 ## Reef Findings
 

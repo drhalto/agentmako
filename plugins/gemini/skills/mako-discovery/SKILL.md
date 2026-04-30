@@ -115,8 +115,11 @@ Use to learn project-specific habits before changing risky surfaces.
 Use before editing a known risky file.
 
 - Returns durable findings, file-scoped diagnostic freshness, recent diagnostic
-  runs, applicable conventions, and finding acknowledgement history in one
-  packet.
+  runs, watcher diagnostic state, applicable conventions, and finding
+  acknowledgement history in one packet.
+- With `sources`, recent diagnostic runs are filtered to those sources. For
+  file-scoped checks, only project-wide runs or runs whose `requestedFiles`
+  include the file count as covering it.
 - Use instead of chaining `file_findings`, `verification_state`,
   `project_conventions`, and ack-history calls when the question is "what
   should I know before changing this file?"

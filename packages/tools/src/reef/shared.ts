@@ -2,6 +2,7 @@ import type {
   EvidenceConfidenceItem,
   JsonObject,
   ProjectConvention,
+  ProjectIndexWatchState,
   ProjectFact,
   ProjectFinding,
   ReefCandidate,
@@ -249,6 +250,62 @@ export function latestDiagnosticRunsBySource(runs: readonly ReefDiagnosticRun[])
   return latest;
 }
 
+export function diagnosticRunTouchesFile(
+  projectRoot: string,
+  run: ReefDiagnosticRun,
+  filePath: string,
+  normalizeFilePath: (projectRoot: string, filePath: string) => string,
+): boolean {
+  const requestedFiles = stringArrayValue(run.metadata, "requestedFiles");
+  if (!requestedFiles) return true;
+  const normalized = requestedFiles
+    .map((requestedFile) => normalizeFilePath(projectRoot, requestedFile))
+    .filter((requestedFile) => requestedFile.length > 0);
+  return normalized.length === 0 || normalized.includes(filePath);
+}
+
+export function diagnosticRunTouchesAnyFile(
+  projectRoot: string,
+  run: ReefDiagnosticRun,
+  filePaths: readonly string[],
+  normalizeFilePath: (projectRoot: string, filePath: string) => string,
+): boolean {
+  return filePaths.length === 0 ||
+    filePaths.some((filePath) => diagnosticRunTouchesFile(projectRoot, run, filePath, normalizeFilePath));
+}
+
+export function diagnosticRunCheckedBeforeFileModified(
+  run: ReefDiagnosticRun,
+  modifiedMs: number,
+): boolean {
+  const startedAtMs = Date.parse(run.startedAt);
+  if (!Number.isFinite(startedAtMs)) return false;
+  return modifiedMs > startedAtMs;
+}
+
+export function watcherDiagnosticWarnings(
+  watcher: ProjectIndexWatchState | undefined,
+  filePaths: readonly string[],
+  lastModifiedAt?: string,
+): string[] {
+  if (!watcher) return [];
+  const warnings: string[] = [];
+  if (watcher.lastDiagnosticRefreshError) {
+    warnings.push(`watcher diagnostic refresh failed: ${watcher.lastDiagnosticRefreshError}`);
+  }
+  if (watcher.lastDiagnosticRefreshSkippedReason) {
+    warnings.push(`watcher diagnostic refresh skipped: ${watcher.lastDiagnosticRefreshSkippedReason}`);
+  }
+  if (lastModifiedAt && watcher.lastDiagnosticRefreshStartedAt) {
+    const modifiedMs = Date.parse(lastModifiedAt);
+    const diagnosticStartedMs = Date.parse(watcher.lastDiagnosticRefreshStartedAt);
+    if (Number.isFinite(modifiedMs) && Number.isFinite(diagnosticStartedMs) && modifiedMs > diagnosticStartedMs) {
+      warnings.push(`watcher has not completed a diagnostic refresh since ${filePaths.join(", ")} changed`);
+    }
+  }
+  return warnings;
+}
+
 export function verificationStateForSource(source: string, run: ReefDiagnosticRun | undefined): VerificationSourceState {
   if (!run) {
     return {
@@ -423,6 +480,13 @@ export function stringDataValue(data: JsonObject | undefined, key: string): stri
   if (!data) return undefined;
   const value = data[key];
   return typeof value === "string" && value.trim().length > 0 ? value : undefined;
+}
+
+export function stringArrayValue(data: JsonObject | undefined, key: string): string[] | undefined {
+  if (!data) return undefined;
+  const value = data[key];
+  if (!Array.isArray(value)) return undefined;
+  return value.filter((entry): entry is string => typeof entry === "string" && entry.trim().length > 0);
 }
 
 export function jsonString(value: unknown): string {

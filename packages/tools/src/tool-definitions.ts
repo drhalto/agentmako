@@ -803,7 +803,7 @@ export const TOOL_DEFINITIONS: readonly MakoToolDefinition[] = [
   {
     name: "file_preflight",
     category: "project",
-    description: "Reef pre-edit composer for one file: returns durable findings, file-scoped diagnostic freshness and recent runs, applicable conventions, and finding acknowledgement history in one read-only packet. Use before editing a file when an agent needs the operational gate without separate file_findings, verification_state, project_conventions, and finding_acks_report calls.",
+    description: "Reef pre-edit composer for one file: returns durable findings, file-scoped diagnostic freshness, source-filtered recent runs, watcher diagnostic state, applicable conventions, and finding acknowledgement history in one read-only packet. Use before editing a file when an agent needs the operational gate without separate file_findings, verification_state, project_conventions, and finding_acks_report calls.",
     annotations: toolAnnotations("file_preflight"),
     inputSchema: FilePreflightToolInputSchema,
     outputSchema: FilePreflightToolOutputSchema,
@@ -938,7 +938,7 @@ export const TOOL_DEFINITIONS: readonly MakoToolDefinition[] = [
   {
     name: "verification_state",
     category: "project",
-    description: "Reef 8 verification state view: summarize whether cached diagnostic runs still cover the current working-tree overlay, including files modified after successful checks and suggested verification actions.",
+    description: "Reef 8 verification state view: summarize whether cached diagnostic runs still cover the current working-tree overlay, including file-scoped recent runs, watcher diagnostic state, files modified after successful checks, and suggested verification actions. With files, runs only count when project-wide or scoped to those files.",
     annotations: toolAnnotations("verification_state"),
     inputSchema: VerificationStateToolInputSchema,
     outputSchema: VerificationStateToolOutputSchema,

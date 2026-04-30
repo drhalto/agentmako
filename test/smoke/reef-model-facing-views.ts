@@ -532,6 +532,65 @@ async function main(): Promise<void> {
     assert.equal(preflight.summary.ackCount, 1);
     assertReefExecution(preflight.reefExecution, "file_preflight", "allow_stale_labeled");
 
+    const scopedSource = "scoped_fixture";
+    seeded.store.saveReefDiagnosticRun({
+      projectId: seeded.projectId,
+      source: scopedSource,
+      overlay: "working_tree",
+      status: "succeeded",
+      startedAt: secondsAgo(120),
+      finishedAt: secondsAgo(110),
+      durationMs: 20,
+      checkedFileCount: 1,
+      findingCount: 0,
+      persistedFindingCount: 0,
+      command: "fixture scoped route run",
+      cwd: projectRoot,
+      metadata: {
+        requestedFiles: [routePath],
+        requestedFileCount: 1,
+      },
+    });
+    seeded.store.saveReefDiagnosticRun({
+      projectId: seeded.projectId,
+      source: scopedSource,
+      overlay: "working_tree",
+      status: "succeeded",
+      startedAt: now(),
+      finishedAt: now(),
+      durationMs: 10,
+      checkedFileCount: 1,
+      findingCount: 0,
+      persistedFindingCount: 0,
+      command: "fixture scoped unrelated run",
+      cwd: projectRoot,
+      metadata: {
+        requestedFiles: ["src/generated/database.types.ts"],
+        requestedFileCount: 1,
+      },
+    });
+    const scopedVerification = await toolService.callTool("verification_state", {
+      projectId: seeded.projectId,
+      files: [routePath],
+      sources: [scopedSource],
+      cacheStalenessMs: 30_000,
+    }) as VerificationStateToolOutput;
+    assert.equal(scopedVerification.status, "stale");
+    assert.ok(scopedVerification.changedFiles.some((file) =>
+      file.filePath === routePath && file.staleForSources.includes(scopedSource)
+    ));
+    assert.ok((JSON.stringify(scopedVerification.recentRuns[0]?.metadata?.requestedFiles) ?? "").includes(routePath));
+
+    const scopedPreflight = await toolService.callTool("file_preflight", {
+      projectId: seeded.projectId,
+      filePath: routePath,
+      sources: [scopedSource],
+      cacheStalenessMs: 30_000,
+    }) as FilePreflightToolOutput;
+    assert.equal(scopedPreflight.diagnostics.status, "stale");
+    assert.ok(scopedPreflight.diagnostics.changedFile?.staleForSources.includes(scopedSource));
+    assert.ok((JSON.stringify(scopedPreflight.diagnostics.recentRuns[0]?.metadata?.requestedFiles) ?? "").includes(routePath));
+
     const conventions = await toolService.callTool("project_conventions", {
       projectId: seeded.projectId,
       kind: "auth_guard",

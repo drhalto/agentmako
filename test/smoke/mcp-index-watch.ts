@@ -4,6 +4,7 @@ import os from "node:os";
 import path from "node:path";
 import type {
   ContextPacketToolOutput,
+  FilePreflightToolOutput,
   ProjectFinding,
   ProjectOpenLoopsToolOutput,
   VerificationStateToolOutput,
@@ -201,6 +202,37 @@ async function runBasicWatchCase(
     `expected watcher-refreshed diagnostic sources to be fresh, got ${
       verification.sources.map((source) => `${source.source}:${source.status}`).join(", ")
     }`,
+  );
+  assert.ok(
+    verification.recentRuns.some((run) =>
+      run.source === "typescript_syntax" &&
+      run.checkedFileCount === 1 &&
+      Array.isArray(run.metadata?.requestedFiles) &&
+      run.metadata.requestedFiles.includes("src/alpha.ts")
+    ),
+    "verification_state should expose the watcher-scoped diagnostic run for the changed file",
+  );
+
+  const preflight = await invokeTool(
+    "file_preflight",
+    {
+      projectId,
+      filePath: "src/alpha.ts",
+      sources: ["lint_files", "typescript_syntax", "typescript"],
+      cacheStalenessMs: 60_000,
+    },
+    { indexRefreshCoordinator: coordinator },
+  ) as FilePreflightToolOutput;
+  assert.equal(preflight.diagnostics.status, "fresh");
+  assert.equal(preflight.diagnostics.changedFile, undefined);
+  assert.equal(preflight.diagnostics.watcher?.lastDiagnosticRefreshFileCount, 1);
+  assert.ok(
+    preflight.diagnostics.recentRuns.some((run) =>
+      run.source === "typescript_syntax" &&
+      Array.isArray(run.metadata?.requestedFiles) &&
+      run.metadata.requestedFiles.includes("src/alpha.ts")
+    ),
+    "file_preflight should expose recent watcher-scoped diagnostic runs for the file",
   );
 
   const deleteSubject = { kind: "file" as const, path: "src/delete-me.ts" };

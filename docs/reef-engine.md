@@ -123,6 +123,13 @@ sources (`lint_files`, `programmatic_findings`, `typescript_syntax`, and
 checks, external linters, disabled watcher diagnostics, or large file batches
 that exceed the watcher diagnostic cap.
 
+For file-scoped checks, Reef only counts a diagnostic run as covering the file
+when the run was project-wide or its `metadata.requestedFiles` includes that
+file. `verification_state` now returns filtered `recentRuns` and watcher
+diagnostic state, and `file_preflight` includes the same watcher state inside
+`diagnostics`, so agents can distinguish "daemon has not caught up" from
+"daemon ran but this file is still stale."
+
 `reef_scout` uses a light intent classifier before ranking. App-flow questions
 prefer file, route, and finding evidence; RLS/schema questions prefer database
 facts and review comments. This keeps text-similar schema facts from crowding

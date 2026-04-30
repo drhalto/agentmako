@@ -151,6 +151,13 @@ every edit. Use `project_index_status` before trusting indexed line
 numbers, after large edits, or when a tool reports stale/degraded
 freshness.
 
+For file-scoped verification, Mako only treats diagnostic runs as covering
+the requested file when the run was project-wide or its `requestedFiles`
+metadata includes that file. `verification_state` returns filtered
+`recentRuns` and watcher diagnostic state so you can tell whether the
+background daemon wrote a fresh scoped run, skipped, failed, or has not yet
+caught up.
+
 ```json
 {
   "includeUnindexed": false
@@ -273,7 +280,8 @@ Common Reef reads:
   it.
 - `file_preflight`: one-call pre-edit gate for a file. Returns durable
   findings, file-scoped diagnostic freshness flags, recent diagnostic runs,
-  applicable conventions, and finding acknowledgement history.
+  watcher diagnostic state, applicable conventions, and finding
+  acknowledgement history.
 - `reef_diff_impact`: mid-edit changed-file impact packet. For files in the
   working tree, returns downstream import callers, active findings on those
   callers that may need re-checking, and conventions the diff may violate.
@@ -283,7 +291,8 @@ Common Reef reads:
 - `project_open_loops`: unresolved findings, stale facts, failed
   diagnostics.
 - `verification_state`: whether cached diagnostics still cover current
-  working-tree facts.
+  working-tree facts. With `files`, source freshness and `recentRuns` are
+  scoped to runs that actually cover those files.
 - `project_conventions`: discovered auth guards, runtime boundaries,
   generated paths, route patterns, and schema usage conventions.
 - `rule_memory`: rule descriptors plus finding history.

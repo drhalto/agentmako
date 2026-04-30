@@ -274,7 +274,7 @@ export const CLAUDE_CODE_TOOL_HINTS: Record<
     searchHint: "reef unresolved stale failed work left",
   },
   verification_state: {
-    searchHint: "reef diagnostics freshness changed files verification",
+    searchHint: "reef diagnostics freshness changed files recent runs watcher verification",
   },
   project_conventions: {
     searchHint: "reef project conventions auth boundary generated schema",

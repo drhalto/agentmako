@@ -10,12 +10,16 @@ import { normalizeFileQuery, withProjectContext } from "../entity-resolver.js";
 import type { ToolServiceOptions } from "../runtime.js";
 import {
   diagnosticRunCache,
+  diagnosticRunCheckedBeforeFileModified,
+  diagnosticRunTouchesAnyFile,
+  diagnosticRunTouchesFile,
   filePathFromFact,
   latestDiagnosticRunsBySource,
   overallVerificationStatus,
   stringDataValue,
   verificationStateForSource,
   verificationSuggestedActions,
+  watcherDiagnosticWarnings,
 } from "./shared.js";
 import { buildReefToolExecution } from "./tool-execution.js";
 
@@ -28,20 +32,22 @@ export async function verificationStateTool(
     const cacheStalenessMs = input.cacheStalenessMs ?? REEF_DIAGNOSTIC_CACHE_STALE_AFTER_MS;
     const checkedAtMs = Date.now();
     const checkedAt = new Date(checkedAtMs).toISOString();
-    const requestedFiles = new Set((input.files ?? []).map((filePath) => normalizeFileQuery(project.canonicalPath, filePath)));
+    const requestedFileList = (input.files ?? []).map((filePath) => normalizeFileQuery(project.canonicalPath, filePath));
+    const requestedFiles = new Set(requestedFileList);
+    const watcher = options.indexRefreshCoordinator?.getWatchState(project.projectId);
     const runs = projectStore.queryReefDiagnosticRuns({ projectId: project.projectId, limit: 100 }).map((run) => ({
       ...run,
       cache: diagnosticRunCache(run, { checkedAt, checkedAtMs, staleAfterMs: cacheStalenessMs }),
     }));
-    const latestBySource = latestDiagnosticRunsBySource(runs);
+    const relevantRuns = requestedFileList.length > 0
+      ? runs.filter((run) => diagnosticRunTouchesAnyFile(project.canonicalPath, run, requestedFileList, normalizeFileQuery))
+      : runs;
+    const latestBySource = latestDiagnosticRunsBySource(relevantRuns);
     const sources = input.sources ?? [...latestBySource.keys()];
     const sourceStates: VerificationSourceState[] = sources.map((source) => verificationStateForSource(source, latestBySource.get(source)));
-    const successfulRuns = new Map(
-      sourceStates
-        .map((state) => [state.source, state.lastRun] as const)
-        .filter((entry): entry is readonly [string, ReefDiagnosticRun] => Boolean(entry[1] && entry[1].status === "succeeded")),
-    );
+    const recentRuns = relevantRuns.filter((run) => sources.includes(run.source)).slice(0, 20);
     const changedFiles: VerificationChangedFile[] = [];
+    let newestRequestedFileModifiedAt: string | undefined;
 
     for (const fact of projectStore.queryReefFacts({
       projectId: project.projectId,
@@ -56,12 +62,19 @@ export async function verificationStateTool(
       if (!lastModifiedAt) continue;
       const modifiedMs = Date.parse(lastModifiedAt);
       if (!Number.isFinite(modifiedMs)) continue;
-      const staleForSources = [...successfulRuns.entries()]
-        .filter(([, run]) => {
-          const finishedAtMs = Date.parse(run.finishedAt);
-          return Number.isFinite(finishedAtMs) && modifiedMs > finishedAtMs;
-        })
-        .map(([source]) => source);
+      if (!newestRequestedFileModifiedAt || modifiedMs > Date.parse(newestRequestedFileModifiedAt)) {
+        newestRequestedFileModifiedAt = lastModifiedAt;
+      }
+      const staleForSources = sources.filter((source) => {
+        const latestRunForFile = latestDiagnosticRunsBySource(
+          runs.filter((run) =>
+            run.source === source &&
+            run.status === "succeeded" &&
+            diagnosticRunTouchesFile(project.canonicalPath, run, filePath, normalizeFileQuery)
+          ),
+        ).get(source);
+        return !latestRunForFile || diagnosticRunCheckedBeforeFileModified(latestRunForFile, modifiedMs);
+      });
       if (staleForSources.length > 0) {
         changedFiles.push({ filePath, lastModifiedAt, staleForSources });
       }
@@ -69,6 +82,10 @@ export async function verificationStateTool(
 
     const status = overallVerificationStatus(sourceStates, changedFiles);
     const returnedChangedFiles = changedFiles.slice(0, input.limit ?? 100);
+    const warnings = sources.length === 0
+      ? ["no Reef diagnostic runs are available for this project"]
+      : [];
+    warnings.push(...watcherDiagnosticWarnings(watcher, requestedFileList, newestRequestedFileModifiedAt));
     const reefExecution = await buildReefToolExecution({
       toolName: "verification_state",
       projectId: project.projectId,
@@ -77,7 +94,7 @@ export async function verificationStateTool(
       startedAtMs,
       freshnessPolicy: "allow_stale_labeled",
       staleEvidenceLabeled: sourceStates.filter((source) => source.status !== "fresh").length + returnedChangedFiles.length,
-      returnedCount: sourceStates.length + returnedChangedFiles.length,
+      returnedCount: sourceStates.length + recentRuns.length + returnedChangedFiles.length,
     });
 
     return {
@@ -86,10 +103,12 @@ export async function verificationStateTool(
       projectRoot: project.canonicalPath,
       status,
       sources: sourceStates,
+      recentRuns,
       changedFiles: returnedChangedFiles,
       suggestedActions: verificationSuggestedActions(sourceStates, changedFiles),
+      ...(watcher ? { watcher } : {}),
       reefExecution,
-      warnings: sources.length === 0 ? ["no Reef diagnostic runs are available for this project"] : [],
+      warnings,
     };
   });
 }
