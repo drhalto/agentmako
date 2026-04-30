@@ -7,6 +7,7 @@ import {
   type RouteRow,
   type SymbolRow,
   buildFtsPhraseMatchExpression,
+  buildFtsPrefixMatchExpression,
   extractSearchTokens,
   mapFileSearchRow,
   mapFileSummaryRow,
@@ -113,8 +114,7 @@ export function searchFilesImpl(
   if (options.mode === "phrase") {
     ftsQuery = buildFtsPhraseMatchExpression(normalized);
   } else {
-    const searchTokens = extractSearchTokens(normalized);
-    ftsQuery = searchTokens.length > 0 ? searchTokens.map((token) => `${token}*`).join(" AND ") : null;
+    ftsQuery = buildFtsPrefixMatchExpression(normalized);
   }
 
   const ftsRows =
@@ -204,8 +204,7 @@ export function searchCodeChunksImpl(
   if (options.mode === "phrase") {
     ftsQuery = buildFtsPhraseMatchExpression(normalized);
   } else {
-    const searchTokens = extractSearchTokens(normalized);
-    ftsQuery = searchTokens.length > 0 ? searchTokens.map((token) => `${token}*`).join(" AND ") : null;
+    ftsQuery = buildFtsPrefixMatchExpression(normalized);
   }
   if (ftsQuery == null) return [];
 

@@ -117,6 +117,25 @@ export function extractSearchTokens(value: string): string[] {
   return [...tokens];
 }
 
+function extractFtsTokens(value: string): string[] {
+  return (value.toLowerCase().match(/[a-z0-9_]+/g) ?? []).filter(
+    (token) => token.length >= 2,
+  );
+}
+
+function prefixAnd(tokens: readonly string[]): string | null {
+  return tokens.length > 0 ? tokens.map((token) => `${token}*`).join(" AND ") : null;
+}
+
+export function buildFtsPrefixMatchExpression(queryText: string): string | null {
+  const raw = prefixAnd(extractFtsTokens(queryText));
+  const expanded = prefixAnd(extractFtsTokens(expandIdentifierTerms(queryText)));
+  const clauses = [...new Set([raw, expanded].filter((clause): clause is string => clause != null))];
+  if (clauses.length === 0) return null;
+  if (clauses.length === 1) return clauses[0]!;
+  return clauses.map((clause) => `(${clause})`).join(" OR ");
+}
+
 export function mapFileSummaryRow(row: FileRow | undefined): FileSummaryRecord | null {
   if (!row) {
     return null;

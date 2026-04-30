@@ -23,7 +23,7 @@ import { withProjectContext, type ToolServiceOptions } from "../runtime.js";
  *   `truncated: true` + a warning explaining which cap fired.
  */
 
-const DEFAULT_COMPACT_MAX_FINDINGS = 100;
+const DEFAULT_COMPACT_MAX_FINDINGS = 500;
 const DEFAULT_FULL_MAX_FINDINGS = 500;
 const LINT_FILES_REEF_SOURCE = "lint_files";
 

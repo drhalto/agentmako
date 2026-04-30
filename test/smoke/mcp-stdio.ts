@@ -6,6 +6,7 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { stopReefDaemon } from "../../services/indexer/src/index.ts";
 import { openGlobalStore, openProjectStore } from "../../packages/store/src/index.ts";
 
 /**
@@ -132,6 +133,21 @@ function parseStructured<T>(result: ToolCallResult): T {
   assertToolCallSucceeded(result);
   assert.ok(result.structuredContent, "tools/call result includes structuredContent");
   return result.structuredContent as T;
+}
+
+async function removeTempDirWithRetries(dir: string): Promise<void> {
+  for (let attempt = 0; attempt < 20; attempt += 1) {
+    try {
+      rmSync(dir, { recursive: true, force: true });
+      return;
+    } catch (error) {
+      const code = (error as { code?: unknown }).code;
+      if ((code !== "EBUSY" && code !== "EPERM") || attempt === 19) {
+        throw error;
+      }
+      await new Promise((resolve) => setTimeout(resolve, 100 * (attempt + 1)));
+    }
+  }
 }
 
 class StdioClient {
@@ -434,7 +450,8 @@ async function main(): Promise<void> {
     }
     throw error;
   } finally {
-    rmSync(tmp, { recursive: true, force: true });
+    await stopReefDaemon().catch(() => undefined);
+    await removeTempDirWithRetries(tmp);
   }
 }
 

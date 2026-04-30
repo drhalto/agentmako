@@ -193,14 +193,6 @@ export async function resolveProject(
       });
     }
 
-    if (options.requestContext?.sessionProjectId) {
-      const sessionProject = globalStore.getProjectById(options.requestContext.sessionProjectId);
-      if (sessionProject) {
-        await notifyProjectResolved(options, sessionProject);
-        return sessionProject;
-      }
-    }
-
     const roots = (await options.requestContext?.getRoots?.()) ?? [];
     const rootResolution = resolveProjectFromLocations(globalStore, roots);
     if (rootResolution.project) {
@@ -236,6 +228,14 @@ export async function resolveProject(
         projectId: detachedProject.projectId,
         canonicalPath: detachedProject.canonicalPath,
       });
+    }
+
+    if (options.requestContext?.sessionProjectId) {
+      const sessionProject = globalStore.getProjectById(options.requestContext.sessionProjectId);
+      if (sessionProject) {
+        await notifyProjectResolved(options, sessionProject);
+        return sessionProject;
+      }
     }
   } finally {
     if (!shared) {
