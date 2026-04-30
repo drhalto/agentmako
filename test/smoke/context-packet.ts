@@ -3,7 +3,12 @@ import { mkdirSync, mkdtempSync, rmSync, statSync, writeFileSync } from "node:fs
 import { randomUUID } from "node:crypto";
 import os from "node:os";
 import path from "node:path";
-import type { AuthPathToolOutput, ContextPacketToolOutput, ProjectFinding } from "../../packages/contracts/src/index.ts";
+import {
+  ContextPacketToolOutputSchema,
+  type AuthPathToolOutput,
+  type ContextPacketToolOutput,
+  type ProjectFinding,
+} from "../../packages/contracts/src/index.ts";
 import { openGlobalStore, openProjectStore } from "../../packages/store/src/index.ts";
 import { createHotIndexCache } from "../../packages/tools/src/hot-index/index.ts";
 import { invokeTool } from "../../packages/tools/src/registry.ts";
@@ -80,8 +85,17 @@ function seedProject(projectRoot: string, projectId: string): void {
     "  return <button>Login</button>;",
     "}",
   ].join("\n");
+  const dashboardLayoutContent = [
+    "export default async function DashboardLayout({ profile, children }: { profile: { role: string }; children: unknown }) {",
+    "  if (profile.role !== 'admin') {",
+    "    return null;",
+    "  }",
+    "  return children;",
+    "}",
+  ].join("\n");
 
   writeFixtureFile(projectRoot, "app/api/auth/callback/route.ts", routeContent);
+  writeFixtureFile(projectRoot, "app/dashboard/layout.tsx", dashboardLayoutContent);
   writeFixtureFile(projectRoot, "lib/auth/session.ts", sessionContent);
   writeFixtureFile(projectRoot, "types/auth.ts", typeContent);
   writeFixtureFile(projectRoot, "components/LoginButton.tsx", loginContent);
@@ -133,6 +147,14 @@ function seedProject(projectRoot: string, projectId: string): void {
             handlerName: "GET",
             isApi: true,
           }],
+        ),
+        fileRecord(
+          projectRoot,
+          "app/dashboard/layout.tsx",
+          dashboardLayoutContent,
+          "tsx",
+          [{ name: "DashboardLayout", kind: "function", exportName: "default", lineStart: 1, lineEnd: 6 }],
+          [],
         ),
         fileRecord(
           projectRoot,
@@ -205,6 +227,37 @@ function seedProject(projectRoot: string, projectId: string): void {
       message: "UserSession user.role type no longer matches route expectations.",
       factFingerprints: [],
     };
+    const dashboardSubject = {
+      kind: "diagnostic" as const,
+      path: "app/dashboard/layout.tsx",
+      code: "identity.boundary_mismatch",
+    };
+    const dashboardSubjectFingerprint = store.computeReefSubjectFingerprint(dashboardSubject);
+    const dashboardFinding: ProjectFinding = {
+      projectId,
+      fingerprint: store.computeReefFindingFingerprint({
+        source: "cross_search",
+        ruleId: "identity.boundary_mismatch",
+        subjectFingerprint: dashboardSubjectFingerprint,
+        message: "Dashboard layout role guard does not match page access checks.",
+      }),
+      source: "cross_search",
+      subjectFingerprint: dashboardSubjectFingerprint,
+      overlay: "indexed",
+      severity: "warning",
+      status: "active",
+      filePath: "app/dashboard/layout.tsx",
+      line: 2,
+      ruleId: "identity.boundary_mismatch",
+      freshness: {
+        state: "fresh",
+        checkedAt: capturedAt,
+        reason: "fixture dashboard finding",
+      },
+      capturedAt,
+      message: "Dashboard layout role guard does not match page access checks.",
+      factFingerprints: [],
+    };
     const noiseFindings: ProjectFinding[] = Array.from({ length: 250 }, (_, index) => {
       const path = `noise/noise-${index}.ts`;
       const subjectFingerprint = store.computeReefSubjectFingerprint({
@@ -244,6 +297,12 @@ function seedProject(projectRoot: string, projectId: string): void {
       overlay: "working_tree",
       findings: [activeFinding, ...noiseFindings],
     });
+    store.replaceReefFindingsForSource({
+      projectId,
+      source: "cross_search",
+      overlay: "indexed",
+      findings: [dashboardFinding],
+    });
     store.finishIndexRun(run.runId, "succeeded");
   } finally {
     store.close();
@@ -277,8 +336,12 @@ async function main(): Promise<void> {
       { hotIndexCache, requestContext: { requestId: "req_context_packet_smoke" } },
     ) as ContextPacketToolOutput;
 
+    ContextPacketToolOutputSchema.parse(packet);
     assert.equal(packet.toolName, "context_packet");
     assert.equal(packet.projectId, projectId);
+    assert.equal(packet.mode, "explore");
+    assert.equal(packet.modePolicy.includeRisks, true);
+    assert.deepEqual(packet.limits.providersSkipped, []);
     assert.equal(packet.intent.primaryFamily, "debug_auth_state");
     assert.ok(packet.intent.families.some((entry) => entry.family === "debug_route"));
     assert.ok(packet.intent.families.some((entry) => entry.family === "debug_type_contract"));
@@ -304,8 +367,144 @@ async function main(): Promise<void> {
     assert.ok(packet.scopedInstructions.some((instruction) => instruction.path === "AGENTS.md"));
     assert.ok(packet.recommendedHarnessPattern.some((step) => step.includes("auth/session")));
     assert.equal(packet.indexFreshness?.state, "fresh");
+    assert.equal(packet.freshnessGate.status, "skipped");
+    assert.equal(packet.freshnessGate.source, "metadata");
+    assert.equal(packet.freshnessGate.indexFreshness.state, "fresh");
     assert.ok(packet.limits.providersRun.includes("hot_hint_index"));
     assert.equal(hotIndexCache.size(), 1, "first call should build one hot index");
+    const exploreToolNames = packet.expandableTools.map((tool) => tool.toolName);
+    assert.ok(
+      exploreToolNames.includes("repo_map"),
+      "explore mode should recommend repo_map",
+    );
+    assert.ok(
+      exploreToolNames.includes("project_open_loops"),
+      "explore mode should recommend project_open_loops",
+    );
+    assert.equal(
+      exploreToolNames.includes("verification_state"),
+      false,
+      "explore mode should not surface verification_state",
+    );
+
+    const dashboardPacket = await invokeTool(
+      "context_packet",
+      {
+        projectId,
+        request: "review dashboard auth role checks",
+        focusFiles: ["app/dashboard/layout.tsx"],
+        includeRisks: true,
+      },
+      { hotIndexCache },
+    ) as ContextPacketToolOutput;
+    assert.ok(
+      dashboardPacket.risks.some((risk) =>
+        risk.source === "open_loop" &&
+        risk.code === "identity.boundary_mismatch" &&
+        risk.reason.includes("app/dashboard/layout.tsx")
+      ),
+      "context_packet risks should include relevant active Reef findings",
+    );
+    const confidenceFilteredRiskPacket = await invokeTool(
+      "context_packet",
+      {
+        projectId,
+        request: "review dashboard auth role checks",
+        focusFiles: ["app/dashboard/layout.tsx"],
+        includeRisks: true,
+        risksMinConfidence: 0.93,
+      },
+      { hotIndexCache },
+    ) as ContextPacketToolOutput;
+    assert.ok(
+      confidenceFilteredRiskPacket.risks.length > 0,
+      "high-confidence risks should still be returned",
+    );
+    assert.ok(
+      confidenceFilteredRiskPacket.risks.every((risk) => risk.confidence >= 0.93),
+      "risksMinConfidence should filter lower-confidence risk noise",
+    );
+    assert.ok(
+      confidenceFilteredRiskPacket.risks.some((risk) => risk.source === "open_loop"),
+      "high-confidence open-loop risks should survive the confidence floor",
+    );
+
+    const implementPacket = await invokeTool(
+      "context_packet",
+      {
+        projectId,
+        mode: "implement",
+        request: "implement the auth callback user type fix",
+        focusFiles: ["app/api/auth/callback/route.ts"],
+      },
+      { hotIndexCache },
+    ) as ContextPacketToolOutput;
+    assert.equal(implementPacket.mode, "implement");
+    assert.ok(implementPacket.limits.providersSkipped.includes("repo_map_provider"));
+    assert.equal(implementPacket.limits.providersRun.includes("repo_map_provider"), false);
+    const implementToolNames = implementPacket.expandableTools.map((tool) => tool.toolName);
+    assert.ok(
+      implementToolNames.includes("lint_files"),
+      "implement mode should recommend lint_files",
+    );
+    assert.ok(
+      implementToolNames.includes("ast_find_pattern"),
+      "implement mode should recommend ast_find_pattern",
+    );
+    assert.equal(
+      implementToolNames.includes("repo_map"),
+      false,
+      "implement mode should not recommend repo_map",
+    );
+
+    const planPacket = await invokeTool(
+      "context_packet",
+      {
+        projectId,
+        mode: "plan",
+        request: "plan the auth callback user type fix",
+        focusFiles: ["app/api/auth/callback/route.ts"],
+        focusRoutes: ["/api/auth/callback"],
+        focusDatabaseObjects: ["public.user_profiles"],
+      },
+      { hotIndexCache },
+    ) as ContextPacketToolOutput;
+    const planToolNames = planPacket.expandableTools.map((tool) => tool.toolName);
+    assert.ok(planToolNames.includes("change_plan"), "plan mode should recommend change_plan");
+    assert.ok(planToolNames.includes("route_context"), "plan mode should recommend route_context");
+    assert.ok(
+      planToolNames.includes("table_neighborhood"),
+      "plan mode should recommend table_neighborhood",
+    );
+    const planRouteContext = planPacket.expandableTools.find((tool) => tool.toolName === "route_context");
+    assert.ok(planRouteContext, "plan mode should attach a route_context entry");
+    assert.equal(
+      (planRouteContext?.suggestedArgs as { route?: unknown } | undefined)?.route,
+      "/api/auth/callback",
+      "route_context suggestedArgs should reflect focusRoutes",
+    );
+
+    const reviewPacket = await invokeTool(
+      "context_packet",
+      {
+        projectId,
+        mode: "review",
+        request: "review the auth callback user type fix",
+        focusFiles: ["app/api/auth/callback/route.ts"],
+      },
+      { hotIndexCache },
+    ) as ContextPacketToolOutput;
+    const reviewToolNames = reviewPacket.expandableTools.map((tool) => tool.toolName);
+    assert.ok(
+      reviewToolNames.includes("verification_state"),
+      "review mode should recommend verification_state",
+    );
+    assert.ok(reviewToolNames.includes("lint_files"), "review mode should recommend lint_files");
+    assert.equal(
+      reviewToolNames.includes("ast_find_pattern"),
+      false,
+      "review mode should not recommend ast_find_pattern",
+    );
 
     const coercedAuthPath = await invokeTool(
       "auth_path",
@@ -317,6 +516,22 @@ async function main(): Promise<void> {
     ) as AuthPathToolOutput;
     assert.equal(coercedAuthPath.toolName, "auth_path");
     assert.equal(coercedAuthPath.projectId, projectId);
+    assert.equal(coercedAuthPath.matched, true);
+
+    const missingAuthPath = await invokeTool(
+      "auth_path",
+      {
+        projectId,
+        route: "/api/does-not-exist",
+      },
+      { hotIndexCache, requestContext: { requestId: "req_auth_path_fallback_smoke" } },
+    ) as AuthPathToolOutput;
+    assert.equal(missingAuthPath.toolName, "auth_path");
+    assert.equal(missingAuthPath.matched, false);
+    assert.match(missingAuthPath.reason ?? "", /No indexed match found/);
+    assert.equal(missingAuthPath.fallbackReason, missingAuthPath.reason);
+    assert.equal(missingAuthPath.suggestedNext?.tool, "cross_search");
+    assert.equal(missingAuthPath.suggestedNext?.args.term, "/api/does-not-exist");
 
     const coercedTransportPacket = await invokeTool(
       "context_packet",
@@ -334,6 +549,7 @@ async function main(): Promise<void> {
       { hotIndexCache, requestContext: { requestId: "req_context_packet_coerced_smoke" } },
     ) as ContextPacketToolOutput;
     assert.equal(coercedTransportPacket.toolName, "context_packet");
+    assert.equal(coercedTransportPacket.modePolicy.includeRisks, false);
     assert.ok(coercedTransportPacket.limits.budgetTokens <= 1024);
     assert.ok(coercedTransportPacket.primaryContext.length <= 5);
 

@@ -1,10 +1,12 @@
 import chokidar, { type FSWatcher } from "chokidar";
 import { randomUUID } from "node:crypto";
+import { existsSync } from "node:fs";
 import { rm, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { loadConfig, type MakoConfig } from "@mako-ai/config";
 import type {
   AttachedProject,
+  DiagnosticRefreshSource,
   ProjectIndexWatchCatchUpResult,
   ProjectIndexWatchState,
   ReefAnalysisHost,
@@ -18,17 +20,34 @@ import {
 } from "@mako-ai/indexer";
 import { createLogger } from "@mako-ai/logger";
 import { openProjectStore, type ProjectStoreCache } from "@mako-ai/store";
-import { workingTreeOverlayTool } from "@mako-ai/tools";
+import { diagnosticRefreshTool, workingTreeOverlayTool } from "@mako-ai/tools";
 
 export const MAKO_INDEX_WATCH_DEBOUNCE_MS = 3000;
 export const MAKO_INDEX_WATCH_MAX_DELAY_MS = 60000;
 export const MAKO_INDEX_WATCH_MAX_FILES = 20000;
 export const MAKO_INDEX_WATCH_CATCH_UP_DEFAULT_MS = 750;
 export const MAKO_INDEX_WATCH_CATCH_UP_MAX_MS = 1500;
+export const MAKO_INDEX_WATCH_DIAGNOSTIC_MAX_FILES = 50;
 
 const WATCH_CATCH_UP_COOKIE_PREFIX = ".mako-reef-watch-cookie-";
 const WATCH_DIRTY_PATH_LIMIT = 50;
 const OVERLAY_UPDATE_BATCH_SIZE = 500;
+const DEFAULT_WATCH_DIAGNOSTIC_SOURCES = [
+  "lint_files",
+  "programmatic_findings",
+  "typescript_syntax",
+  "typescript",
+] as const satisfies readonly DiagnosticRefreshSource[];
+const WATCH_DIAGNOSTIC_SOURCE_VALUES = [
+  "lint_files",
+  "typescript_syntax",
+  "typescript",
+  "eslint",
+  "oxlint",
+  "biome",
+  "git_precommit_check",
+  "programmatic_findings",
+] as const satisfies readonly DiagnosticRefreshSource[];
 const watchLogger = createLogger("mako-api", { component: "index-refresh-coordinator" });
 
 export interface ProjectIndexRefreshCoordinatorOptions {
@@ -52,6 +71,9 @@ export class ProjectIndexRefreshCoordinator {
   private readonly maxDelayMs: number;
   private readonly maxFiles: number;
   private readonly enabled: boolean;
+  private readonly diagnosticsEnabled: boolean;
+  private readonly diagnosticSources: DiagnosticRefreshSource[];
+  private readonly diagnosticMaxFiles: number;
   private watcher: FSWatcher | undefined;
   private activeProject: AttachedProject | undefined;
   private debounceTimer: ReturnType<typeof setTimeout> | undefined;
@@ -75,6 +97,15 @@ export class ProjectIndexRefreshCoordinator {
     this.debounceMs = envNumber("MAKO_INDEX_WATCH_DEBOUNCE_MS", MAKO_INDEX_WATCH_DEBOUNCE_MS);
     this.maxDelayMs = envNumber("MAKO_INDEX_WATCH_MAX_DELAY_MS", MAKO_INDEX_WATCH_MAX_DELAY_MS);
     this.maxFiles = envNumber("MAKO_INDEX_WATCH_MAX_FILES", MAKO_INDEX_WATCH_MAX_FILES);
+    this.diagnosticsEnabled = envBoolean("MAKO_INDEX_WATCH_DIAGNOSTICS", true);
+    this.diagnosticSources = envDiagnosticSources(
+      "MAKO_INDEX_WATCH_DIAGNOSTIC_SOURCES",
+      DEFAULT_WATCH_DIAGNOSTIC_SOURCES,
+    );
+    this.diagnosticMaxFiles = envNumber(
+      "MAKO_INDEX_WATCH_DIAGNOSTIC_MAX_FILES",
+      MAKO_INDEX_WATCH_DIAGNOSTIC_MAX_FILES,
+    );
     this.reefService = createReefClient({
       configOverrides: options.configOverrides,
       projectStoreCache: options.projectStoreCache,
@@ -489,6 +520,7 @@ export class ProjectIndexRefreshCoordinator {
     try {
       const overlayResult = await this.updateWorkingTreeOverlay(project, dirtyAtStart);
       await this.reefService.submitEvent(this.createWatcherEvent(project, dirtyAtStart, triggerSource, startedAt));
+      await this.refreshDiagnosticsForWatch(project, dirtyAtStart, overlayResult.deletedFiles);
       const refreshSummary = await this.latestRefreshSummary(project.projectId);
       const finishedAt = new Date().toISOString();
       this.indexing = false;
@@ -530,8 +562,8 @@ export class ProjectIndexRefreshCoordinator {
   private async updateWorkingTreeOverlay(
     project: AttachedProject,
     dirtyPaths: string[],
-  ): Promise<{ deletedFileCount: number }> {
-    if (dirtyPaths.length === 0) return { deletedFileCount: 0 };
+  ): Promise<{ deletedFileCount: number; deletedFiles: string[] }> {
+    if (dirtyPaths.length === 0) return { deletedFileCount: 0, deletedFiles: [] };
 
     const startedAtMs = Date.now();
     try {
@@ -567,6 +599,7 @@ export class ProjectIndexRefreshCoordinator {
       });
       return {
         deletedFileCount: deletedFiles.length,
+        deletedFiles,
       };
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
@@ -578,8 +611,105 @@ export class ProjectIndexRefreshCoordinator {
         ...this.state,
         lastOverlayFactError: message,
       });
-      return { deletedFileCount: 0 };
+      return { deletedFileCount: 0, deletedFiles: [] };
     }
+  }
+
+  private async refreshDiagnosticsForWatch(
+    project: AttachedProject,
+    dirtyPaths: readonly string[],
+    deletedFiles: readonly string[],
+  ): Promise<void> {
+    const startedAt = new Date().toISOString();
+    const startedAtMs = Date.now();
+    const skipped = (reason: string): void => {
+      this.setState({
+        ...this.state,
+        lastDiagnosticRefreshStartedAt: startedAt,
+        lastDiagnosticRefreshFinishedAt: new Date().toISOString(),
+        lastDiagnosticRefreshDurationMs: Math.max(0, Date.now() - startedAtMs),
+        lastDiagnosticRefreshFileCount: 0,
+        lastDiagnosticRefreshSources: [],
+        lastDiagnosticRefreshSucceededSources: 0,
+        lastDiagnosticRefreshFailedSources: 0,
+        lastDiagnosticRefreshUnavailableSources: 0,
+        lastDiagnosticRefreshSkippedReason: reason,
+        lastDiagnosticRefreshError: undefined,
+      });
+    };
+
+    if (!this.diagnosticsEnabled) {
+      skipped("MAKO_INDEX_WATCH_DIAGNOSTICS is disabled");
+      return;
+    }
+
+    const deletedSet = new Set(deletedFiles);
+    const files = [...new Set(dirtyPaths)]
+      .filter((filePath) => !deletedSet.has(filePath))
+      .filter(isDiagnosticSourcePath);
+    if (files.length === 0) {
+      skipped("no changed diagnostic source files");
+      return;
+    }
+    if (files.length > this.diagnosticMaxFiles) {
+      skipped(`changed diagnostic file count ${files.length} exceeds MAKO_INDEX_WATCH_DIAGNOSTIC_MAX_FILES=${this.diagnosticMaxFiles}`);
+      return;
+    }
+
+    const sources = this.effectiveDiagnosticSources(project);
+    if (sources.length === 0) {
+      skipped("no watch diagnostic sources are enabled for this project");
+      return;
+    }
+
+    try {
+      const output = await diagnosticRefreshTool(
+        {
+          projectId: project.projectId,
+          files,
+          sources,
+          continueOnError: true,
+        },
+        {
+          configOverrides: this.options.configOverrides,
+          projectStoreCache: this.options.projectStoreCache,
+        },
+      );
+      this.setState({
+        ...this.state,
+        lastDiagnosticRefreshStartedAt: startedAt,
+        lastDiagnosticRefreshFinishedAt: new Date().toISOString(),
+        lastDiagnosticRefreshDurationMs: Math.max(0, Date.now() - startedAtMs),
+        lastDiagnosticRefreshFileCount: files.length,
+        lastDiagnosticRefreshSources: sources,
+        lastDiagnosticRefreshSucceededSources: output.summary.succeededSources,
+        lastDiagnosticRefreshFailedSources: output.summary.failedSources,
+        lastDiagnosticRefreshUnavailableSources: output.summary.unavailableSources,
+        lastDiagnosticRefreshSkippedReason: undefined,
+        lastDiagnosticRefreshError: undefined,
+      });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      watchLogger.warn("diagnostic-refresh-failed", { projectId: project.projectId, error: message });
+      this.setState({
+        ...this.state,
+        lastDiagnosticRefreshStartedAt: startedAt,
+        lastDiagnosticRefreshFinishedAt: new Date().toISOString(),
+        lastDiagnosticRefreshDurationMs: Math.max(0, Date.now() - startedAtMs),
+        lastDiagnosticRefreshFileCount: files.length,
+        lastDiagnosticRefreshSources: sources,
+        lastDiagnosticRefreshSucceededSources: 0,
+        lastDiagnosticRefreshFailedSources: sources.length,
+        lastDiagnosticRefreshUnavailableSources: 0,
+        lastDiagnosticRefreshSkippedReason: undefined,
+        lastDiagnosticRefreshError: message,
+      });
+    }
+  }
+
+  private effectiveDiagnosticSources(project: AttachedProject): DiagnosticRefreshSource[] {
+    const hasTsconfig = existsSync(path.join(project.canonicalPath, "tsconfig.json"));
+    return this.diagnosticSources.filter((source) => source !== "typescript" || hasTsconfig);
   }
 
   private createWatcherEvent(
@@ -790,6 +920,41 @@ function envBoolean(name: string, fallback: boolean): boolean {
 function envNumber(name: string, fallback: number): number {
   const value = Number(process.env[name]);
   return Number.isFinite(value) && value >= 0 ? value : fallback;
+}
+
+function envDiagnosticSources(
+  name: string,
+  fallback: readonly DiagnosticRefreshSource[],
+): DiagnosticRefreshSource[] {
+  const value = process.env[name];
+  if (value == null || value.trim() === "") return [...fallback];
+  const normalized = value.trim().toLowerCase();
+  if (["0", "false", "off", "no", "none"].includes(normalized)) return [];
+  const sources = value
+    .split(",")
+    .map((source) => source.trim())
+    .filter(isDiagnosticRefreshSource);
+  return sources.length > 0 ? [...new Set(sources)] : [...fallback];
+}
+
+function isDiagnosticRefreshSource(source: string): source is DiagnosticRefreshSource {
+  return WATCH_DIAGNOSTIC_SOURCE_VALUES.includes(source as DiagnosticRefreshSource);
+}
+
+function isDiagnosticSourcePath(relativePath: string): boolean {
+  switch (path.extname(relativePath).toLowerCase()) {
+    case ".ts":
+    case ".tsx":
+    case ".js":
+    case ".jsx":
+    case ".mts":
+    case ".cts":
+    case ".mjs":
+    case ".cjs":
+      return true;
+    default:
+      return false;
+  }
 }
 
 function isCatchUpCookiePath(relativePath: string): boolean {

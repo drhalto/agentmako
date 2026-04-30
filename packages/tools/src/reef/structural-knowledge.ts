@@ -1,12 +1,18 @@
 import type {
+  ProjectFinding,
   ReefStructuralDefinition,
   ReefStructuralUsage,
+  ReefWhereUsedCoverage,
   ReefWhereUsedToolInput,
   ReefWhereUsedToolOutput,
 } from "@mako-ai/contracts";
-import type { FileImportLink, FileSummaryRecord, ResolvedRouteRecord, SymbolRecord } from "@mako-ai/store";
+import type { FileImportLink, FileSummaryRecord, ProjectStore, ResolvedRouteRecord, SymbolRecord } from "@mako-ai/store";
 import { withProjectContext, type ToolServiceOptions } from "../runtime.js";
-import { buildReefToolExecution, defaultReefToolFreshnessPolicy } from "./tool-execution.js";
+import {
+  applyReefToolFreshnessPolicy,
+  buildReefToolExecution,
+  defaultReefToolFreshnessPolicy,
+} from "./tool-execution.js";
 
 export async function reefWhereUsedTool(
   input: ReefWhereUsedToolInput,
@@ -42,11 +48,28 @@ export async function reefWhereUsedTool(
 
     const definitionPaths = new Set(definitions.map((definition) => definition.filePath));
     const targetRequiresIdentifierCheck = input.targetKind === "symbol" || input.targetKind === "component";
-    const candidateUsages = dedupeUsages([
+    const maintainedUsages = dedupeUsages([
       ...definitionUsages(definitions),
       ...(targetRequiresIdentifierCheck ? [] : importUsages(projectStore.listAllImportEdges(), query, definitionPaths)),
       ...dependentUsages(projectStore, definitionPaths, targetRequiresIdentifierCheck ? query : undefined),
     ]);
+    const textUsages = targetRequiresIdentifierCheck
+      ? textReferenceUsages(projectStore, files, query, new Set(maintainedUsages.map((usage) => usage.filePath)))
+      : [];
+    const candidateUsages = dedupeUsages([...maintainedUsages, ...textUsages]);
+    const relatedFindingCandidates = findRelatedFindings({
+      projectStore,
+      projectId: project.projectId,
+      query,
+      definitionPaths,
+      limit: Math.min(limit, 25),
+    });
+    const relatedFindingFilter = applyReefToolFreshnessPolicy(
+      relatedFindingCandidates,
+      freshnessPolicy,
+      "related where-used finding",
+    );
+    let relatedFindings = relatedFindingFilter.items;
     let usages = candidateUsages.slice(0, limit);
     let limitedDefinitions = definitions.slice(0, limit);
     const reefExecution = await buildReefToolExecution({
@@ -56,23 +79,27 @@ export async function reefWhereUsedTool(
       options,
       startedAtMs,
       freshnessPolicy,
-      returnedCount: limitedDefinitions.length + usages.length,
+      staleEvidenceDropped: relatedFindingFilter.staleEvidenceDropped,
+      staleEvidenceLabeled: relatedFindingFilter.staleEvidenceLabeled,
+      returnedCount: limitedDefinitions.length + usages.length + relatedFindings.length,
     });
-    const warnings: string[] = [];
+    const warnings: string[] = [...relatedFindingFilter.warnings];
     if (targetRequiresIdentifierCheck && definitions.length > 0) {
-      warnings.push("Symbol/component usages are limited to maintained import edges whose indexed source contains the identifier; use ast_find_pattern when exact local references are required.");
+      warnings.push("Symbol/component direct usages combine maintained import edges with indexed identifier text; related findings may include non-call consumers such as bypass or alignment diagnostics.");
     }
     if (reefExecution.snapshot.state !== "fresh" && freshnessPolicy !== "allow_stale_labeled") {
-      const droppedCount = definitions.length + candidateUsages.length;
+      const droppedCount = definitions.length + candidateUsages.length + relatedFindings.length;
       limitedDefinitions = [];
       usages = [];
+      relatedFindings = [];
       if (droppedCount > 0) {
         warnings.push(`Dropped ${droppedCount} maintained structural results because Reef snapshot state is ${reefExecution.snapshot.state} under freshnessPolicy=${freshnessPolicy}.`);
       }
-    } else if (reefExecution.snapshot.state !== "fresh" && limitedDefinitions.length + usages.length > 0) {
+    } else if (reefExecution.snapshot.state !== "fresh" && limitedDefinitions.length + usages.length + relatedFindings.length > 0) {
       warnings.push(`Returned maintained structural results with Reef snapshot state ${reefExecution.snapshot.state} under freshnessPolicy=allow_stale_labeled.`);
     }
     usages = stampUsageRevision(usages, reefExecution.snapshot.revision);
+    const coverage = buildCoverage(query, targetRequiresIdentifierCheck);
 
     return {
       toolName: "reef_where_used",
@@ -82,9 +109,11 @@ export async function reefWhereUsedTool(
       ...(input.targetKind ? { targetKind: input.targetKind } : {}),
       definitions: limitedDefinitions,
       usages,
-      totalReturned: limitedDefinitions.length + usages.length,
+      relatedFindings,
+      coverage,
+      totalReturned: limitedDefinitions.length + usages.length + relatedFindings.length,
       reefExecution,
-      ...(usages.length === 0 && limitedDefinitions.length === 0
+      ...(usages.length === 0 && limitedDefinitions.length === 0 && relatedFindings.length === 0
         ? { fallbackRecommendation: "No maintained Reef structural match was found; use live_text_search or ast_find_pattern as an explicit fallback." }
         : {}),
       warnings,
@@ -249,12 +278,53 @@ function dependentUsages(
   return usages;
 }
 
+function textReferenceUsages(
+  projectStore: Pick<ProjectStore, "getFileContent">,
+  files: readonly FileSummaryRecord[],
+  identifier: string,
+  excludedFiles: ReadonlySet<string>,
+): ReefStructuralUsage[] {
+  const usages: ReefStructuralUsage[] = [];
+  for (const file of files) {
+    if (excludedFiles.has(file.path)) {
+      continue;
+    }
+    const line = firstIdentifierReferenceLine(projectStore.getFileContent(file.path), identifier);
+    if (line === undefined) {
+      continue;
+    }
+    usages.push({
+      filePath: file.path,
+      usageKind: "text_reference",
+      line,
+      reason: `indexed file content references identifier ${identifier}; not proven through the import graph.`,
+      provenance: {
+        source: "maintained_reef_state",
+        producer: "indexed_file_content",
+      },
+    });
+  }
+  return usages;
+}
+
 function fileContentReferencesIdentifier(content: string | null, identifier: string): boolean {
+  return firstIdentifierReferenceLine(content, identifier) !== undefined;
+}
+
+function firstIdentifierReferenceLine(content: string | null, identifier: string): number | undefined {
   if (!content) {
-    return false;
+    return undefined;
   }
   const withoutStringLiterals = content.replace(/(["'])(?:\\.|(?!\1)[^\\])*\1/gu, "");
-  return new RegExp(`(^|[^A-Za-z0-9_$])${escapeRegExp(identifier)}([^A-Za-z0-9_$]|$)`, "u").test(withoutStringLiterals);
+  const matcher = new RegExp(`(^|[^A-Za-z0-9_$])${escapeRegExp(identifier)}([^A-Za-z0-9_$]|$)`, "u");
+  let line = 1;
+  for (const segment of withoutStringLiterals.split(/\r?\n/u)) {
+    if (matcher.test(segment)) {
+      return line;
+    }
+    line += 1;
+  }
+  return undefined;
 }
 
 function stampUsageRevision(usages: readonly ReefStructuralUsage[], revision: number | undefined): ReefStructuralUsage[] {
@@ -268,6 +338,108 @@ function stampUsageRevision(usages: readonly ReefStructuralUsage[], revision: nu
       revision,
     },
   }));
+}
+
+function findRelatedFindings(args: {
+  projectStore: Pick<ProjectStore, "queryReefFindings">;
+  projectId: string;
+  query: string;
+  definitionPaths: ReadonlySet<string>;
+  limit: number;
+}): ProjectFinding[] {
+  if (args.limit <= 0) {
+    return [];
+  }
+  const findings = args.projectStore.queryReefFindings({
+    projectId: args.projectId,
+    includeResolved: false,
+    limit: 500,
+  });
+  const normalizedQuery = args.query.toLowerCase();
+  return findings
+    .filter((finding) => {
+      const searchable = [
+        finding.source,
+        finding.ruleId ?? "",
+        finding.filePath ?? "",
+        finding.message,
+        ...(finding.evidenceRefs ?? []),
+      ].join(" ").toLowerCase();
+      if (searchable.includes(normalizedQuery)) {
+        return true;
+      }
+      return [...args.definitionPaths].some((definitionPath) =>
+        finding.filePath === definitionPath
+        || (finding.evidenceRefs ?? []).some((ref) => ref === definitionPath || ref.startsWith(`${definitionPath}:`))
+      );
+    })
+    .sort(compareFindings)
+    .slice(0, args.limit);
+}
+
+function compareFindings(left: ProjectFinding, right: ProjectFinding): number {
+  const severityDelta = severityRank(right.severity) - severityRank(left.severity);
+  if (severityDelta !== 0) {
+    return severityDelta;
+  }
+  return right.capturedAt.localeCompare(left.capturedAt);
+}
+
+function severityRank(severity: ProjectFinding["severity"]): number {
+  switch (severity) {
+    case "error":
+      return 4;
+    case "warning":
+      return 3;
+    case "info":
+      return 2;
+  }
+}
+
+function buildCoverage(
+  query: string,
+  targetRequiresIdentifierCheck: boolean,
+): ReefWhereUsedCoverage {
+  return {
+    directUsageSources: targetRequiresIdentifierCheck
+      ? ["definitions", "import_edges", "indexed_identifier_text"]
+      : ["definitions", "import_edges"],
+    relatedSignalSources: ["project_findings"],
+    limitations: [
+      "Maintained import edges only prove files that import a definition target; they do not prove dynamic references or semantic bypasses.",
+      "Indexed identifier text can find references outside the import graph, but it is lexical evidence and may include non-call mentions.",
+      "Related findings are durable diagnostics connected by query text, file path, or evidence refs; they are not counted as direct usages.",
+    ],
+    fallbackTools: [
+      {
+        tool: "ast_find_pattern",
+        reason: "Use for exact structural call/reference matching in indexed TS/JS/TSX/JSX files.",
+        args: {
+          pattern: `${query}($ARGS)`,
+          languages: ["ts", "tsx", "js", "jsx"],
+          maxMatches: 100,
+        },
+      },
+      {
+        tool: "cross_search",
+        reason: "Use for semantic search and alignment diagnostics around the same symbol or concept.",
+        args: {
+          term: query,
+          limit: 20,
+          verbosity: "compact",
+        },
+      },
+      {
+        tool: "live_text_search",
+        reason: "Use for exact current-disk text after edits or when the index may be stale.",
+        args: {
+          query,
+          fixedStrings: true,
+          maxMatches: 100,
+        },
+      },
+    ],
+  };
 }
 
 function dedupeUsages(usages: readonly ReefStructuralUsage[]): ReefStructuralUsage[] {

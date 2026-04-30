@@ -22,6 +22,10 @@ node apps/cli/dist/index.js tool list
 - Keep changes scoped to the requested behavior.
 - Prefer existing contracts, store helpers, and tool patterns over new
   abstractions.
+- For new or changed MCP tools, follow the centralized
+  [tool annotation convention](./docs/tool-annotations.md).
+- For tools that mutate Mako local state, follow the
+  [write tool convention](./docs/write-tool-convention.md).
 - Add or update focused smoke coverage for tool contracts, migrations,
   or user-visible behavior.
 - Do not commit local state, generated bundles, SQLite DB files, logs,

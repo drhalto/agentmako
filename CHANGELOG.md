@@ -7,6 +7,85 @@ it reaches 1.0.
 
 ## [Unreleased]
 
+## [0.3.0] - 2026-04-30
+
+### Added
+
+- `_hints` on tool results, with public schema support and contextual
+  next-step guidance shared across MCP, API, and CLI tool calls.
+- Complete MCP tool annotations from a centralized operational metadata matrix,
+  including read-only, idempotent, open-world, destructive, and write-preview
+  metadata.
+- `context_packet` modes for `explore`, `plan`, `implement`, and `review`,
+  with mode-specific provider policy, `modePolicy` output, expandable
+  follow-ups, and confidence-filtered risk output.
+- U-shaped `layoutZone` ordering for answer and workflow packet sections so
+  the most actionable context is placed at the start and end of long packets.
+- Generated plugin packs for Claude Code, Codex, Cursor, and Gemini, all synced
+  from shared Mako skills and wired to the same `agentmako mcp` server.
+- Background Reef daemon integration for MCP sessions, including lazy startup
+  from `agentmako mcp`, watcher-backed incremental refresh, scoped diagnostic
+  freshness, and daemon lifecycle coverage.
+- `file_preflight(filePath)`, a one-call pre-edit gate with durable findings,
+  file-scoped diagnostic freshness, recent runs, applicable conventions, and
+  acknowledgement history.
+- `reef_diff_impact(filePaths)`, a read-only mid-edit impact packet with
+  changed-file overlay state, downstream import callers, active caller findings,
+  and convention risks.
+- `mako_help(task)`, a workflow orientation tool that returns ordered Mako tool
+  sequences with suggested arguments for common audit, edit, review,
+  diagnostic, and database tasks.
+- Rule-pack authoring improvements, including hot-reloaded YAML rule packs,
+  cross-file `canonicalHelper` checks, rule validation, and
+  `extract_rule_template` for mining rule drafts from fix diffs.
+- Preview-by-default flows for higher-impact local write tools such as finding
+  acknowledgements and database review comments.
+- Expanded Reef docs and agent instructions covering live watcher behavior,
+  file preflight, diff impact, rule-pack authoring, and finding source filters.
+
+### Changed
+
+- `searchFiles()` now relies on FTS for content search and keeps only the cheap
+  path-name fallback, removing the redundant chunk-content `LIKE` scan.
+- `ask` preserves the full user question when dispatching to search-backed
+  tools instead of reducing precise requests to short terms.
+- `auth_path` returns structured fallback envelopes with suggested
+  `cross_search` args when no exact match exists, keeping batches from
+  dead-ending on no-match errors.
+- `context_packet` risk handling now merges relevant active Reef findings into
+  packet-level risks and supports `risksMinConfidence` for noise control.
+- `reef_scout` ranks with lightweight request intent, keeping app-flow evidence
+  ahead of schema facts for app questions and schema facts ahead for database
+  questions.
+- `project_conventions` now derives conventions from project profile,
+  auth-like symbols, routes, generated-file markers, schema usage, explicit
+  facts, and rules.
+- `reef_where_used` now combines maintained import/symbol evidence with indexed
+  identifier-text references and related durable findings, while labeling the
+  coverage limits explicitly.
+- `verification_state` and `file_preflight` now surface file-scoped diagnostic
+  run coverage and watcher diagnostic state so agents can tell whether the
+  daemon has not caught up or diagnostics are genuinely stale.
+- `cross_search`, `lint_files`, and `project_index_status` default to more
+  compact outputs, with verbose/full modes still available for debugging.
+
+### Fixed
+
+- TSX/JSX ambiguous `ast_find_pattern` snippets starting with `{`, `[`, or `<`
+  retry with an auto-anchored parser context and report which form matched.
+- Cross-search alignment diagnostics persist into Reef with stable finding
+  identities so `file_findings`, `project_findings`, and acknowledgements see
+  the same issues across reruns.
+- `project_findings` source filters accept bare rule IDs and
+  `rule_pack:<ruleId>` aliases.
+- `file_findings` and `project_findings` can see persisted query-time
+  alignment diagnostics instead of missing issues that only appeared in
+  `cross_search`.
+- Alignment-style finding identities strip runtime-only timestamp/run fields so
+  acknowledgements remain stable across reruns.
+- `agentmako version`, `agentmako --version`, and `agentmako -v` now print the
+  CLI version without starting the API service.
+
 ## [0.2.2] - 2026-04-29
 
 ### Fixed
@@ -87,7 +166,8 @@ Initial public release of `agentmako` under Apache-2.0.
 - `mako-ai-claude-plugin` with Mako-specific Claude Code skills and
   bundled MCP wiring.
 
-[Unreleased]: https://github.com/drhalto/agentmako/compare/v0.2.2...HEAD
+[Unreleased]: https://github.com/drhalto/agentmako/compare/v0.3.0...HEAD
+[0.3.0]: https://github.com/drhalto/agentmako/compare/v0.2.3...v0.3.0
 [0.2.2]: https://github.com/drhalto/agentmako/compare/v0.2.1...v0.2.2
 [0.2.0]: https://github.com/drhalto/agentmako/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/drhalto/agentmako/releases/tag/v0.1.0

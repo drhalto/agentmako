@@ -1,5 +1,6 @@
 import type {
   EvidenceStatus,
+  ContextLayoutZone,
   JsonObject,
   JsonValue,
   ReasoningTier,
@@ -56,6 +57,7 @@ export interface EvidenceBlock {
   filePath?: string;
   line?: number;
   content: string;
+  layoutZone?: ContextLayoutZone;
   score?: number;
   stale?: boolean;
   freshness?: IndexFreshnessDetail;

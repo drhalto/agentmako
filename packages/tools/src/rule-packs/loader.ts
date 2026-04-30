@@ -100,6 +100,7 @@ export function compileRulePacks(packs: LoadedRulePack[]): CompiledRule[] {
         languages: rule.languages ?? null,
         message: rule.message,
         patterns: rule.patterns ?? (rule.pattern ? [rule.pattern] : []),
+        canonicalHelper: normalizeCanonicalHelper(rule.canonicalHelper),
         metadata: rule.metadata,
         sourcePath: loaded.sourcePath,
       });
@@ -120,8 +121,20 @@ function toRulePack(input: RulePackInput): RulePack {
       message: rule.message,
       pattern: rule.pattern,
       patterns: rule.patterns,
+      canonicalHelper: normalizeCanonicalHelper(rule.canonicalHelper),
       metadata: rule.metadata,
     })),
+  };
+}
+
+function normalizeCanonicalHelper(
+  helper: RulePack["rules"][number]["canonicalHelper"],
+): RulePack["rules"][number]["canonicalHelper"] {
+  if (!helper) return undefined;
+  return {
+    symbol: helper.symbol,
+    ...(helper.path ? { path: helper.path.replace(/\\/g, "/") } : {}),
+    mode: helper.mode ?? "absent_in_consumer",
   };
 }
 

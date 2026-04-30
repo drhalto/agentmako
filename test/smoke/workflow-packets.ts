@@ -217,10 +217,10 @@ function createImplementationBriefGenerator(): WorkflowPacketGenerator<"implemen
         basis: buildWorkflowPacketBasis(input),
         sections: [
           summarySection,
+          verificationSection,
           changeAreasSection,
           invariantsSection,
           risksSection,
-          verificationSection,
         ],
         citations: [fileCitation, diagnosticCitation, symbolCitation],
         assumptions: ["loadVisibleEvents remains the canonical shared helper."],
@@ -262,6 +262,9 @@ async function main(): Promise<void> {
     "citations should be stable across repeated generation",
   );
   assert.ok(firstPacket.sections.every((section) => section.entries.length > 0));
+  assert.equal(firstPacket.sections[0]?.kind, "summary");
+  assert.equal(firstPacket.sections.at(-1)?.kind, "verification");
+  assert.equal(firstPacket.sections.at(-1)?.layoutZone, "end");
   assert.deepEqual(firstPacket.sections[0]?.entries[0]?.metadata, {
     priority: "high",
   });

@@ -47,7 +47,7 @@ export interface ToolServiceRequestContext {
   sessionProjectId?: string;
   meta?: JsonObject;
   getRoots?: () => Promise<string[]>;
-  onProjectResolved?: (project: AttachedProject) => void;
+  onProjectResolved?: (project: AttachedProject) => Promise<void> | void;
 }
 
 export interface ToolProjectContext {

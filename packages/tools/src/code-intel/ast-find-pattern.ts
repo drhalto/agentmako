@@ -1,4 +1,5 @@
 import type {
+  AstFindPatternAttempt,
   AstFindPatternLanguage,
   AstFindPatternMatch,
   AstFindPatternToolInput,
@@ -10,7 +11,7 @@ import { assessReefFileEvidence, assessReefLiveLineCount } from "../index-freshn
 import { isReefBackedToolViewEnabled } from "../reef/migration-flags.js";
 import { buildReefToolExecution } from "../reef/tool-execution.js";
 import { withProjectContext, type ToolServiceOptions } from "../runtime.js";
-import { findAstMatches, langFromPath, type SupportedLang } from "./ast-patterns.js";
+import { findAstMatchesDetailed, langFromPath, type AstPatternAttempt, type SupportedLang } from "./ast-patterns.js";
 import { matchesPathGlob } from "./path-globs.js";
 
 /**
@@ -32,6 +33,25 @@ import { matchesPathGlob } from "./path-globs.js";
 const DEFAULT_MAX_MATCHES = 500;
 const DEFAULT_MAX_FILES = 500;
 const DEFAULT_LANGUAGES: readonly AstFindPatternLanguage[] = ["ts", "tsx", "js", "jsx"];
+
+interface AttemptAggregate {
+  variant: AstFindPatternAttempt["variant"];
+  pattern: string;
+  context?: string;
+  selector?: string;
+  languages: Set<AstFindPatternLanguage>;
+  filesTried: number;
+  matchCount: number;
+}
+
+function attemptKey(attempt: AstPatternAttempt): string {
+  return [
+    attempt.variant,
+    attempt.pattern,
+    attempt.context ?? "",
+    attempt.selector ?? "",
+  ].join("\0");
+}
 
 export async function astFindPatternTool(
   input: AstFindPatternToolInput,
@@ -56,6 +76,7 @@ export async function astFindPatternTool(
       : new Set<string>();
 
     const matches: AstFindPatternMatch[] = [];
+    const attemptAggregates = new Map<string, AttemptAggregate>();
     let acknowledgedCount = 0;
     let filesScanned = 0;
     let patternInvalidReported = false;
@@ -101,12 +122,33 @@ export async function astFindPatternTool(
 
       filesScanned += 1;
 
-      const hits = findAstMatches(file.path, content, [
+      const result = findAstMatchesDetailed(file.path, content, [
         {
           pattern: input.pattern,
           ...(input.captures ? { captures: input.captures } : {}),
         },
       ]);
+      for (const attempt of result.attempts) {
+        const key = attemptKey(attempt);
+        let aggregate = attemptAggregates.get(key);
+        if (!aggregate) {
+          aggregate = {
+            variant: attempt.variant,
+            pattern: attempt.pattern,
+            ...(attempt.context ? { context: attempt.context } : {}),
+            ...(attempt.selector ? { selector: attempt.selector } : {}),
+            languages: new Set<AstFindPatternLanguage>(),
+            filesTried: 0,
+            matchCount: 0,
+          };
+          attemptAggregates.set(key, aggregate);
+        }
+        aggregate.languages.add(attempt.language as AstFindPatternLanguage);
+        aggregate.filesTried += 1;
+        aggregate.matchCount += attempt.matchCount;
+      }
+
+      const hits = result.hits;
       if (hits.length === 0) {
         continue;
       }
@@ -160,6 +202,9 @@ export async function astFindPatternTool(
         matches.push({
           filePath: hit.filePath,
           language: lang as AstFindPatternLanguage,
+          patternVariant: hit.patternVariant,
+          ...(hit.patternContext ? { patternContext: hit.patternContext } : {}),
+          ...(hit.patternSelector ? { patternSelector: hit.patternSelector } : {}),
           lineStart: hit.lineStart,
           lineEnd: hit.lineEnd,
           columnStart: hit.columnStart,
@@ -197,6 +242,30 @@ export async function astFindPatternTool(
       warnings.push("no indexed files matched the language/glob filters.");
     } else if (filesScanned === 0 && nonFreshFileSkippedCount > 0) {
       warnings.push("all indexed files matching the language/glob filters were skipped by the Reef freshness guard.");
+    }
+    const patternAttempts: AstFindPatternAttempt[] = [...attemptAggregates.values()]
+      .map((attempt) => ({
+        variant: attempt.variant,
+        pattern: attempt.pattern,
+        ...(attempt.context ? { context: attempt.context } : {}),
+        ...(attempt.selector ? { selector: attempt.selector } : {}),
+        languages: [...attempt.languages].sort(),
+        filesTried: attempt.filesTried,
+        matchCount: attempt.matchCount,
+      }))
+      .sort((left, right) => {
+        if (left.variant !== right.variant) {
+          return left.variant === "original" ? -1 : 1;
+        }
+        return left.pattern.localeCompare(right.pattern);
+      });
+    const autoAnchoredAttempt = patternAttempts.find((attempt) => attempt.variant === "auto_anchored");
+    if (autoAnchoredAttempt && autoAnchoredAttempt.matchCount > 0) {
+      warnings.push(
+        `auto-anchored TSX/JSX parser context matched ${autoAnchoredAttempt.matchCount} node(s); check patternAttempts and matches[].patternVariant for the winning form.`,
+      );
+    } else if (autoAnchoredAttempt && filesScanned > 0 && matches.length === 0) {
+      warnings.push("auto-anchored TSX/JSX retry was attempted but also returned zero matches.");
     }
     // Best-effort pattern-validity hint: if we scanned files with real
     // content but got zero hits, it's often a pattern typo. We can't tell
@@ -241,6 +310,7 @@ export async function astFindPatternTool(
       pattern: input.pattern,
       languagesApplied,
       filesScanned,
+      patternAttempts,
       matches,
       acknowledgedCount,
       reefFreshness,

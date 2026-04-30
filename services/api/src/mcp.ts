@@ -18,6 +18,7 @@ import {
   coerceDeferredInput,
   getToolDefinition,
   rankToolSearchEntries,
+  withToolHintsSchema,
 } from "@mako-ai/tools";
 import { z, type ZodTypeAny } from "zod";
 import type { HttpServerOptions } from "./server.js";
@@ -214,12 +215,18 @@ export function createMcpServer(
         inputSchema: createMcpInputSchema(
           tool.name === "auth_path" ? AuthPathMcpInputSchema : definition.inputSchema,
         ),
-        outputSchema: definition.outputSchema,
+        outputSchema: withToolHintsSchema(definition.outputSchema),
         _meta: metaForTool(toolInfo),
         annotations: {
           title: tool.name,
-          readOnlyHint: !isMutation,
-          openWorldHint: false,
+          readOnlyHint: "readOnlyHint" in definition.annotations,
+          idempotentHint: definition.annotations.idempotentHint === true,
+          openWorldHint: definition.annotations.openWorldHint === true,
+          ...(isMutation &&
+          "destructiveHint" in definition.annotations &&
+          definition.annotations.destructiveHint === true
+            ? { destructiveHint: true }
+            : {}),
         },
       },
       async (args, extra) => {
@@ -248,10 +255,10 @@ export function createMcpServer(
                 return [];
               }
             },
-            onProjectResolved: (project: AttachedProject) => {
+            onProjectResolved: async (project: AttachedProject) => {
               if (session) {
                 session.activeProjectId = project.projectId;
-                void session.indexRefreshCoordinator?.setActiveProject(project).catch((error) => {
+                await session.indexRefreshCoordinator?.setActiveProject(project).catch((error) => {
                   console.error(
                     `[mako-mcp] index watcher failed: ${
                       error instanceof Error ? error.message : String(error)
@@ -294,11 +301,12 @@ export function createMcpServer(
       title: "tool_search",
       description: TOOL_SEARCH_DESCRIPTION,
       inputSchema: createMcpInputSchema(ToolSearchInputSchema),
-      outputSchema: ToolSearchOutputSchema,
+      outputSchema: withToolHintsSchema(ToolSearchOutputSchema),
       _meta: metaForTool(toolSearchInfo),
       annotations: {
         title: "tool_search",
         readOnlyHint: true,
+        idempotentHint: true,
         openWorldHint: false,
       },
     },
@@ -319,6 +327,9 @@ export function createMcpServer(
         query: args.query,
         count: results.length,
         results,
+        _hints: results.length === 0
+          ? ["No matching tools found; broaden the query."]
+          : [],
       };
       return {
         content: [{ type: "text", text: JSON.stringify(output, null, 2) }],
@@ -334,9 +345,12 @@ export function createMcpServer(
       {
         description: tool.description,
         inputSchema: createMcpInputSchema(tool.parameters),
-        outputSchema: ActionToolUnavailableSchema,
+        outputSchema: withToolHintsSchema(ActionToolUnavailableSchema),
         annotations: {
           title: tool.name,
+          readOnlyHint: false,
+          idempotentHint: false,
+          openWorldHint: true,
           destructiveHint: true,
         },
         _meta: {
@@ -350,6 +364,7 @@ export function createMcpServer(
           error:
             `\`${tool.name}\` is an action tool and requires the harness session transport. ` +
             "Use `services/harness` or `agentmako chat` so the approval and snapshot flow can run.",
+          _hints: ["Use the harness approval flow for this action tool."],
         };
         return {
           content: [{ type: "text" as const, text: output.error }],

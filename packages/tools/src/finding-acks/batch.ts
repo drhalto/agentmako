@@ -4,12 +4,13 @@ import type {
   FindingAckBatchRow,
   FindingAckBatchToolInput,
   FindingAckBatchToolOutput,
-  FindingAckToolInput,
 } from "@mako-ai/contracts";
 import { withProjectContext, type ToolServiceOptions } from "../runtime.js";
-import { insertFindingAckWithTelemetry } from "./ack.js";
-
-type AckInsertInput = Omit<FindingAckToolInput, "projectId" | "projectRef">;
+import {
+  type AckInsertInput,
+  buildFindingAckPreview,
+  insertFindingAckWithTelemetry,
+} from "./ack.js";
 
 export async function findingAckBatchTool(
   input: FindingAckBatchToolInput,
@@ -17,9 +18,11 @@ export async function findingAckBatchTool(
 ): Promise<FindingAckBatchToolOutput> {
   return withProjectContext(input, options, ({ project, projectStore }) => {
     const acks: FindingAck[] = [];
+    const previews: ReturnType<typeof buildFindingAckPreview>[] = [];
     const rejected: FindingAckBatchRejectedRow[] = [];
     const warnings: string[] = [];
     const continueOnError = input.continueOnError ?? true;
+    const preview = input.preview ?? true;
 
     for (const [index, row] of input.rows.entries()) {
       const merged = mergeAckRow(input, row);
@@ -34,6 +37,11 @@ export async function findingAckBatchTool(
           warnings.push("stopped after the first rejected ack row");
           break;
         }
+        continue;
+      }
+
+      if (preview) {
+        previews.push(buildFindingAckPreview(merged.input));
         continue;
       }
 
@@ -63,11 +71,14 @@ export async function findingAckBatchTool(
     return {
       toolName: "finding_ack_batch",
       projectId: project.projectId,
+      preview,
       acks,
+      ...(preview ? { wouldApply: previews } : {}),
       rejected,
       summary: {
         requestedRows: input.rows.length,
         ackedRows: acks.length,
+        ...(preview ? { previewedRows: previews.length } : {}),
         rejectedRows: rejected.length,
       },
       warnings,

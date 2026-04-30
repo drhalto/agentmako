@@ -9,6 +9,8 @@
  * - pathGlob narrows the result set
  * - truncation warning fires when `maxMatches` is hit
  * - zero-match outcome surfaces the "verify syntax" hint warning
+ * - ambiguous TSX/JSX snippets retry with auto-anchored parser context and
+ *   report which pattern variant matched
  *
  * This is the public tool test; `ast-patterns.ts` (the internal primitive)
  * is already exercised indirectly by composers and rule-packs smokes.
@@ -62,7 +64,8 @@ function seedProject(projectRoot: string, projectId: string): void {
     "  React.useEffect(() => {",
     "    console.log('mount');",
     "  }, []);",
-    "  return <div>hi</div>;",
+    "  const props = { tone: 'primary' };",
+    "  return <Button tone=\"primary\" disabled />;",
     "}",
   ].join("\n");
 
@@ -178,6 +181,15 @@ async function main(): Promise<void> {
     assert.equal(allConsoleLogs.projectId, projectId);
     assert.equal(allConsoleLogs.pattern, "console.log($X)");
     assert.equal(allConsoleLogs.filesScanned, 3, "three supported files should be scanned");
+    assert.ok(
+      allConsoleLogs.patternAttempts.some((attempt) =>
+        attempt.variant === "original" &&
+        attempt.pattern === "console.log($X)" &&
+        attempt.filesTried === 3 &&
+        attempt.matchCount === 4
+      ),
+      "original pattern attempt should be reported",
+    );
     assert.equal(
       allConsoleLogs.matches.length,
       4,
@@ -283,6 +295,76 @@ async function main(): Promise<void> {
       false,
       "file-level source lookup should not parse appended symbol chunks as duplicate source",
     );
+
+    const contextualObjectPattern = (await invokeTool("ast_find_pattern", {
+      projectId,
+      pattern: "{ tone: $TONE }",
+      captures: ["TONE"],
+      languages: ["tsx"],
+      pathGlob: "app/**/*.tsx",
+    })) as AstFindPatternToolOutput;
+    assert.equal(contextualObjectPattern.matches.length, 1);
+    assert.ok(
+      contextualObjectPattern.patternAttempts.some((attempt) =>
+        attempt.variant === "original" &&
+        attempt.pattern === "{ tone: $TONE }" &&
+        attempt.filesTried === 1
+      ),
+      "ambiguous TSX object search should report the original attempt",
+    );
+    assert.ok(
+      contextualObjectPattern.patternAttempts.some((attempt) =>
+        attempt.variant === "auto_anchored" &&
+        attempt.context === "const _ = { tone: $TONE }" &&
+        attempt.selector === "object" &&
+        attempt.matchCount === 1
+      ),
+      "ambiguous TSX object search should report the auto-anchored retry",
+    );
+    assert.equal(contextualObjectPattern.matches[0]?.patternVariant, "auto_anchored");
+    assert.equal(contextualObjectPattern.matches[0]?.patternContext, "const _ = { tone: $TONE }");
+    assert.equal(contextualObjectPattern.matches[0]?.patternSelector, "object");
+    assert.equal(contextualObjectPattern.matches[0]?.matchText, "{ tone: 'primary' }");
+    assert.equal(contextualObjectPattern.matches[0]?.captures.TONE, "'primary'");
+    assert.ok(
+      contextualObjectPattern.warnings.some((warning) =>
+        warning.includes("auto-anchored TSX/JSX parser context matched")
+      ),
+      "auto-anchored matches should be visible without another agent turn",
+    );
+
+    const contextualJsxPattern = (await invokeTool("ast_find_pattern", {
+      projectId,
+      pattern: "<Button tone=\"primary\" disabled />",
+      languages: ["tsx"],
+      pathGlob: "app/**/*.tsx",
+    })) as AstFindPatternToolOutput;
+    assert.equal(contextualJsxPattern.matches.length, 1);
+    assert.equal(contextualJsxPattern.matches[0]?.matchText, "<Button tone=\"primary\" disabled />");
+
+    const missingContextualObjectPattern = (await invokeTool("ast_find_pattern", {
+      projectId,
+      pattern: "{ missing: $VALUE }",
+      captures: ["VALUE"],
+      languages: ["tsx"],
+      pathGlob: "app/**/*.tsx",
+    })) as AstFindPatternToolOutput;
+    assert.equal(missingContextualObjectPattern.matches.length, 0);
+    assert.ok(
+      missingContextualObjectPattern.patternAttempts.some((attempt) =>
+        attempt.variant === "auto_anchored" &&
+        attempt.context === "const _ = { missing: $VALUE }" &&
+        attempt.matchCount === 0
+      ),
+      "zero-match ambiguous TSX search should still report that the auto-anchored retry ran",
+    );
+    assert.ok(
+      missingContextualObjectPattern.warnings.some((warning) =>
+        warning.includes("auto-anchored TSX/JSX retry was attempted but also returned zero matches")
+      ),
+      "zero-match ambiguous TSX search should name the failed retry",
+    );
+
     const queryPathOperations = await readReefOperations({}, {
       projectId,
       kind: "query_path",

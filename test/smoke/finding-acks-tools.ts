@@ -66,8 +66,28 @@ async function main(): Promise<void> {
 
   // --- 1. Ack an AST match with default status ---
 
+  const previewOne = (await invokeTool("finding_ack", {
+    projectId,
+    category: "hydration-check",
+    subjectKind: "ast_match",
+    filePath: "src/foo.tsx",
+    fingerprint: "preview_ast_fp",
+    reason: "preview should not persist",
+    snippet: "new Date()",
+    sourceToolName: "ast_find_pattern",
+  })) as FindingAckToolOutput;
+  assert.equal(previewOne.preview, true);
+  assert.equal(previewOne.ack, undefined);
+  assert.equal(previewOne.wouldApply?.status, "ignored");
+
+  const emptyReport = (await invokeTool("finding_acks_report", {
+    projectId,
+  })) as FindingAcksReportToolOutput;
+  assert.equal(emptyReport.acksInWindow, 0, "default preview must not insert an ack row");
+
   const ackOne = (await invokeTool("finding_ack", {
     projectId,
+    preview: false,
     category: "hydration-check",
     subjectKind: "ast_match",
     filePath: "src/foo.tsx",
@@ -78,6 +98,8 @@ async function main(): Promise<void> {
   })) as FindingAckToolOutput;
   assert.equal(ackOne.toolName, "finding_ack");
   assert.equal(ackOne.projectId, projectId);
+  assert.equal(ackOne.preview, false);
+  assert.ok(ackOne.ack);
   assert.equal(
     ackOne.ack.status,
     "ignored",
@@ -93,6 +115,7 @@ async function main(): Promise<void> {
 
   const ackTwo = (await invokeTool("finding_ack", {
     projectId,
+    preview: false,
     category: "no-console",
     subjectKind: "diagnostic_issue",
     fingerprint: "mbid_console_1",
@@ -102,6 +125,7 @@ async function main(): Promise<void> {
     sourceRuleId: "no-console",
     sourceIdentityMatchBasedId: "mbid_console_1",
   })) as FindingAckToolOutput;
+  assert.ok(ackTwo.ack);
   assert.equal(ackTwo.ack.status, "accepted");
   assert.equal(ackTwo.ack.sourceRuleId, "no-console");
 
@@ -109,12 +133,14 @@ async function main(): Promise<void> {
 
   const ackThree = (await invokeTool("finding_ack", {
     projectId,
+    preview: false,
     category: "no-console",
     subjectKind: "diagnostic_issue",
     fingerprint: "mbid_console_1",
     status: "ignored",
     reason: "superseded review decision",
   })) as FindingAckToolOutput;
+  assert.ok(ackThree.ack);
   assert.notEqual(
     ackTwo.ack.ackId,
     ackThree.ack.ackId,

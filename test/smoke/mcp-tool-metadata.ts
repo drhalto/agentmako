@@ -7,13 +7,15 @@ import { MAKO_TOOL_NAMES } from "../../packages/contracts/src/tool-registry.js";
 
 interface ToolDescriptor {
   name: string;
+  annotations?: Record<string, unknown>;
+  outputSchema?: Record<string, unknown>;
   _meta?: Record<string, unknown>;
 }
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = path.resolve(HERE, "..", "..");
 const CLI_ENTRY = path.join(REPO_ROOT, "apps", "cli", "src", "index.ts");
-const ALWAYS_LOAD_TOOLS = new Set(["tool_search", "ask", "repo_map", "context_packet", "reef_scout", "table_neighborhood"]);
+const ALWAYS_LOAD_TOOLS = new Set(["tool_search", "mako_help", "ask", "repo_map", "context_packet", "reef_scout", "table_neighborhood"]);
 
 function childEnv(): Record<string, string> {
   const env: Record<string, string> = {};
@@ -49,6 +51,10 @@ function hintWordCount(hint: string): number {
   return hint.trim().split(/\s+/).filter(Boolean).length;
 }
 
+function outputSchemaHasHints(tool: ToolDescriptor): boolean {
+  return JSON.stringify(tool.outputSchema).includes("\"_hints\"");
+}
+
 async function main(): Promise<void> {
   const expectedMakoTools = [...MAKO_TOOL_NAMES, "tool_search"];
 
@@ -70,7 +76,14 @@ async function main(): Promise<void> {
       ALWAYS_LOAD_TOOLS.has(name),
       `${name} alwaysLoad matches Phase 1 allowlist`,
     );
+    assert.equal(outputSchemaHasHints(tool), true, `${name} output schema includes _hints`);
   }
+
+  assert.equal(claudeByName.get("repo_map")?.annotations?.readOnlyHint, true);
+  assert.equal(claudeByName.get("repo_map")?.annotations?.openWorldHint, false);
+  assert.equal(claudeByName.get("db_ping")?.annotations?.openWorldHint, true);
+  assert.equal(claudeByName.get("finding_ack")?.annotations?.readOnlyHint, false);
+  assert.equal(claudeByName.get("finding_ack")?.annotations?.idempotentHint, false);
 
   const genericTools = await listToolsForClient("mako-generic-smoke");
   for (const tool of genericTools) {

@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { fileURLToPath, pathToFileURL } from "node:url";
 import {
   acquireReefRootWriterLock,
   createReefClient,
@@ -32,10 +33,12 @@ async function main(): Promise<void> {
   const originalStateHome = process.env.MAKO_STATE_HOME;
   const originalStateDirName = process.env.MAKO_STATE_DIRNAME;
   const originalReefMode = process.env.MAKO_REEF_MODE;
+  const originalCliEntrypoint = process.env.MAKO_CLI_ENTRYPOINT;
 
   process.env.MAKO_STATE_HOME = stateHome;
   delete process.env.MAKO_STATE_DIRNAME;
   delete process.env.MAKO_REEF_MODE;
+  delete process.env.MAKO_CLI_ENTRYPOINT;
 
   mkdirSync(path.join(projectRoot, "src"), { recursive: true });
   writeFileSync(path.join(projectRoot, "package.json"), JSON.stringify({ name: "reef-daemon-smoke" }));
@@ -133,6 +136,23 @@ async function main(): Promise<void> {
     await foreground;
     assert.equal(await readReefDaemonProcessInfo(), null);
 
+    const lazyEntrypoint = path.join(tmp, "lazy-agentmako.ts");
+    writeLazyCliEntrypoint(lazyEntrypoint);
+    process.env.MAKO_CLI_ENTRYPOINT = lazyEntrypoint;
+    delete process.env.MAKO_REEF_MODE;
+
+    const lazyClient = createReefClient();
+    const lazyStatuses = await lazyClient.listProjectStatuses();
+    const lazyInfo = await readReefDaemonProcessInfo();
+    assert.ok(lazyInfo, "auto-mode client should lazy-start the Reef daemon when a CLI entrypoint is available");
+    assert.notEqual(lazyInfo.pid, process.pid, "lazy-started daemon should run in a background process");
+    assert.equal(lazyStatuses.every((status) => status.serviceMode === "daemon"), true);
+
+    const lazyStop = await stopReefDaemon();
+    assert.equal(lazyStop.stopped, true);
+    assert.equal(await readReefDaemonProcessInfo(), null);
+    delete process.env.MAKO_CLI_ENTRYPOINT;
+
     process.env.MAKO_REEF_MODE = "required";
     const requiredClient = createReefClient();
     await assert.rejects(
@@ -150,8 +170,32 @@ async function main(): Promise<void> {
     restoreEnv("MAKO_STATE_HOME", originalStateHome);
     restoreEnv("MAKO_STATE_DIRNAME", originalStateDirName);
     restoreEnv("MAKO_REEF_MODE", originalReefMode);
+    restoreEnv("MAKO_CLI_ENTRYPOINT", originalCliEntrypoint);
     rmSync(tmp, { recursive: true, force: true });
   }
+}
+
+function writeLazyCliEntrypoint(filePath: string): void {
+  const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "..");
+  const indexerEntry = path.join(repoRoot, "services", "indexer", "src", "index.ts");
+  writeFileSync(
+    filePath,
+    [
+      `import { startReefDaemon } from ${JSON.stringify(pathToFileURL(indexerEntry).href)};`,
+      "",
+      "const args = process.argv.slice(2);",
+      "if (args[0] !== 'reef' || args[1] !== 'start' || !args.includes('--foreground')) {",
+      "  console.error('unexpected lazy reef daemon args: ' + args.join(' '));",
+      "  process.exit(1);",
+      "}",
+      "",
+      "void startReefDaemon({ foreground: true }).catch((error) => {",
+      "  console.error(error);",
+      "  process.exit(1);",
+      "});",
+      "",
+    ].join("\n"),
+  );
 }
 
 function restoreEnv(name: string, value: string | undefined): void {

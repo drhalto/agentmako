@@ -1458,8 +1458,14 @@ function reefFindingWhere(options: QueryReefFindingsOptions): { sql: string; val
     values.push(options.overlay);
   }
   if (options.source) {
-    clauses.push("source = ?");
-    values.push(options.source);
+    const rulePackRuleId = rulePackRuleIdFromSourceFilter(options.source);
+    if (rulePackRuleId) {
+      clauses.push("(source = ? OR rule_id = ? OR rule_id = ?)");
+      values.push(options.source, options.source, rulePackRuleId);
+    } else {
+      clauses.push("(source = ? OR rule_id = ?)");
+      values.push(options.source, options.source);
+    }
   } else if (options.sources) {
     addInClause(clauses, values, "source", options.sources);
   }
@@ -1482,6 +1488,13 @@ function reefFindingWhere(options: QueryReefFindingsOptions): { sql: string; val
     clauses.push("NOT EXISTS (SELECT 1 FROM finding_acks fa WHERE fa.project_id = reef_findings.project_id AND fa.fingerprint = reef_findings.fingerprint)");
   }
   return { sql: `WHERE ${clauses.join(" AND ")}`, values };
+}
+
+function rulePackRuleIdFromSourceFilter(source: string): string | undefined {
+  const prefix = "rule_pack:";
+  if (!source.startsWith(prefix)) return undefined;
+  const ruleId = source.slice(prefix.length).trim();
+  return ruleId.length > 0 ? ruleId : undefined;
 }
 
 function addInClause(

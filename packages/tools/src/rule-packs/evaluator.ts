@@ -15,9 +15,14 @@
 
 import type { AnswerSurfaceIssue, JsonObject } from "@mako-ai/contracts";
 import type { ProjectStore } from "@mako-ai/store";
+import * as ts from "typescript";
 import { findAstMatches, langFromPath } from "../code-intel/ast-patterns.js";
-import { buildSurfaceIssue, readDiagnosticFiles } from "../diagnostics/common.js";
-import type { CompiledRule } from "./types.js";
+import {
+  buildSurfaceIssue,
+  type DiagnosticAstFile,
+  readDiagnosticFiles,
+} from "../diagnostics/common.js";
+import type { CompiledRule, RuleCanonicalHelper } from "./types.js";
 
 export interface RunRulePacksInput {
   rules: CompiledRule[];
@@ -38,6 +43,8 @@ export function runRulePacks(input: RunRulePacksInput): AnswerSurfaceIssue[] {
       const lang = langFromPath(file.path);
       if (lang == null) continue;
       if (rule.languages && !rule.languages.includes(lang)) continue;
+      const canonicalHelper = resolveCanonicalHelper(rule.canonicalHelper);
+      if (canonicalHelper && fileSatisfiesCanonicalHelper(file, canonicalHelper)) continue;
 
       const queries = rule.patterns.map((pattern) => ({
         pattern,
@@ -55,18 +62,21 @@ export function runRulePacks(input: RunRulePacksInput): AnswerSurfaceIssue[] {
             confidence: rule.confidence,
             path: file.path,
             line: match.lineStart,
-            evidenceRefs: [`${file.path}:L${match.lineStart}`],
+            producerPath: canonicalHelper?.path,
+            consumerPath: canonicalHelper ? file.path : undefined,
+            evidenceRefs: evidenceRefsForMatch(file.path, match.lineStart, canonicalHelper),
             matchKey: {
               ruleId: rule.id,
               path: file.path,
               line: match.lineStart,
               captures: match.captures,
+              ...(canonicalHelper ? { canonicalHelper: canonicalHelperMetadata(canonicalHelper) } : {}),
             },
             codeFingerprint: {
               matchText: match.matchText,
               captures: match.captures,
             },
-            metadata: buildMetadata(rule.metadata, rule.sourcePath, match.captures),
+            metadata: buildMetadata(rule.metadata, rule.sourcePath, match.captures, canonicalHelper),
           }),
         );
       }
@@ -91,6 +101,60 @@ function extractCaptureNames(pattern: string): string[] {
   return [...names];
 }
 
+interface ResolvedCanonicalHelper {
+  symbol: string;
+  path?: string;
+  mode: "absent_in_consumer";
+}
+
+function resolveCanonicalHelper(helper: RuleCanonicalHelper | undefined): ResolvedCanonicalHelper | null {
+  if (!helper) return null;
+  return {
+    symbol: helper.symbol,
+    ...(helper.path ? { path: helper.path.replace(/\\/g, "/") } : {}),
+    mode: helper.mode ?? "absent_in_consumer",
+  };
+}
+
+function fileSatisfiesCanonicalHelper(
+  file: DiagnosticAstFile,
+  helper: ResolvedCanonicalHelper,
+): boolean {
+  if (helper.path && normalizeProjectPath(file.path) === normalizeProjectPath(helper.path)) {
+    return true;
+  }
+  return referencesSymbol(file, helper.symbol);
+}
+
+function evidenceRefsForMatch(
+  filePath: string,
+  line: number,
+  helper: ResolvedCanonicalHelper | null,
+): string[] {
+  return [
+    `${filePath}:L${line}`,
+    ...(helper?.path ? [helper.path] : []),
+  ];
+}
+
+function referencesSymbol(file: DiagnosticAstFile, symbol: string): boolean {
+  let found = false;
+  const visit = (node: ts.Node): void => {
+    if (found) return;
+    if (ts.isIdentifier(node) && node.text === symbol) {
+      found = true;
+      return;
+    }
+    ts.forEachChild(node, visit);
+  };
+  visit(file.sourceFile);
+  return found;
+}
+
+function normalizeProjectPath(filePath: string): string {
+  return filePath.replace(/\\/g, "/");
+}
+
 /**
  * Replace `{{capture.NAME}}` placeholders in a rule message with the matched
  * text of the `$NAME` metavariable. Missing captures interpolate to an
@@ -107,10 +171,20 @@ function buildMetadata(
   ruleMetadata: JsonObject | undefined,
   sourcePath: string,
   captures: Record<string, string>,
+  canonicalHelper: ResolvedCanonicalHelper | null,
 ): JsonObject {
   return {
     ...(ruleMetadata ?? {}),
     ruleSource: sourcePath,
     ...(Object.keys(captures).length > 0 ? { captures } : {}),
+    ...(canonicalHelper ? { canonicalHelper: canonicalHelperMetadata(canonicalHelper) } : {}),
+  };
+}
+
+function canonicalHelperMetadata(helper: ResolvedCanonicalHelper): JsonObject {
+  return {
+    symbol: helper.symbol,
+    mode: helper.mode,
+    ...(helper.path ? { path: helper.path } : {}),
   };
 }

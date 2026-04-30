@@ -11,6 +11,7 @@ export const TimestampSchema = z.string().min(1);
 export const SupportLevelSchema = z.enum(["native", "adapted", "best_effort"]);
 export const EvidenceStatusSchema = z.enum(["complete", "partial"]);
 export const ReasoningTierSchema = z.enum(["fast", "standard", "deep"]);
+export const ContextLayoutZoneSchema = z.enum(["start", "middle", "end"]);
 export const QueryKindSchema = z.enum([
   "route_trace",
   "schema_usage",
@@ -99,4 +100,3 @@ export const AnswerComparisonChangeSchema = z.object({
   code: AnswerComparisonChangeCodeSchema,
   detail: z.string().min(1),
 }) satisfies z.ZodType<AnswerComparisonChange>;
-

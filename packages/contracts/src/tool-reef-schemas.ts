@@ -33,12 +33,18 @@ import {
 } from "./reef-service.js";
 import {
   ReefFreshnessPolicySchema,
+  ProjectIndexWatchStateSchema,
   type ReefFreshnessPolicy,
+  type ProjectIndexWatchState,
 } from "./index-freshness.js";
 import {
   ReefToolExecutionSchema,
   type ReefToolExecution,
 } from "./tool-reef-execution-schemas.js";
+import {
+  FindingAckSchema,
+  type FindingAck,
+} from "./finding-acks.js";
 import type { JsonObject } from "./common.js";
 import {
   AnswerSurfaceIssueCategorySchema,
@@ -532,6 +538,20 @@ export const RulePackValidationPackSchema = z.object({
   errorText: z.string().min(1).optional(),
 }) satisfies z.ZodType<RulePackValidationPack>;
 
+export interface RulePackValidationCrossFile {
+  kind: "canonical_helper";
+  symbol: string;
+  path?: string;
+  mode: "absent_in_consumer";
+}
+
+export const RulePackValidationCrossFileSchema = z.object({
+  kind: z.literal("canonical_helper"),
+  symbol: z.string().min(1),
+  path: z.string().min(1).optional(),
+  mode: z.literal("absent_in_consumer"),
+}) satisfies z.ZodType<RulePackValidationCrossFile>;
+
 export interface RulePackValidationRule {
   id: string;
   sourcePath: string;
@@ -541,6 +561,7 @@ export interface RulePackValidationRule {
   languages?: string[];
   patternCount: number;
   message: string;
+  crossFile?: RulePackValidationCrossFile;
   descriptor?: ReefRuleDescriptor;
 }
 
@@ -553,6 +574,7 @@ export const RulePackValidationRuleSchema = z.object({
   languages: z.array(z.string().min(1)).optional(),
   patternCount: z.number().int().nonnegative(),
   message: z.string().min(1),
+  crossFile: RulePackValidationCrossFileSchema.optional(),
   descriptor: ReefRuleDescriptorSchema.optional(),
 }) satisfies z.ZodType<RulePackValidationRule>;
 
@@ -593,6 +615,95 @@ export const RulePackValidateToolOutputSchema = z.object({
   }),
   warnings: z.array(z.string().min(1)),
 }) satisfies z.ZodType<RulePackValidateToolOutput>;
+
+export interface ExtractRuleTemplateToolInput extends ProjectLocatorInput {
+  fixCommit: string;
+  baseCommit?: string;
+  filePath?: string;
+  ruleIdPrefix?: string;
+  maxTemplates?: number;
+  includeRelatedFindings?: boolean;
+}
+
+export const ExtractRuleTemplateToolInputSchema = ProjectLocatorInputObjectSchema.extend({
+  fixCommit: z.string().trim().min(1),
+  baseCommit: z.string().trim().min(1).optional(),
+  filePath: z.string().min(1).optional(),
+  ruleIdPrefix: z.string().trim().min(1).optional(),
+  maxTemplates: z.number().int().min(1).max(20).optional(),
+  includeRelatedFindings: z.boolean().optional(),
+}).strict() satisfies z.ZodType<ExtractRuleTemplateToolInput>;
+
+export const ExtractRuleTemplateLanguageSchema = z.enum(["ts", "tsx", "js", "jsx"]);
+export type ExtractRuleTemplateLanguage = z.infer<typeof ExtractRuleTemplateLanguageSchema>;
+
+export interface ExtractedRuleTemplate {
+  ruleId: string;
+  sourceFile: string;
+  language: ExtractRuleTemplateLanguage;
+  patterns: string[];
+  category: z.infer<typeof AnswerSurfaceIssueCategorySchema>;
+  severity: z.infer<typeof AnswerSurfaceIssueSeveritySchema>;
+  confidence: z.infer<typeof AnswerSurfaceIssueConfidenceSchema>;
+  message: string;
+  beforeSnippet: string;
+  afterSnippet?: string;
+  rationale: string;
+  caveats: string[];
+  relatedFindings: ProjectFinding[];
+}
+
+export const ExtractedRuleTemplateSchema = z.object({
+  ruleId: z.string().min(1),
+  sourceFile: z.string().min(1),
+  language: ExtractRuleTemplateLanguageSchema,
+  patterns: z.array(z.string().min(1)).nonempty(),
+  category: AnswerSurfaceIssueCategorySchema,
+  severity: AnswerSurfaceIssueSeveritySchema,
+  confidence: AnswerSurfaceIssueConfidenceSchema,
+  message: z.string().min(1),
+  beforeSnippet: z.string().min(1),
+  afterSnippet: z.string().min(1).optional(),
+  rationale: z.string().min(1),
+  caveats: z.array(z.string().min(1)),
+  relatedFindings: z.array(ProjectFindingSchema),
+}) satisfies z.ZodType<ExtractedRuleTemplate>;
+
+export interface ExtractRuleTemplateToolOutput {
+  toolName: "extract_rule_template";
+  projectId: string;
+  projectRoot: string;
+  fixCommit: string;
+  baseCommit: string;
+  templates: ExtractedRuleTemplate[];
+  draftYaml: string;
+  suggestedPath: string;
+  summary: {
+    changedFileCount: number;
+    hunkCount: number;
+    templateCount: number;
+  };
+  reefExecution: ReefToolExecution;
+  warnings: string[];
+}
+
+export const ExtractRuleTemplateToolOutputSchema = z.object({
+  toolName: z.literal("extract_rule_template"),
+  projectId: z.string().min(1),
+  projectRoot: z.string().min(1),
+  fixCommit: z.string().min(1),
+  baseCommit: z.string().min(1),
+  templates: z.array(ExtractedRuleTemplateSchema),
+  draftYaml: z.string(),
+  suggestedPath: z.string().min(1),
+  summary: z.object({
+    changedFileCount: z.number().int().nonnegative(),
+    hunkCount: z.number().int().nonnegative(),
+    templateCount: z.number().int().nonnegative(),
+  }),
+  reefExecution: ReefToolExecutionSchema,
+  warnings: z.array(z.string().min(1)),
+}) satisfies z.ZodType<ExtractRuleTemplateToolOutput>;
 
 export const DiagnosticRefreshSourceSchema = z.enum([
   "lint_files",
@@ -777,6 +888,7 @@ export const DbReefRefreshToolOutputSchema = z.object({
 }) satisfies z.ZodType<DbReefRefreshToolOutput>;
 
 export interface DbReviewCommentToolInput extends ProjectLocatorInput {
+  preview?: boolean;
   objectType: DbReviewObjectType;
   objectName: string;
   schemaName?: string;
@@ -790,6 +902,7 @@ export interface DbReviewCommentToolInput extends ProjectLocatorInput {
 }
 
 export const DbReviewCommentToolInputSchema = ProjectLocatorInputObjectSchema.extend({
+  preview: z.boolean().optional(),
   objectType: DbReviewObjectTypeSchema,
   objectName: z.string().trim().min(1).max(256),
   schemaName: z.string().trim().min(1).max(128).optional(),
@@ -802,11 +915,37 @@ export const DbReviewCommentToolInputSchema = ProjectLocatorInputObjectSchema.ex
   metadata: JsonObjectSchema.optional(),
 }).strict() satisfies z.ZodType<DbReviewCommentToolInput>;
 
+export interface DbReviewCommentPreview {
+  target: DbReviewTarget;
+  targetFingerprint: string;
+  category: DbReviewCommentCategory;
+  severity?: ReefSeverity;
+  comment: string;
+  tags: string[];
+  createdBy: string;
+  sourceToolName: "db_review_comment";
+  metadata?: JsonObject;
+}
+
+export const DbReviewCommentPreviewSchema = z.object({
+  target: DbReviewTargetSchema,
+  targetFingerprint: z.string().min(1),
+  category: DbReviewCommentCategorySchema,
+  severity: ReefSeveritySchema.optional(),
+  comment: z.string().trim().min(1),
+  tags: z.array(z.string().trim().min(1)),
+  createdBy: z.string().trim().min(1),
+  sourceToolName: z.literal("db_review_comment"),
+  metadata: JsonObjectSchema.optional(),
+}) satisfies z.ZodType<DbReviewCommentPreview>;
+
 export interface DbReviewCommentToolOutput {
   toolName: "db_review_comment";
   projectId: string;
   projectRoot: string;
-  comment: DbReviewComment;
+  preview: boolean;
+  comment?: DbReviewComment;
+  wouldApply?: DbReviewCommentPreview;
   warnings: string[];
 }
 
@@ -814,7 +953,9 @@ export const DbReviewCommentToolOutputSchema = z.object({
   toolName: z.literal("db_review_comment"),
   projectId: z.string().min(1),
   projectRoot: z.string().min(1),
-  comment: DbReviewCommentSchema,
+  preview: z.boolean(),
+  comment: DbReviewCommentSchema.optional(),
+  wouldApply: DbReviewCommentPreviewSchema.optional(),
   warnings: z.array(z.string().min(1)),
 }) satisfies z.ZodType<DbReviewCommentToolOutput>;
 
@@ -1060,7 +1201,7 @@ export const ReefStructuralDefinitionSchema = z.object({
 
 export interface ReefStructuralUsage {
   filePath: string;
-  usageKind: "import" | "dependent" | "route_owner" | "definition";
+  usageKind: "import" | "dependent" | "route_owner" | "definition" | "text_reference";
   targetPath?: string;
   specifier?: string;
   line?: number;
@@ -1074,7 +1215,7 @@ export interface ReefStructuralUsage {
 
 export const ReefStructuralUsageSchema = z.object({
   filePath: z.string().min(1),
-  usageKind: z.enum(["import", "dependent", "route_owner", "definition"]),
+  usageKind: z.enum(["import", "dependent", "route_owner", "definition", "text_reference"]),
   targetPath: z.string().min(1).optional(),
   specifier: z.string().min(1).optional(),
   line: z.number().int().positive().optional(),
@@ -1086,6 +1227,32 @@ export const ReefStructuralUsageSchema = z.object({
   }),
 }) satisfies z.ZodType<ReefStructuralUsage>;
 
+export interface ReefWhereUsedFallbackTool {
+  tool: "ast_find_pattern" | "live_text_search" | "cross_search";
+  reason: string;
+  args: JsonObject;
+}
+
+export const ReefWhereUsedFallbackToolSchema = z.object({
+  tool: z.enum(["ast_find_pattern", "live_text_search", "cross_search"]),
+  reason: z.string().min(1),
+  args: JsonObjectSchema,
+}) satisfies z.ZodType<ReefWhereUsedFallbackTool>;
+
+export interface ReefWhereUsedCoverage {
+  directUsageSources: Array<"definitions" | "import_edges" | "indexed_identifier_text">;
+  relatedSignalSources: Array<"project_findings">;
+  limitations: string[];
+  fallbackTools: ReefWhereUsedFallbackTool[];
+}
+
+export const ReefWhereUsedCoverageSchema = z.object({
+  directUsageSources: z.array(z.enum(["definitions", "import_edges", "indexed_identifier_text"])),
+  relatedSignalSources: z.array(z.enum(["project_findings"])),
+  limitations: z.array(z.string().min(1)),
+  fallbackTools: z.array(ReefWhereUsedFallbackToolSchema),
+}) satisfies z.ZodType<ReefWhereUsedCoverage>;
+
 export interface ReefWhereUsedToolOutput {
   toolName: "reef_where_used";
   projectId: string;
@@ -1094,6 +1261,8 @@ export interface ReefWhereUsedToolOutput {
   targetKind?: ReefStructuralTargetKind;
   definitions: ReefStructuralDefinition[];
   usages: ReefStructuralUsage[];
+  relatedFindings: ProjectFinding[];
+  coverage: ReefWhereUsedCoverage;
   totalReturned: number;
   reefExecution: ReefToolExecution;
   fallbackRecommendation?: string;
@@ -1108,6 +1277,8 @@ export const ReefWhereUsedToolOutputSchema = z.object({
   targetKind: ReefStructuralTargetKindSchema.optional(),
   definitions: z.array(ReefStructuralDefinitionSchema),
   usages: z.array(ReefStructuralUsageSchema),
+  relatedFindings: z.array(ProjectFindingSchema),
+  coverage: ReefWhereUsedCoverageSchema,
   totalReturned: z.number().int().nonnegative(),
   reefExecution: ReefToolExecutionSchema,
   fallbackRecommendation: z.string().min(1).optional(),
@@ -1244,8 +1415,10 @@ export interface VerificationStateToolOutput {
   projectRoot: string;
   status: "fresh" | "stale" | "unknown" | "failed";
   sources: VerificationSourceState[];
+  recentRuns: ReefDiagnosticRun[];
   changedFiles: VerificationChangedFile[];
   suggestedActions: string[];
+  watcher?: ProjectIndexWatchState;
   reefExecution: ReefToolExecution;
   warnings: string[];
 }
@@ -1256,8 +1429,10 @@ export const VerificationStateToolOutputSchema = z.object({
   projectRoot: z.string().min(1),
   status: z.enum(["fresh", "stale", "unknown", "failed"]),
   sources: z.array(VerificationSourceStateSchema),
+  recentRuns: z.array(ReefDiagnosticRunSchema),
   changedFiles: z.array(VerificationChangedFileSchema),
   suggestedActions: z.array(z.string().min(1)),
+  watcher: ProjectIndexWatchStateSchema.optional(),
   reefExecution: ReefToolExecutionSchema,
   warnings: z.array(z.string().min(1)),
 }) satisfies z.ZodType<VerificationStateToolOutput>;
@@ -1317,6 +1492,254 @@ export const ProjectConventionsToolOutputSchema = z.object({
   totalReturned: z.number().int().nonnegative(),
   warnings: z.array(z.string().min(1)),
 }) satisfies z.ZodType<ProjectConventionsToolOutput>;
+
+export interface FilePreflightToolInput extends ProjectLocatorInput {
+  filePath: string;
+  sources?: string[];
+  freshnessPolicy?: ReefFreshnessPolicy;
+  findingsLimit?: number;
+  conventionsLimit?: number;
+  diagnosticRunsLimit?: number;
+  ackLimit?: number;
+  cacheStalenessMs?: number;
+}
+
+export const FilePreflightToolInputSchema = ProjectLocatorInputObjectSchema.extend({
+  filePath: z.string().min(1),
+  sources: z.array(z.string().min(1)).min(1).max(20).optional(),
+  freshnessPolicy: ReefFreshnessPolicySchema.optional(),
+  findingsLimit: z.number().int().min(1).max(500).optional(),
+  conventionsLimit: z.number().int().min(1).max(100).optional(),
+  diagnosticRunsLimit: z.number().int().min(1).max(100).optional(),
+  ackLimit: z.number().int().min(1).max(500).optional(),
+  cacheStalenessMs: z.number().int().positive().max(24 * 60 * 60 * 1000).optional(),
+}) satisfies z.ZodType<FilePreflightToolInput>;
+
+export interface FilePreflightDiagnostics {
+  status: "fresh" | "stale" | "unknown" | "failed";
+  sources: VerificationSourceState[];
+  staleSources: string[];
+  failedSources: string[];
+  unknownSources: string[];
+  changedFile?: VerificationChangedFile;
+  recentRuns: ReefDiagnosticRun[];
+  watcher?: ProjectIndexWatchState;
+  suggestedActions: string[];
+}
+
+export const FilePreflightDiagnosticsSchema = z.object({
+  status: z.enum(["fresh", "stale", "unknown", "failed"]),
+  sources: z.array(VerificationSourceStateSchema),
+  staleSources: z.array(z.string().min(1)),
+  failedSources: z.array(z.string().min(1)),
+  unknownSources: z.array(z.string().min(1)),
+  changedFile: VerificationChangedFileSchema.optional(),
+  recentRuns: z.array(ReefDiagnosticRunSchema),
+  watcher: ProjectIndexWatchStateSchema.optional(),
+  suggestedActions: z.array(z.string().min(1)),
+}) satisfies z.ZodType<FilePreflightDiagnostics>;
+
+export interface FilePreflightToolOutput {
+  toolName: "file_preflight";
+  projectId: string;
+  projectRoot: string;
+  filePath: string;
+  findings: ProjectFinding[];
+  diagnostics: FilePreflightDiagnostics;
+  conventions: ProjectConvention[];
+  ackHistory: FindingAck[];
+  summary: {
+    findingCount: number;
+    activeFindingCount: number;
+    acknowledgedFindingCount: number;
+    staleFindingCount: number;
+    staleDiagnosticSourceCount: number;
+    failedDiagnosticSourceCount: number;
+    unknownDiagnosticSourceCount: number;
+    conventionCount: number;
+    recentDiagnosticRunCount: number;
+    ackCount: number;
+  };
+  reefExecution: ReefToolExecution;
+  filters: {
+    freshnessPolicy: ReefFreshnessPolicy;
+    cacheStalenessMs: number;
+    sources?: string[];
+  };
+  warnings: string[];
+}
+
+export const FilePreflightToolOutputSchema = z.object({
+  toolName: z.literal("file_preflight"),
+  projectId: z.string().min(1),
+  projectRoot: z.string().min(1),
+  filePath: z.string().min(1),
+  findings: z.array(ProjectFindingSchema),
+  diagnostics: FilePreflightDiagnosticsSchema,
+  conventions: z.array(ProjectConventionSchema),
+  ackHistory: z.array(FindingAckSchema),
+  summary: z.object({
+    findingCount: z.number().int().nonnegative(),
+    activeFindingCount: z.number().int().nonnegative(),
+    acknowledgedFindingCount: z.number().int().nonnegative(),
+    staleFindingCount: z.number().int().nonnegative(),
+    staleDiagnosticSourceCount: z.number().int().nonnegative(),
+    failedDiagnosticSourceCount: z.number().int().nonnegative(),
+    unknownDiagnosticSourceCount: z.number().int().nonnegative(),
+    conventionCount: z.number().int().nonnegative(),
+    recentDiagnosticRunCount: z.number().int().nonnegative(),
+    ackCount: z.number().int().nonnegative(),
+  }),
+  reefExecution: ReefToolExecutionSchema,
+  filters: z.object({
+    freshnessPolicy: ReefFreshnessPolicySchema,
+    cacheStalenessMs: z.number().int().positive(),
+    sources: z.array(z.string().min(1)).optional(),
+  }),
+  warnings: z.array(z.string().min(1)),
+}) satisfies z.ZodType<FilePreflightToolOutput>;
+
+export interface ReefDiffImpactToolInput extends ProjectLocatorInput {
+  filePaths: string[];
+  depth?: number;
+  maxCallersPerFile?: number;
+  maxFindingsPerCaller?: number;
+  maxConventions?: number;
+  freshnessPolicy?: ReefFreshnessPolicy;
+}
+
+export const ReefDiffImpactToolInputSchema = ProjectLocatorInputObjectSchema.extend({
+  filePaths: z.array(z.string().trim().min(1)).min(1).max(100),
+  depth: z.number().int().min(1).max(8).optional(),
+  maxCallersPerFile: z.number().int().min(1).max(500).optional(),
+  maxFindingsPerCaller: z.number().int().min(1).max(100).optional(),
+  maxConventions: z.number().int().min(1).max(200).optional(),
+  freshnessPolicy: ReefFreshnessPolicySchema.optional(),
+}) satisfies z.ZodType<ReefDiffImpactToolInput>;
+
+export interface ReefDiffImpactChangedFile {
+  filePath: string;
+  indexed: boolean;
+  overlayState: "present" | "deleted" | "missing";
+  exportedSymbols: string[];
+  declaredSymbols: string[];
+  overlayFact?: ProjectFact;
+}
+
+export const ReefDiffImpactChangedFileSchema = z.object({
+  filePath: z.string().min(1),
+  indexed: z.boolean(),
+  overlayState: z.enum(["present", "deleted", "missing"]),
+  exportedSymbols: z.array(z.string().min(1)),
+  declaredSymbols: z.array(z.string().min(1)),
+  overlayFact: ProjectFactSchema.optional(),
+}) satisfies z.ZodType<ReefDiffImpactChangedFile>;
+
+export interface ReefDiffImpactCaller {
+  sourceFilePath: string;
+  callerFilePath: string;
+  depth: number;
+  via: string[];
+  importSpecifiers: string[];
+  potentiallyAffectedSymbols: string[];
+  reason: string;
+}
+
+export const ReefDiffImpactCallerSchema = z.object({
+  sourceFilePath: z.string().min(1),
+  callerFilePath: z.string().min(1),
+  depth: z.number().int().min(1),
+  via: z.array(z.string().min(1)),
+  importSpecifiers: z.array(z.string().min(1)),
+  potentiallyAffectedSymbols: z.array(z.string().min(1)),
+  reason: z.string().min(1),
+}) satisfies z.ZodType<ReefDiffImpactCaller>;
+
+export interface ReefDiffImpactInvalidatedFinding {
+  sourceFilePath: string;
+  callerFilePath: string;
+  finding: ProjectFinding;
+  reason: string;
+}
+
+export const ReefDiffImpactInvalidatedFindingSchema = z.object({
+  sourceFilePath: z.string().min(1),
+  callerFilePath: z.string().min(1),
+  finding: ProjectFindingSchema,
+  reason: z.string().min(1),
+}) satisfies z.ZodType<ReefDiffImpactInvalidatedFinding>;
+
+export interface ReefDiffImpactConventionRisk {
+  filePath: string;
+  scope: "changed_file" | "impacted_caller";
+  convention: ProjectConvention;
+  confidence: number;
+  reason: string;
+  sourceFilePath?: string;
+}
+
+export const ReefDiffImpactConventionRiskSchema = z.object({
+  filePath: z.string().min(1),
+  scope: z.enum(["changed_file", "impacted_caller"]),
+  convention: ProjectConventionSchema,
+  confidence: z.number().min(0).max(1),
+  reason: z.string().min(1),
+  sourceFilePath: z.string().min(1).optional(),
+}) satisfies z.ZodType<ReefDiffImpactConventionRisk>;
+
+export interface ReefDiffImpactToolOutput {
+  toolName: "reef_diff_impact";
+  projectId: string;
+  projectRoot: string;
+  changedFiles: ReefDiffImpactChangedFile[];
+  impactedCallers: ReefDiffImpactCaller[];
+  possiblyInvalidatedFindings: ReefDiffImpactInvalidatedFinding[];
+  conventionRisks: ReefDiffImpactConventionRisk[];
+  summary: {
+    changedFileCount: number;
+    impactedCallerCount: number;
+    possiblyInvalidatedFindingCount: number;
+    conventionRiskCount: number;
+    overlayMissingCount: number;
+    truncated: boolean;
+  };
+  reefExecution: ReefToolExecution;
+  filters: {
+    depth: number;
+    maxCallersPerFile: number;
+    maxFindingsPerCaller: number;
+    maxConventions: number;
+    freshnessPolicy: ReefFreshnessPolicy;
+  };
+  warnings: string[];
+}
+
+export const ReefDiffImpactToolOutputSchema = z.object({
+  toolName: z.literal("reef_diff_impact"),
+  projectId: z.string().min(1),
+  projectRoot: z.string().min(1),
+  changedFiles: z.array(ReefDiffImpactChangedFileSchema),
+  impactedCallers: z.array(ReefDiffImpactCallerSchema),
+  possiblyInvalidatedFindings: z.array(ReefDiffImpactInvalidatedFindingSchema),
+  conventionRisks: z.array(ReefDiffImpactConventionRiskSchema),
+  summary: z.object({
+    changedFileCount: z.number().int().nonnegative(),
+    impactedCallerCount: z.number().int().nonnegative(),
+    possiblyInvalidatedFindingCount: z.number().int().nonnegative(),
+    conventionRiskCount: z.number().int().nonnegative(),
+    overlayMissingCount: z.number().int().nonnegative(),
+    truncated: z.boolean(),
+  }),
+  reefExecution: ReefToolExecutionSchema,
+  filters: z.object({
+    depth: z.number().int().min(1),
+    maxCallersPerFile: z.number().int().min(1),
+    maxFindingsPerCaller: z.number().int().min(1),
+    maxConventions: z.number().int().min(1),
+    freshnessPolicy: ReefFreshnessPolicySchema,
+  }),
+  warnings: z.array(z.string().min(1)),
+}) satisfies z.ZodType<ReefDiffImpactToolOutput>;
 
 export interface RuleMemoryEntry {
   ruleId: string;

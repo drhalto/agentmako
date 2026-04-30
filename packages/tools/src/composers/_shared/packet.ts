@@ -23,6 +23,7 @@ import type {
 } from "@mako-ai/contracts";
 import { AnswerPacketSchema, AnswerResultSchema } from "@mako-ai/contracts";
 import { createId } from "@mako-ai/store";
+import { orderByContextLayout } from "../../context-layout.js";
 import { enrichEvidenceFreshness } from "../../index-freshness/index.js";
 import type { ComposerContext } from "./context.js";
 
@@ -132,22 +133,23 @@ export function makePacket(
   if (ctx.freshness.generatedAt == null) stalenessFlags.push("snapshot-absent");
   stalenessFlags.push(...enriched.stalenessFlags);
   const hasStaleIndexEvidence = enriched.summary.state !== "fresh";
+  const evidence = orderByContextLayout(enriched.evidence);
 
   const evidenceStatus = deriveEvidenceStatus(
-    enriched.evidence.length,
+    evidence.length,
     missingInformation.length,
     ctx.freshness.driftDetected || hasStaleIndexEvidence,
   );
 
   const { score, reasons } = assessConfidence(
-    enriched.evidence,
+    evidence,
     ctx.freshness,
     missingInformation,
     hasStaleIndexEvidence,
   );
 
   const supportLevel = resolveSupportLevel(
-    enriched.evidence.length,
+    evidence.length,
     missingInformation.length,
     ctx.freshness.driftDetected || hasStaleIndexEvidence,
   );
@@ -164,7 +166,7 @@ export function makePacket(
     missingInformation,
     stalenessFlags,
     indexFreshness: enriched.summary,
-    evidence: enriched.evidence,
+    evidence,
     generatedAt: new Date().toISOString(),
   };
 

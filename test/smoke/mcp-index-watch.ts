@@ -2,9 +2,16 @@ import assert from "node:assert/strict";
 import { mkdirSync, mkdtempSync, rmSync, unlinkSync, writeFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import type { ProjectFinding } from "../../packages/contracts/src/index.ts";
+import type {
+  ContextPacketToolOutput,
+  FilePreflightToolOutput,
+  ProjectFinding,
+  ProjectOpenLoopsToolOutput,
+  VerificationStateToolOutput,
+} from "../../packages/contracts/src/index.ts";
 import type { IndexRunRecord, ProjectStore } from "../../packages/store/src/index.ts";
 import { createProjectStoreCache } from "../../packages/store/src/index.ts";
+import { invokeTool } from "../../packages/tools/src/registry.ts";
 import {
   createProjectIndexRefreshCoordinator,
   type ProjectIndexRefreshCoordinator,
@@ -167,6 +174,65 @@ async function runBasicWatchCase(
     `working-tree overlay fact update should stay under 500ms on the watch smoke fixture; got ${
       watchState?.lastOverlayFactDurationMs
     }`,
+  );
+  assert.ok(watchState?.lastDiagnosticRefreshFinishedAt);
+  assert.equal(watchState?.lastDiagnosticRefreshFileCount, 1);
+  assert.deepEqual(watchState?.lastDiagnosticRefreshSources, [
+    "lint_files",
+    "programmatic_findings",
+    "typescript_syntax",
+    "typescript",
+  ]);
+  assert.equal(watchState?.lastDiagnosticRefreshError, undefined);
+
+  const verification = await invokeTool("verification_state", {
+    projectId,
+    files: ["src/alpha.ts"],
+    sources: ["lint_files", "typescript_syntax", "typescript"],
+    cacheStalenessMs: 60_000,
+  }) as VerificationStateToolOutput;
+  assert.equal(
+    verification.status,
+    "fresh",
+    "watcher diagnostics should leave the changed file fresh for verification_state",
+  );
+  assert.deepEqual(verification.changedFiles, []);
+  assert.ok(
+    verification.sources.every((source) => source.status === "fresh"),
+    `expected watcher-refreshed diagnostic sources to be fresh, got ${
+      verification.sources.map((source) => `${source.source}:${source.status}`).join(", ")
+    }`,
+  );
+  assert.ok(
+    verification.recentRuns.some((run) =>
+      run.source === "typescript_syntax" &&
+      run.checkedFileCount === 1 &&
+      Array.isArray(run.metadata?.requestedFiles) &&
+      run.metadata.requestedFiles.includes("src/alpha.ts")
+    ),
+    "verification_state should expose the watcher-scoped diagnostic run for the changed file",
+  );
+
+  const preflight = await invokeTool(
+    "file_preflight",
+    {
+      projectId,
+      filePath: "src/alpha.ts",
+      sources: ["lint_files", "typescript_syntax", "typescript"],
+      cacheStalenessMs: 60_000,
+    },
+    { indexRefreshCoordinator: coordinator },
+  ) as FilePreflightToolOutput;
+  assert.equal(preflight.diagnostics.status, "fresh");
+  assert.equal(preflight.diagnostics.changedFile, undefined);
+  assert.equal(preflight.diagnostics.watcher?.lastDiagnosticRefreshFileCount, 1);
+  assert.ok(
+    preflight.diagnostics.recentRuns.some((run) =>
+      run.source === "typescript_syntax" &&
+      Array.isArray(run.metadata?.requestedFiles) &&
+      run.metadata.requestedFiles.includes("src/alpha.ts")
+    ),
+    "file_preflight should expose recent watcher-scoped diagnostic runs for the file",
   );
 
   const deleteSubject = { kind: "file" as const, path: "src/delete-me.ts" };
@@ -353,6 +419,56 @@ async function runWaitForRefreshQueryCase(
   );
 }
 
+async function runContextPacketFreshnessGateCase(
+  store: ProjectStore,
+  coordinator: ProjectIndexRefreshCoordinator,
+  cache: ReturnType<typeof createProjectStoreCache>,
+  projectRoot: string,
+  projectId: string,
+): Promise<void> {
+  await settleCoordinator(coordinator, projectId);
+  const runBefore = store.getLatestIndexRun();
+  writeFileSync(
+    path.join(projectRoot, "src", "alpha.ts"),
+    `export const gate = ${Date.now()};\n`,
+  );
+  await waitFor(
+    () => {
+      const status = coordinator.getWatchState(projectId)?.status;
+      return status === "scheduled" || status === "dirty";
+    },
+    "watcher did not schedule dirty work before context_packet freshness gate query",
+  );
+
+  const packet = await invokeTool(
+    "context_packet",
+    {
+      projectId,
+      request: "where is the alpha gate value?",
+      focusFiles: ["src/alpha.ts"],
+    },
+    {
+      projectStoreCache: cache,
+      indexRefreshCoordinator: coordinator,
+    },
+  ) as ContextPacketToolOutput;
+
+  assert.equal(packet.freshnessGate.status, "fresh");
+  assert.equal(packet.freshnessGate.source, "watcher");
+  assert.equal(packet.freshnessGate.catchUp?.status, "succeeded");
+  assert.equal(packet.freshnessGate.indexFreshness.state, "fresh");
+  assert.notEqual(
+    store.getLatestIndexRun()?.runId,
+    runBefore?.runId,
+    "context_packet freshness gate should materialize watcher work without manual refresh",
+  );
+  assert.equal(
+    coordinator.getWatchState(projectId)?.status,
+    "idle",
+    "context_packet freshness gate should leave the watcher settled",
+  );
+}
+
 async function runGeneratedOutputIgnoredCase(
   store: ProjectStore,
   projectRoot: string,
@@ -525,6 +641,41 @@ async function runProjectSwitchCase(
   assert.equal(switched?.switchFromProjectId, previousProjectId);
 }
 
+async function runToolResolutionWatcherStatusCase(
+  coordinator: ProjectIndexRefreshCoordinator,
+  cache: ReturnType<typeof createProjectStoreCache>,
+  reefService: ReturnType<typeof createInProcessReefService>,
+  projectRoot: string,
+): Promise<void> {
+  const previousReefMode = process.env.MAKO_REEF_MODE;
+  process.env.MAKO_REEF_MODE = "auto";
+  try {
+    const loops = await invokeTool(
+      "project_open_loops",
+      { limit: 1 },
+      {
+        projectStoreCache: cache,
+        indexRefreshCoordinator: coordinator,
+        reefService,
+        requestContext: {
+          getRoots: async () => [projectRoot],
+          onProjectResolved: async (project) => {
+            await coordinator.setActiveProject(project);
+          },
+        },
+      },
+    ) as ProjectOpenLoopsToolOutput;
+
+    assert.equal(
+      loops.reefExecution.watcher?.active,
+      true,
+      "tool project resolution should await watcher activation before building Reef execution metadata",
+    );
+  } finally {
+    restoreEnv("MAKO_REEF_MODE", previousReefMode);
+  }
+}
+
 async function main(): Promise<void> {
   const tmp = mkdtempSync(path.join(os.tmpdir(), "mako-index-watch-"));
   const stateHome = path.join(tmp, "state");
@@ -546,6 +697,15 @@ async function main(): Promise<void> {
   for (const root of [projectRoot, secondRoot]) {
     mkdirSync(path.join(root, "src"), { recursive: true });
     writeFileSync(path.join(root, "package.json"), JSON.stringify({ name: path.basename(root) }));
+    writeFileSync(path.join(root, "tsconfig.json"), JSON.stringify({
+      compilerOptions: {
+        noEmit: true,
+        strict: true,
+        target: "ES2020",
+        module: "commonjs",
+      },
+      include: ["src/**/*.ts"],
+    }));
     writeFileSync(path.join(root, "src", "alpha.ts"), "export const value = 1;\n");
     writeFileSync(path.join(root, "src", "delete-me.ts"), "export const deleted = true;\n");
   }
@@ -561,12 +721,14 @@ async function main(): Promise<void> {
     await reefService.start();
     const indexed = await indexProject(projectRoot, { projectStoreCache: cache });
     await reefService.registerProject({ root: projectRoot });
+    await runToolResolutionWatcherStatusCase(coordinator, cache, reefService, projectRoot);
     const store = cache.borrow({ projectRoot: indexed.project.canonicalPath });
     await coordinator.setActiveProject(indexed.project);
     assert.equal(coordinator.getWatchState(indexed.project.projectId)?.status, "idle");
 
     await runCatchUpCookieCase(store, coordinator, indexed.project.projectId);
     await runWaitForRefreshQueryCase(coordinator, reefService, projectRoot, indexed.project.projectId);
+    await runContextPacketFreshnessGateCase(store, coordinator, cache, projectRoot, indexed.project.projectId);
     await runBasicWatchCase(store, coordinator, projectRoot, indexed.project.projectId);
     await runGeneratedOutputIgnoredCase(store, projectRoot);
     await runMaxDelayCase(store, coordinator, projectRoot, indexed.project.projectId);

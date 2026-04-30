@@ -1,0 +1,20 @@
+{
+  "$schema": "https://static.modelcontextprotocol.io/schemas/2025-12-11/server.schema.json",
+  "name": "io.github.drhalto/agentmako",
+  "description": "Local-first codebase intelligence MCP server for AI coding agents.",
+  "repository": {
+    "url": "https://github.com/drhalto/agentmako",
+    "source": "github"
+  },
+  "version": "0.2.3",
+  "packages": [
+    {
+      "registryType": "npm",
+      "identifier": "agentmako",
+      "version": "0.2.3",
+      "transport": {
+        "type": "stdio"
+      }
+    }
+  ]
+}

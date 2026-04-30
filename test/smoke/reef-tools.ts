@@ -200,6 +200,14 @@ async function main(): Promise<void> {
     assert.equal(projectFindings.reefExecution.fallback?.used, true);
     assert.ok(projectFindings.warnings.some((warning) => warning.includes("Dropped 1 stale finding")));
 
+    const ruleIdFilteredFindings = await toolService.callTool("project_findings", {
+      projectId: seeded.projectId,
+      source: rule.id,
+    }) as ProjectFindingsToolOutput;
+    assert.equal(ruleIdFilteredFindings.totalReturned, 1);
+    assert.equal(ruleIdFilteredFindings.findings[0]?.fingerprint, findingFingerprint);
+    assert.equal(ruleIdFilteredFindings.findings[0]?.ruleId, rule.id);
+
     const staleAllowed = await toolService.callTool("project_findings", {
       projectId: seeded.projectId,
       freshnessPolicy: "allow_stale_labeled",

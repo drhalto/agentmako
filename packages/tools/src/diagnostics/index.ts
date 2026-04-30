@@ -1,3 +1,5 @@
+import { existsSync, readdirSync, statSync } from "node:fs";
+import { join } from "node:path";
 import type { AnswerResult, AnswerSurfaceIssue } from "@mako-ai/contracts";
 import type { ProjectStore } from "@mako-ai/store";
 import { compileRulePacks, discoverRulePacks } from "../rule-packs/loader.js";
@@ -7,19 +9,76 @@ import { dedupeIssuesByMatchBasedId } from "./common.js";
 import { runStructuralAlignmentDiagnostics } from "./structural.js";
 import { runTsAwareAlignmentDiagnostics } from "./ts-aware.js";
 
+interface RulePackCacheEntry {
+  fingerprint: string;
+  rules: CompiledRule[];
+}
+
 /**
- * Process-lifetime cache for compiled YAML rule packs keyed by project root.
- * Walking the filesystem + parsing YAML on every answer would be wasteful,
- * and rule packs don't change within a running session. Users can restart
- * mako after editing a rule pack; we can add mtime invalidation later if
- * needed.
+ * Process cache for compiled YAML rule packs keyed by project root. The entry
+ * is invalidated when YAML files under `.mako/rules` change, so long-running MCP
+ * sessions pick up rule edits without a server restart.
  */
-const rulePackCache = new Map<string, CompiledRule[]>();
+const rulePackCache = new Map<string, RulePackCacheEntry>();
 const appSurfaceCache = new Map<string, boolean>();
 
+const RULE_PACK_EXTENSIONS = new Set([".yaml", ".yml"]);
+
+function walkRulePackFiles(dir: string): string[] {
+  const out: string[] = [];
+  let entries: string[];
+  try {
+    entries = readdirSync(dir);
+  } catch {
+    return out;
+  }
+
+  for (const entry of entries) {
+    const full = join(dir, entry);
+    let stats;
+    try {
+      stats = statSync(full);
+    } catch {
+      continue;
+    }
+
+    if (stats.isDirectory()) {
+      out.push(...walkRulePackFiles(full));
+      continue;
+    }
+
+    if (!stats.isFile()) continue;
+    const dot = entry.lastIndexOf(".");
+    if (dot < 0) continue;
+    if (!RULE_PACK_EXTENSIONS.has(entry.slice(dot).toLowerCase())) continue;
+    out.push(full);
+  }
+
+  return out.sort((left, right) => left.localeCompare(right));
+}
+
+function rulePackFingerprint(projectRoot: string): string {
+  const rulesDir = join(projectRoot, ".mako", "rules");
+  if (!existsSync(rulesDir)) {
+    return "missing";
+  }
+
+  const parts: string[] = [];
+  for (const filePath of walkRulePackFiles(rulesDir)) {
+    try {
+      const stats = statSync(filePath);
+      parts.push(`${filePath}:${stats.size}:${stats.mtimeMs}`);
+    } catch {
+      parts.push(`${filePath}:unreadable`);
+    }
+  }
+  return parts.join("|");
+}
+
 function getCompiledRules(projectStore: ProjectStore): CompiledRule[] {
+  const fingerprint = rulePackFingerprint(projectStore.projectRoot);
   const cached = rulePackCache.get(projectStore.projectRoot);
-  if (cached) return cached;
+  if (cached?.fingerprint === fingerprint) return cached.rules;
   let compiled: CompiledRule[] = [];
   try {
     compiled = compileRulePacks(discoverRulePacks(projectStore.projectRoot));
@@ -29,7 +88,7 @@ function getCompiledRules(projectStore: ProjectStore): CompiledRule[] {
     // directly; production paths degrade to "no custom rules for this run."
     compiled = [];
   }
-  rulePackCache.set(projectStore.projectRoot, compiled);
+  rulePackCache.set(projectStore.projectRoot, { fingerprint, rules: compiled });
   return compiled;
 }
 
@@ -110,12 +169,21 @@ export function collectDiagnosticsForFiles(
 export function collectAnswerDiagnostics(
   input: CollectAnswerDiagnosticsInput,
 ): AnswerSurfaceIssue[] {
+  const primaryFocusFile =
+    input.result.queryKind === "file_health" || input.result.queryKind === "trace_file"
+      ? normalizePrimaryFile(input.result.packet.queryText)
+      : null;
+
   if (
     input.result.packet.evidence.length === 0 ||
     input.result.supportLevel === "best_effort" ||
     input.result.evidenceStatus === "partial"
   ) {
-    return [];
+    // Exact file tools still have a safe diagnostic target even when their
+    // surrounding evidence is partial or stale-labeled.
+    if (!primaryFocusFile) {
+      return [];
+    }
   }
 
   const focusFiles = new Set<string>();
@@ -125,10 +193,6 @@ export function collectAnswerDiagnostics(
     }
   }
 
-  const primaryFocusFile =
-    input.result.queryKind === "file_health" || input.result.queryKind === "trace_file"
-      ? normalizePrimaryFile(input.result.packet.queryText)
-      : null;
   if (primaryFocusFile) {
     focusFiles.add(primaryFocusFile);
   }

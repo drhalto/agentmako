@@ -40,6 +40,7 @@ async function main(): Promise<void> {
     ) as ProjectIndexStatusToolOutput;
     assert.equal(fresh.toolName, "project_index_status");
     assert.equal(fresh.freshness.state, "fresh");
+    assert.equal(fresh.freshness.sample.length, 0, "compact project_index_status should omit freshness samples");
     assert.equal(fresh.unindexedScan.status, "skipped");
     assert.equal(fresh.suggestedAction, "none");
     assert.equal(fresh.reefFacts?.source, "working_tree_overlay");
@@ -104,7 +105,7 @@ async function main(): Promise<void> {
 
     const stale = await invokeTool(
       "project_index_status",
-      { projectId: indexed.project.projectId },
+      { projectId: indexed.project.projectId, verbosity: "full" },
       { projectStoreCache: cache },
     ) as ProjectIndexStatusToolOutput;
     assert.equal(stale.freshness.state, "dirty");

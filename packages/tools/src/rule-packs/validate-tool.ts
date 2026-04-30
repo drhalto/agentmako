@@ -92,6 +92,16 @@ function ruleValidationRecord(args: {
     ...(args.rule.languages ? { languages: args.rule.languages } : {}),
     patternCount: args.rule.patterns.length,
     message: args.rule.message,
+    ...(args.rule.canonicalHelper
+      ? {
+          crossFile: {
+            kind: "canonical_helper",
+            symbol: args.rule.canonicalHelper.symbol,
+            ...(args.rule.canonicalHelper.path ? { path: args.rule.canonicalHelper.path } : {}),
+            mode: args.rule.canonicalHelper.mode ?? "absent_in_consumer",
+          } as const,
+        }
+      : {}),
     ...(args.includeDescriptor ? { descriptor: descriptorForRule(args.rule) } : {}),
   };
 }
@@ -107,10 +117,14 @@ function descriptorForRule(rule: CompiledRule): ReefRuleDescriptor {
     title: rule.id,
     description: rule.message,
     factKinds: ["rule_pack_match"],
-    dependsOnFactKinds: ["file_snapshot"],
+    dependsOnFactKinds: [
+      "file_snapshot",
+      ...(rule.canonicalHelper ? ["symbol_reference"] : []),
+    ],
     tags: [
       rule.category,
       ...(rule.languages ?? []),
+      ...(rule.canonicalHelper ? ["cross_file", "canonical_helper"] : []),
     ],
     enabledByDefault: true,
   };

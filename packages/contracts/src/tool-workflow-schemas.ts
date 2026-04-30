@@ -48,6 +48,7 @@ import {
   AnswerTrustReasonCodeSchema,
   AnswerTrustScopeRelationSchema,
   AnswerTrustStateSchema,
+  ContextLayoutZoneSchema,
   EvidenceStatusSchema,
   JsonObjectSchema,
   QueryKindSchema,
@@ -304,6 +305,7 @@ export const WorkflowPacketSectionSchema = z.object({
   sectionId: z.string().min(1),
   kind: WorkflowPacketSectionKindSchema,
   title: z.string().min(1),
+  layoutZone: ContextLayoutZoneSchema.optional(),
   entries: z.array(WorkflowPacketEntrySchema),
 }) satisfies z.ZodType<WorkflowPacketSection>;
 

@@ -1,0 +1,11 @@
+{
+  "name": "mako-ai",
+  "version": "0.3.0",
+  "description": "Project intelligence skills and MCP wiring for agentmako.",
+  "mcpServers": {
+    "mako-ai": {
+      "command": "npx",
+      "args": ["-y", "agentmako", "mcp"]
+    }
+  }
+}

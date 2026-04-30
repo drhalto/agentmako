@@ -48,6 +48,14 @@ async function main(): Promise<void> {
     path.join(projectRoot, "src", "OtherUser.tsx"),
     "import { OtherCard } from './NameCard';\nexport function OtherUser() { return <OtherCard label=\"not name card\" />; }\n",
   );
+  writeFileSync(
+    path.join(projectRoot, "src", "LooseReference.tsx"),
+    "export const looseReference = NameCard;\n",
+  );
+  writeFileSync(
+    path.join(projectRoot, "src", "AlternatePath.tsx"),
+    "export function AlternatePath() { return <span>alternate</span>; }\n",
+  );
 
   const service = createInProcessReefService();
   try {
@@ -141,6 +149,44 @@ async function main(): Promise<void> {
       /at revision 0/u,
     );
 
+    {
+      const store = openProjectStore({ projectRoot });
+      try {
+        const subject = { kind: "diagnostic" as const, path: "src/AlternatePath.tsx", ruleId: "reuse.helper_bypass" };
+        const subjectFingerprint = store.computeReefSubjectFingerprint(subject);
+        const relatedFinding: ProjectFinding = {
+          projectId: indexed.project.projectId,
+          fingerprint: store.computeReefFindingFingerprint({
+            source: "cross_search",
+            ruleId: "reuse.helper_bypass",
+            subjectFingerprint,
+            message: "AlternatePath duplicates behavior already centralized by NameCard in src/NameCard.tsx.",
+          }),
+          source: "cross_search",
+          subjectFingerprint,
+          overlay: "indexed",
+          severity: "warning",
+          status: "active",
+          filePath: "src/AlternatePath.tsx",
+          line: 1,
+          ruleId: "reuse.helper_bypass",
+          evidenceRefs: ["src/AlternatePath.tsx:1", "src/NameCard.tsx:1"],
+          freshness: { state: "fresh", checkedAt: now(), reason: "fixture" },
+          capturedAt: now(),
+          message: "AlternatePath duplicates behavior already centralized by NameCard in src/NameCard.tsx.",
+          factFingerprints: [],
+        };
+        store.replaceReefFindingsForSource({
+          projectId: indexed.project.projectId,
+          source: "cross_search",
+          overlay: "indexed",
+          findings: [relatedFinding],
+        });
+      } finally {
+        store.close();
+      }
+    }
+
     const whereUsed = await reefWhereUsedTool({
       projectId: indexed.project.projectId,
       query: "NameCard",
@@ -148,9 +194,16 @@ async function main(): Promise<void> {
     }, { reefService: service });
     assert.ok(whereUsed.definitions.some((definition) => definition.filePath === "src/NameCard.tsx"));
     assert.ok(whereUsed.usages.some((usage) => usage.filePath === "src/App.tsx"));
+    assert.ok(whereUsed.usages.some((usage) =>
+      usage.filePath === "src/LooseReference.tsx" &&
+      usage.usageKind === "text_reference"
+    ));
     assert.ok(!whereUsed.usages.some((usage) => usage.filePath === "src/OtherUser.tsx"));
+    assert.ok(whereUsed.relatedFindings.some((finding) => finding.filePath === "src/AlternatePath.tsx"));
+    assert.ok(whereUsed.coverage.directUsageSources.includes("indexed_identifier_text"));
+    assert.ok(whereUsed.coverage.relatedSignalSources.includes("project_findings"));
     assert.ok(whereUsed.usages.every((usage) => usage.provenance.revision !== undefined));
-    assert.ok(whereUsed.warnings.some((warning) => warning.includes("Symbol/component usages are limited")));
+    assert.ok(whereUsed.warnings.some((warning) => warning.includes("indexed identifier text")));
     assert.equal(whereUsed.reefExecution.queryPath, "reef_materialized_view");
 
     const fileWhereUsed = await reefWhereUsedTool({

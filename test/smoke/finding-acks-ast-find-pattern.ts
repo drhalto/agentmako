@@ -155,6 +155,7 @@ async function main(): Promise<void> {
 
   const ackResult = (await invokeTool("finding_ack", {
     projectId,
+    preview: false,
     category: "debug-logs-ok",
     subjectKind: "ast_match",
     filePath: target.filePath,
@@ -163,6 +164,7 @@ async function main(): Promise<void> {
     snippet: target.matchText,
     sourceToolName: "ast_find_pattern",
   })) as FindingAckToolOutput;
+  assert.ok(ackResult.ack);
   assert.equal(ackResult.ack.fingerprint, target.ackableFingerprint);
 
   // --- 3. Re-run with excludeAcknowledgedCategory — acked match is filtered ---

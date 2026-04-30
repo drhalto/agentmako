@@ -1,0 +1,2 @@
+description = "Use Mako project intelligence through the agentmako MCP server."
+prompt = "Use the mako-ai MCP server and Mako skills to gather deterministic project context before answering."

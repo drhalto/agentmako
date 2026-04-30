@@ -183,6 +183,14 @@ const AnswerToolResultBaseSchema = z.object({
   result: AnswerResultSchema,
 });
 
+const CompactVerbositySchema = z.enum(["compact", "full"]);
+
+const ToolFallbackSuggestionSchema = z.object({
+  tool: z.string().min(1),
+  args: JsonObjectSchema,
+  reason: z.string().min(1).optional(),
+});
+
 export const RouteTraceToolOutputSchema = AnswerToolResultBaseSchema.extend({
   toolName: z.literal("route_trace"),
 });
@@ -199,6 +207,10 @@ export const FileHealthToolOutputSchema = AnswerToolResultBaseSchema.extend({
 
 export const AuthPathToolOutputSchema = AnswerToolResultBaseSchema.extend({
   toolName: z.literal("auth_path"),
+  matched: z.boolean().optional(),
+  reason: z.string().min(1).optional(),
+  fallbackReason: z.string().min(1).optional(),
+  suggestedNext: ToolFallbackSuggestionSchema.optional(),
 });
 
 export interface TraceFileToolInput extends ProjectLocatorInput {
@@ -230,11 +242,13 @@ export const PreflightTableToolOutputSchema = AnswerToolResultBaseSchema.extend(
 export interface CrossSearchToolInput extends ProjectLocatorInput {
   term: string;
   limit?: number;
+  verbosity?: "compact" | "full";
 }
 
 export const CrossSearchToolInputSchema = ProjectLocatorInputObjectSchema.extend({
   term: z.string().trim().min(1),
   limit: z.number().int().min(1).max(50).optional(),
+  verbosity: CompactVerbositySchema.optional(),
 }) satisfies z.ZodType<CrossSearchToolInput>;
 
 export const CrossSearchToolOutputSchema = AnswerToolResultBaseSchema.extend({

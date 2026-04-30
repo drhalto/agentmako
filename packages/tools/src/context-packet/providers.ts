@@ -7,20 +7,23 @@ import type {
 import type { ProjectStore } from "@mako-ai/store";
 import type { HotIndex } from "../hot-index/index.js";
 import { searchHotIndex } from "../hot-index/index.js";
+import type { ContextPacketProviderName } from "./modes.js";
 import type { ContextPacketCandidateSeed } from "./types.js";
 
 export interface ContextPacketProviderCollection {
   candidates: ContextPacketCandidateSeed[];
   providersRun: string[];
+  providersSkipped: string[];
   providersFailed: string[];
   warnings: string[];
 }
 
-interface ProviderContext {
+export interface ProviderContext {
   input: ContextPacketToolInput;
   intent: ContextPacketIntent;
   projectStore: ProjectStore;
   hotIndex?: HotIndex;
+  enabledProviders?: ReadonlySet<ContextPacketProviderName>;
 }
 
 type ProviderFn = (ctx: ProviderContext) => ContextPacketCandidateSeed[];
@@ -350,7 +353,7 @@ function hotHintProvider(ctx: ProviderContext): ContextPacketCandidateSeed[] {
   });
 }
 
-const PROVIDERS: Array<{ name: string; run: ProviderFn }> = [
+const PROVIDERS: Array<{ name: ContextPacketProviderName; run: ProviderFn }> = [
   { name: "file_provider", run: fileProvider },
   { name: "route_provider", run: routeProvider },
   { name: "schema_provider", run: schemaProvider },
@@ -367,10 +370,15 @@ const PROVIDERS: Array<{ name: string; run: ProviderFn }> = [
 export function collectContextPacketProviders(ctx: ProviderContext): ContextPacketProviderCollection {
   const candidates: ContextPacketCandidateSeed[] = [];
   const providersRun: string[] = [];
+  const providersSkipped: string[] = [];
   const providersFailed: string[] = [];
   const warnings: string[] = [];
 
   for (const provider of PROVIDERS) {
+    if (ctx.enabledProviders && !ctx.enabledProviders.has(provider.name)) {
+      providersSkipped.push(provider.name);
+      continue;
+    }
     providersRun.push(provider.name);
     try {
       candidates.push(...provider.run(ctx));
@@ -380,5 +388,5 @@ export function collectContextPacketProviders(ctx: ProviderContext): ContextPack
     }
   }
 
-  return { candidates, providersRun, providersFailed, warnings };
+  return { candidates, providersRun, providersSkipped, providersFailed, warnings };
 }

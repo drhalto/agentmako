@@ -7,6 +7,7 @@ import {
   registerToolDefinition,
   TOOL_DEFINITIONS,
   unregisterToolDefinition,
+  withToolHintsSchema,
   type MakoToolDefinition,
 } from "./tool-definitions.js";
 import {
@@ -17,6 +18,7 @@ import {
 import { captureRuntimeUsefulnessForToolInvocation } from "./runtime-telemetry/capture.js";
 import type { ToolServiceOptions } from "./runtime.js";
 import { runAnswerPacket } from "./answers/index.js";
+import { attachToolHints } from "./hints/index.js";
 
 export {
   getToolDefinition,
@@ -24,6 +26,7 @@ export {
   registerToolDefinition,
   TOOL_DEFINITIONS,
   unregisterToolDefinition,
+  withToolHintsSchema,
   type MakoToolDefinition,
 };
 
@@ -53,7 +56,13 @@ export async function invokeTool(name: string, input: unknown, options: ToolServ
 
   try {
     const parsed = parseToolInput(definition, input);
-    output = await definition.execute(parsed, options);
+    const rawOutput = await definition.execute(parsed, options);
+    output = attachToolHints({
+      toolName: definition.name,
+      input: parsed,
+      output: rawOutput,
+      annotations: definition.annotations,
+    });
     return output as ToolOutput;
   } catch (error) {
     if (error instanceof ZodError) {

@@ -1,4 +1,5 @@
 import type {
+  DbReviewCommentPreview,
   DbReviewCommentToolInput,
   DbReviewCommentToolOutput,
   DbReviewCommentsToolInput,
@@ -30,22 +31,40 @@ export async function dbReviewCommentTool(
 ): Promise<DbReviewCommentToolOutput> {
   return await withProjectContext(input, options, ({ project, projectStore }) => {
     const target = normalizeDbReviewTarget(input);
+    const preview = buildDbReviewCommentPreview({
+      input,
+      target,
+      targetFingerprint: projectStore.computeDbReviewTargetFingerprint(target),
+    });
+
+    if (input.preview ?? true) {
+      return {
+        toolName: "db_review_comment",
+        projectId: project.projectId,
+        projectRoot: project.canonicalPath,
+        preview: true,
+        wouldApply: preview,
+        warnings: [],
+      };
+    }
+
     const comment = projectStore.insertDbReviewComment({
       projectId: project.projectId,
       target,
-      category: input.category ?? "review",
-      ...(input.severity ? { severity: input.severity } : {}),
-      comment: input.comment,
-      tags: normalizeTags(input.tags),
-      createdBy: input.createdBy ?? "ai",
-      sourceToolName: "db_review_comment",
-      ...(input.metadata ? { metadata: input.metadata } : {}),
+      category: preview.category,
+      ...(preview.severity ? { severity: preview.severity } : {}),
+      comment: preview.comment,
+      tags: preview.tags,
+      createdBy: preview.createdBy,
+      sourceToolName: preview.sourceToolName,
+      ...(preview.metadata ? { metadata: preview.metadata } : {}),
     });
 
     return {
       toolName: "db_review_comment",
       projectId: project.projectId,
       projectRoot: project.canonicalPath,
+      preview: false,
       comment,
       warnings: [],
     };
@@ -110,6 +129,24 @@ function normalizeDbReviewTarget(input: {
     objectName: input.objectName.trim(),
     ...(schemaName ? { schemaName } : {}),
     ...(input.parentObjectName?.trim() ? { parentObjectName: input.parentObjectName.trim() } : {}),
+  };
+}
+
+function buildDbReviewCommentPreview(args: {
+  input: DbReviewCommentToolInput;
+  target: DbReviewTarget;
+  targetFingerprint: string;
+}): DbReviewCommentPreview {
+  return {
+    target: args.target,
+    targetFingerprint: args.targetFingerprint,
+    category: args.input.category ?? "review",
+    ...(args.input.severity ? { severity: args.input.severity } : {}),
+    comment: args.input.comment,
+    tags: normalizeTags(args.input.tags),
+    createdBy: args.input.createdBy ?? "ai",
+    sourceToolName: "db_review_comment",
+    ...(args.input.metadata ? { metadata: args.input.metadata } : {}),
   };
 }
 

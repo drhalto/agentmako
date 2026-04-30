@@ -150,20 +150,22 @@ export async function projectIndexStatusTool(
 ): Promise<ProjectIndexStatusToolOutput> {
   return await withProjectContext(input, options, async ({ project, projectStore }) => {
     const includeUnindexed = input.includeUnindexed ?? false;
-    const freshness = summarizeProjectIndexFreshness({
+    const verbosity = input.verbosity ?? "compact";
+    const rawFreshness = summarizeProjectIndexFreshness({
       projectRoot: project.canonicalPath,
       store: projectStore,
       includeUnindexed,
     });
+    const freshness = verbosity === "full" ? rawFreshness : { ...rawFreshness, sample: [] };
     const watch = options.indexRefreshCoordinator?.getWatchState(project.projectId);
     const indexedPaths = new Set(projectStore.listFiles().map((file) => file.path));
     const unindexedScan = buildUnindexedScan({
       includeUnindexed,
-      freshness,
+      freshness: rawFreshness,
       indexedPaths,
       watchDirtyPaths: watch?.dirtyPaths ?? [],
     });
-    const suggested = suggestAction(freshness.state, unindexedScan);
+    const suggested = suggestAction(rawFreshness.state, unindexedScan);
     const latestRun = toIndexRunSurface(projectStore.getLatestIndexRun());
     const reefFacts = isReefBackedToolViewEnabled("project_index_status")
       ? buildReefFactsSummary(projectStore, project.projectId)

@@ -4,6 +4,7 @@ import type {
   ContextPacketReadableCandidate,
   ContextPacketRisk,
   IndexFreshnessSummary,
+  ProjectFinding,
 } from "@mako-ai/contracts";
 import { matchesPathGlob } from "../code-intel/path-globs.js";
 
@@ -152,6 +153,7 @@ export function detectContextPacketRisks(args: {
   intent: ContextPacketIntent;
   candidates: readonly ContextPacketReadableCandidate[];
   indexFreshness?: IndexFreshnessSummary;
+  activeFindings?: readonly ProjectFinding[];
 }): ContextPacketRisk[] {
   const haystack = lower([
     args.request,
@@ -180,6 +182,19 @@ export function detectContextPacketRisks(args: {
       severity: args.indexFreshness.state === "unknown" ? "medium" : "low",
       recommendedHarnessStep: "Use live_text_search for exact line checks or project_index_refresh before relying on indexed AST evidence.",
       confidence: 0.9,
+    });
+  }
+
+  for (const finding of args.activeFindings ?? []) {
+    risks.push({
+      code: finding.ruleId ?? finding.source,
+      reason: `${finding.message}${finding.filePath ? ` (${finding.filePath})` : ""}`,
+      source: "open_loop",
+      severity: finding.severity === "error" ? "high" : finding.severity === "warning" ? "medium" : "low",
+      recommendedHarnessStep: finding.filePath
+        ? `Inspect ${finding.filePath} before editing; this active Reef finding is already open.`
+        : "Inspect the active Reef finding before editing this surface.",
+      confidence: 0.94,
     });
   }
 

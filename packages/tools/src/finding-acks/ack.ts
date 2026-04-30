@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import type {
   FindingAck,
+  FindingAckPreview,
   FindingAckToolInput,
   FindingAckToolOutput,
   RuntimeUsefulnessEvent,
@@ -34,9 +35,29 @@ const ackLogger = createLogger("mako-tools", { component: "finding_ack" });
 export interface InsertFindingAckWithTelemetryInput {
   projectId: string;
   projectStore: ProjectStore;
-  input: Omit<FindingAckToolInput, "projectId" | "projectRef">;
+  input: AckInsertInput;
   requestId?: string;
   telemetryToolName?: "finding_ack" | "finding_ack_batch";
+}
+
+export type AckInsertInput = Omit<FindingAckToolInput, "projectId" | "projectRef" | "preview">;
+
+export function buildFindingAckPreview(input: AckInsertInput): FindingAckPreview {
+  return {
+    category: input.category,
+    subjectKind: input.subjectKind,
+    ...(input.filePath ? { filePath: input.filePath } : {}),
+    fingerprint: input.fingerprint,
+    ...(input.snippet ? { snippet: input.snippet } : {}),
+    status: input.status ?? "ignored",
+    reason: input.reason,
+    ...(input.acknowledgedBy ? { acknowledgedBy: input.acknowledgedBy } : {}),
+    ...(input.sourceToolName ? { sourceToolName: input.sourceToolName } : {}),
+    ...(input.sourceRuleId ? { sourceRuleId: input.sourceRuleId } : {}),
+    ...(input.sourceIdentityMatchBasedId
+      ? { sourceIdentityMatchBasedId: input.sourceIdentityMatchBasedId }
+      : {}),
+  };
 }
 
 export function insertFindingAckWithTelemetry(
@@ -103,30 +124,42 @@ export async function findingAckTool(
   options: ToolServiceOptions = {},
 ): Promise<FindingAckToolOutput> {
   return withProjectContext(input, options, ({ project, projectStore }) => {
+    const ackInput: AckInsertInput = {
+      category: input.category,
+      subjectKind: input.subjectKind,
+      ...(input.filePath ? { filePath: input.filePath } : {}),
+      fingerprint: input.fingerprint,
+      ...(input.status ? { status: input.status } : {}),
+      reason: input.reason,
+      ...(input.acknowledgedBy ? { acknowledgedBy: input.acknowledgedBy } : {}),
+      ...(input.snippet ? { snippet: input.snippet } : {}),
+      ...(input.sourceToolName ? { sourceToolName: input.sourceToolName } : {}),
+      ...(input.sourceRuleId ? { sourceRuleId: input.sourceRuleId } : {}),
+      ...(input.sourceIdentityMatchBasedId
+        ? { sourceIdentityMatchBasedId: input.sourceIdentityMatchBasedId }
+        : {}),
+    };
+
+    if (input.preview ?? true) {
+      return {
+        toolName: "finding_ack",
+        projectId: project.projectId,
+        preview: true,
+        wouldApply: buildFindingAckPreview(ackInput),
+      };
+    }
+
     const ack = insertFindingAckWithTelemetry({
       projectId: project.projectId,
       requestId: options.requestContext?.requestId ?? `req_${randomUUID()}`,
       projectStore,
-      input: {
-        category: input.category,
-        subjectKind: input.subjectKind,
-        ...(input.filePath ? { filePath: input.filePath } : {}),
-        fingerprint: input.fingerprint,
-        ...(input.status ? { status: input.status } : {}),
-        reason: input.reason,
-        ...(input.acknowledgedBy ? { acknowledgedBy: input.acknowledgedBy } : {}),
-        ...(input.snippet ? { snippet: input.snippet } : {}),
-        ...(input.sourceToolName ? { sourceToolName: input.sourceToolName } : {}),
-        ...(input.sourceRuleId ? { sourceRuleId: input.sourceRuleId } : {}),
-        ...(input.sourceIdentityMatchBasedId
-          ? { sourceIdentityMatchBasedId: input.sourceIdentityMatchBasedId }
-          : {}),
-      },
+      input: ackInput,
     });
 
     return {
       toolName: "finding_ack",
       projectId: project.projectId,
+      preview: false,
       ack,
     };
   });
