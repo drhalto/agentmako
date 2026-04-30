@@ -503,19 +503,29 @@ async function runMaxDelayCase(
 
   const baseline = store.getLatestIndexRun();
   const collector = collectWatchRunsFrom(store, baseline?.runId, 5);
-  const editInterval = setInterval(() => {
-    writeFileSync(
-      path.join(projectRoot, "src", "alpha.ts"),
-      `export const value = ${Date.now()};\n`,
-    );
-  }, 25);
+  // Use a self-rescheduling loop instead of setInterval so each write fires
+  // ~5ms after the previous one completes. setInterval can drift on a busy
+  // CI runner (we observed >100ms gaps that let the 100ms debounce win
+  // before the 1000ms max-delay), and any single gap >= debounceMs causes
+  // the assertion below to fail.
+  let stopWriting = false;
+  const writeLoop = (async () => {
+    while (!stopWriting) {
+      writeFileSync(
+        path.join(projectRoot, "src", "alpha.ts"),
+        `export const value = ${Date.now()};\n`,
+      );
+      await sleep(5);
+    }
+  })();
 
   try {
     // Run edits past the 1000ms max-delay so max-delay wins while
     // debounce keeps getting reset by the rapid edit cadence.
     await sleep(WATCH_MAX_DELAY_MS + 400);
   } finally {
-    clearInterval(editInterval);
+    stopWriting = true;
+    await writeLoop;
   }
 
   await settleCoordinator(coordinator, projectId);
