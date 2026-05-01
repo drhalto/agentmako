@@ -81,6 +81,8 @@ export const COLORS = {
   gray: "\x1b[90m",
 } as const;
 
+export const SECRET_INPUT_MASK = "*";
+
 export function color(text: string, colorCode: string): string {
   if (process.stdout.isTTY) {
     return `${colorCode}${text}${COLORS.reset}`;
@@ -469,10 +471,11 @@ export async function promptSecret(question: string): Promise<string> {
 
   // `@inquirer/password` handles raw-mode I/O, paste (including bracketed
   // paste on Windows terminals), backspace, Ctrl+C, and mask display across
-  // every Node terminal the library supports. We own none of that logic.
+  // every Node terminal the library supports. The mask gives paste feedback
+  // without echoing the secret URL.
   const answer = await password({
     message: question.replace(/:\s*$/u, ""),
-    mask: false,
+    mask: SECRET_INPUT_MASK,
   });
   return answer.trim();
 }
@@ -602,7 +605,11 @@ export function printDbConnectionGuide(orm: string): void {
       break;
   }
 
-  console.log(gray("Input is hidden; the URL is stored in your OS keychain, not in the repo."));
+  console.log(
+    gray(
+      "Input is masked with * characters so paste feedback is visible; use your terminal paste shortcut, often Ctrl+Shift+V. The URL is stored in your OS keychain, not in the repo.",
+    ),
+  );
   console.log();
 }
 

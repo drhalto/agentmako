@@ -7,6 +7,17 @@ it reaches 1.0.
 
 ## [Unreleased]
 
+## [0.3.2] - 2026-04-30
+
+### Fixed
+
+- `agentmako connect` now masks interactive database URL entry with visible
+  `*` feedback so pasted connection strings are clearly captured without
+  echoing the secret.
+- The live database connection guide now calls out terminal paste shortcuts,
+  including `Ctrl+Shift+V`, for terminals that reserve `Ctrl+V` for control
+  input.
+
 ## [0.3.1] - 2026-04-30
 
 ### Fixed
@@ -176,7 +187,8 @@ Initial public release of `agentmako` under Apache-2.0.
 - `mako-ai-claude-plugin` with Mako-specific Claude Code skills and
   bundled MCP wiring.
 
-[Unreleased]: https://github.com/drhalto/agentmako/compare/v0.3.1...HEAD
+[Unreleased]: https://github.com/drhalto/agentmako/compare/v0.3.2...HEAD
+[0.3.2]: https://github.com/drhalto/agentmako/compare/v0.3.1...v0.3.2
 [0.3.1]: https://github.com/drhalto/agentmako/compare/v0.3.0...v0.3.1
 [0.3.0]: https://github.com/drhalto/agentmako/compare/v0.2.3...v0.3.0
 [0.2.2]: https://github.com/drhalto/agentmako/compare/v0.2.1...v0.2.2

@@ -1,7 +1,7 @@
 {
   "name": "agentmako",
   "mcpName": "io.github.drhalto/agentmako",
-  "version": "0.3.1",
+  "version": "0.3.2",
   "description": "Agentmako is a local project intelligence CLI and MCP server for codebases and databases, with repo-aware indexing, schema snapshots, and secure live database connectivity.",
   "license": "Apache-2.0",
   "repository": {
