@@ -11,6 +11,7 @@ export type ToolExposureSurface = "harness" | "api" | "mcp";
 export type ToolExposure = "immediate" | "deferred" | "blocked";
 export type ToolExposureReason =
   | "router_tool_hidden_from_model_surface"
+  | "specialist_tool_deferred_from_compact_surface"
   | "requires_project_db_binding";
 export type ToolSearchFamily =
   | "registry"
@@ -59,6 +60,21 @@ export interface ToolSearchCatalogEntry extends RankedToolCatalogEntry {
   reason: string | null;
 }
 
+export const COMPACT_MODEL_FACING_REGISTRY_TOOLS = [
+  "reef_ask",
+  "reef_status",
+  "reef_verify",
+  "reef_impact",
+  "mako_help",
+  "live_text_search",
+  "lint_files",
+  "tool_batch",
+] as const satisfies readonly ToolName[];
+
+const COMPACT_MODEL_FACING_REGISTRY_TOOL_SET = new Set<ToolName>(
+  COMPACT_MODEL_FACING_REGISTRY_TOOLS,
+);
+
 function inferRegistryToolCapabilities(
   definition: MakoToolDefinition<ToolName>,
 ): RegistryToolCapabilities {
@@ -68,7 +84,7 @@ function inferRegistryToolCapabilities(
     requiresSession: false,
     requiresDbBinding: definition.category === "db",
     parallelSafe: !("mutation" in definition.annotations),
-    deferEligible: definition.name === "ask",
+    deferEligible: true,
   };
 }
 
@@ -164,12 +180,18 @@ export function buildRegistryToolExposurePlan(
     let exposure: ToolExposure = "immediate";
     let reason: ToolExposureReason | undefined;
 
-    if (capabilities.deferEligible && options.surface === "harness") {
-      exposure = "deferred";
-      reason = "router_tool_hidden_from_model_surface";
-    } else if (capabilities.requiresDbBinding && !hasDbBinding) {
+    if (capabilities.requiresDbBinding && !hasDbBinding) {
       exposure = "blocked";
       reason = "requires_project_db_binding";
+    } else if (
+      options.surface === "harness"
+      && capabilities.deferEligible
+      && !COMPACT_MODEL_FACING_REGISTRY_TOOL_SET.has(definition.name)
+    ) {
+      exposure = "deferred";
+      reason = definition.name === "ask"
+        ? "router_tool_hidden_from_model_surface"
+        : "specialist_tool_deferred_from_compact_surface";
     }
 
     const item: RegistryToolExposureItem = {

@@ -14,10 +14,11 @@ agentmako is a local-first codebase intelligence engine for AI coding
 tools.
 
 It gives agents like Codex, Claude Code, Cursor, and local harnesses a
-typed MCP toolset for understanding a project before they edit it. Mako
-indexes your repo, builds local SQLite-backed facts, tracks diagnostics
-and review notes, and returns structured context packets instead of
-making the agent rediscover everything with raw grep.
+compact Reef-first tool surface for understanding a project before they edit
+it. Mako indexes your repo, builds local SQLite-backed facts, tracks
+diagnostics and review notes, and answers evidence-backed questions instead of
+making the agent orchestrate broad tool chains or rediscover everything with
+raw grep.
 
 Mako is built for the first mile of coding-agent work:
 
@@ -28,13 +29,15 @@ Mako is built for the first mile of coding-agent work:
 
 - MCP server for coding agents: `agentmako mcp`
 - Local dashboard: `agentmako dashboard`
+- Primary project query: `reef_ask` across code, database, findings,
+  diagnostics, instructions, freshness, and literal checks
 - Queryable workflow orientation: `mako_help`
-- Deterministic context packets: `context_packet`, `reef_scout`
+- Deterministic context expansion: `context_packet`
 - `_hints` on tool results so agents get result-specific next steps
 - Central MCP annotations so clients can distinguish safe reads, live reads,
   and local-state mutations
-- Code search and structure tools: `cross_search`, `live_text_search`,
-  `ast_find_pattern`, `repo_map`
+- Compact loop/fallback tools: `reef_status`, `reef_verify`, `reef_impact`,
+  `live_text_search`, `lint_files`, and `tool_batch`
 - [Reef Engine](./docs/reef-engine.md) facts and findings across indexed,
   working-tree, and staged state
 - Reef convention extraction for auth guards, runtime boundaries, generated
@@ -96,18 +99,19 @@ agentmako status .
 agentmako tool list
 ```
 
-Run a real scout query:
+Run a real Reef query:
 
 ```bash
-agentmako --json tool call . reef_scout "{\"query\":\"where should I inspect auth route state?\"}"
+agentmako --json tool call . reef_ask "{\"question\":\"where should I inspect auth route state?\"}"
 ```
 
-If that returns ranked candidates, facts, or findings, the core setup is
-working.
+If that returns an evidence-backed answer, facts, findings, or next queries,
+the core setup is working.
 
-`reef_scout` classifies broad requests before ranking. App-flow questions favor
-file, route, and finding evidence; RLS/schema questions favor database facts
-and review comments. To inspect project rules of thumb directly:
+`reef_ask` plans over code, database, durable findings, diagnostics, and exact
+literal evidence. App-flow questions favor file, route, and finding evidence;
+RLS/schema questions favor database facts and review comments. To inspect
+project rules of thumb directly:
 
 ```bash
 agentmako --json tool call . project_conventions "{}"
@@ -130,20 +134,21 @@ Add this to your MCP client config:
 
 Restart the MCP client and confirm the `mako-ai` server starts.
 
-In the agent, start with one of these tools:
+In the agent, default to `reef_ask`. The compact starting surface is:
 
-- `tool_search` when you need to find the right Mako tool
-- `context_packet` when you have a coding task and want starting context
-- `reef_scout` when you want intent-ranked project facts/findings/history
-- `file_preflight` before editing one risky file and you need findings,
-  diagnostic freshness, conventions, recent runs, and ack history together
-- `reef_diff_impact` mid-edit or before review when you need changed-file
-  callers, caller findings, and convention risks in one packet
-- `extract_rule_template` after a fix lands and you want a reviewable
-  `.mako/rules` YAML draft for the same bug shape next time
-- `project_conventions` when you need discovered auth, runtime, route,
-  generated-file, or schema-usage conventions
-- `ask` when you have a natural-language repo question
+- `reef_ask` for project questions across code, database, findings,
+  diagnostics, freshness, and quoted literal checks
+- `reef_status` for maintained issues, changed files, stale diagnostics, and
+  watcher/schema health
+- `reef_verify` for the completion gate over diagnostic freshness and open loops
+- `reef_impact` for changed-file blast radius and convention risks
+- `mako_help` for an ordered workflow recipe with prefilled arguments
+- `live_text_search` for exact current-disk regex/glob inventories
+- `lint_files` for bounded diagnostics and `.mako/rules` findings
+- `tool_batch` for independent read-only follow-ups
+- `tool_search` to discover specialized route, graph, DB, finding, refresh, or
+  context-expansion tools only when the compact surface points at a concrete
+  need
 
 ### 4. Optional: use an agent plugin
 

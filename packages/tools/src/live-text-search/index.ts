@@ -140,7 +140,7 @@ function resolveRipgrepExecutable(warnings: string[]): string {
   return "rg";
 }
 
-function runRipgrepSearch(
+export function runRipgrepSearch(
   projectRoot: string,
   input: LiveTextSearchToolInput,
 ): Promise<Pick<LiveTextSearchToolOutput, "matches" | "filesMatched" | "truncated" | "warnings">> {

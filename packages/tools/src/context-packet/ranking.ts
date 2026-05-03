@@ -1,4 +1,5 @@
 import type {
+  ContextPacketIntent,
   ContextPacketReadableCandidate,
   ContextPacketSource,
   ContextPacketStrategy,
@@ -31,6 +32,40 @@ const STRATEGY_WEIGHT: Record<ContextPacketStrategy, number> = {
   convention_memory: 16,
 };
 
+type RankingProfile = "default" | "anomaly_discovery";
+
+const ANOMALY_DISCOVERY_TERMS = new Set([
+  "dead",
+  "diverge",
+  "diverged",
+  "divergence",
+  "drift",
+  "drifted",
+  "duplicate",
+  "duplicated",
+  "duplicates",
+  "duplication",
+  "clone",
+  "cloned",
+  "clones",
+  "orphan",
+  "orphaned",
+  "twin",
+  "twins",
+  "unreferenced",
+  "unused",
+]);
+
+const ANOMALY_DISCOVERY_PHRASES = [
+  "copy paste",
+  "copy-paste",
+  "copy/paste",
+  "dead code",
+  "near twin",
+  "near-twin",
+  "pattern drift",
+];
+
 interface RankOptions {
   maxPrimaryContext: number;
   maxRelatedContext: number;
@@ -39,6 +74,8 @@ interface RankOptions {
   freshnessByPath: Map<string, IndexFreshnessDetail>;
   focusFiles: Set<string>;
   changedFiles: Set<string>;
+  request?: string;
+  intent?: ContextPacketIntent;
 }
 
 export interface RankedContextCandidates {
@@ -95,10 +132,50 @@ function freshnessPenalty(
   }
 }
 
+function detectRankingProfile(options: RankOptions): RankingProfile {
+  const requestLower = options.request?.toLowerCase() ?? "";
+  if (ANOMALY_DISCOVERY_PHRASES.some((phrase) => requestLower.includes(phrase))) {
+    return "anomaly_discovery";
+  }
+
+  const terms = new Set<string>();
+  for (const keyword of options.intent?.entities.keywords ?? []) {
+    terms.add(keyword.toLowerCase());
+  }
+  for (const signal of options.intent?.families.flatMap((family) => family.signals) ?? []) {
+    terms.add(signal.toLowerCase());
+  }
+  for (const word of requestLower.match(/\b[a-z][a-z0-9_-]{2,}\b/g) ?? []) {
+    terms.add(word.replace(/^-+|-+$/g, ""));
+  }
+
+  return [...terms].some((term) => ANOMALY_DISCOVERY_TERMS.has(term))
+    ? "anomaly_discovery"
+    : "default";
+}
+
+function centralityProfileAdjustment(
+  candidate: ContextPacketCandidateSeed,
+  options: RankOptions,
+  profile: RankingProfile,
+): number {
+  if (profile !== "anomaly_discovery" || candidate.strategy !== "centrality_rank") {
+    return 0;
+  }
+  if (candidate.path && (options.focusFiles.has(candidate.path) || options.changedFiles.has(candidate.path))) {
+    return 0;
+  }
+
+  // For duplicate/drift/dead-code discovery, centrality is supporting context:
+  // useful if nothing else matches, but a poor primary ranking signal.
+  return -85 - Math.max(0, candidate.baseScore ?? 0);
+}
+
 function scoreCandidate(
   candidate: ContextPacketCandidateSeed,
   options: RankOptions,
 ): number {
+  const rankingProfile = detectRankingProfile(options);
   let score = candidate.confidence * 100;
   score += SOURCE_WEIGHT[candidate.source] ?? 0;
   score += STRATEGY_WEIGHT[candidate.strategy] ?? 0;
@@ -112,6 +189,7 @@ function scoreCandidate(
   if (candidate.path && options.changedFiles.has(candidate.path)) score += 55;
   if (candidate.lineStart != null) score += 4;
   score += freshnessPenalty(candidate, options);
+  score += centralityProfileAdjustment(candidate, options, rankingProfile);
   return Number(score.toFixed(4));
 }
 

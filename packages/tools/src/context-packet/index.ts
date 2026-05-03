@@ -533,6 +533,8 @@ export async function contextPacketTool(
       freshnessByPath,
       focusFiles: new Set((input.focusFiles ?? []).map(normalizePath)),
       changedFiles: new Set((input.changedFiles ?? []).map(normalizePath)),
+      request: input.request,
+      intent,
     });
     const primaryContext = annotateContextOverlay(ranked.primaryContext, workingTreeOverlayFacts);
     const relatedContext = annotateContextOverlay(ranked.relatedContext, workingTreeOverlayFacts);

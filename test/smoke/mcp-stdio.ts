@@ -375,13 +375,27 @@ async function main(): Promise<void> {
     assert.equal(batch.toolName, "tool_batch");
     assert.equal(batch.summary.requestedOps, 1);
 
+    const invalidFileFacts = await client.request<ToolCallResult>(7, "tools/call", {
+      name: "file_facts",
+      arguments: {
+        projectId,
+        path: "live-search-target.txt",
+      },
+    });
+    assert.equal(invalidFileFacts.isError, true, "invalid file_facts args should return an MCP tool error");
+    const invalidFileFactsText = invalidFileFacts.content?.map((entry) => entry.text).join("\n") ?? "";
+    assert.match(invalidFileFactsText, /file_facts/);
+    assert.match(invalidFileFactsText, /path/);
+    assert.match(invalidFileFactsText, /filePath/);
+    assert.match(invalidFileFactsText, /Expected top-level fields/);
+
     // --- tools/call requestId logging ---
     //
     // Regression guard for live-session UX:
     // stdio MCP calls must pass a requestId through ToolServiceOptions
     // so `recall_tool_runs` exposes the id needed by
     // `agent_feedback.referencedRequestId`.
-    const firstRecall = await client.request<ToolCallResult>(7, "tools/call", {
+    const firstRecall = await client.request<ToolCallResult>(8, "tools/call", {
       name: "recall_tool_runs",
       arguments: {
         projectId,
@@ -391,7 +405,7 @@ async function main(): Promise<void> {
     });
     assertToolCallSucceeded(firstRecall);
 
-    const secondRecall = await client.request<ToolCallResult>(8, "tools/call", {
+    const secondRecall = await client.request<ToolCallResult>(9, "tools/call", {
       name: "recall_tool_runs",
       arguments: {
         projectId,

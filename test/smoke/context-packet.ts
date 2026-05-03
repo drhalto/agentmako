@@ -93,12 +93,45 @@ function seedProject(projectRoot: string, projectId: string): void {
     "  return children;",
     "}",
   ].join("\n");
+  const adminEndorsementCreateContent = [
+    "export function AdminEndorsementCreatePage() {",
+    "  const roleCheck = 'admin endorsement create duplicate role check';",
+    "  return <section>{roleCheck}</section>;",
+    "}",
+  ].join("\n");
+  const instructorEndorsementCreateContent = [
+    "export function InstructorEndorsementCreatePage() {",
+    "  const roleCheck = 'instructor endorsement create duplicate role check';",
+    "  return <section>{roleCheck}</section>;",
+    "}",
+  ].join("\n");
+  const centralButtonContent = [
+    "export function Button({ children }: { children: unknown }) {",
+    "  return <button>{children}</button>;",
+    "}",
+  ].join("\n");
+  const generatedButtonConsumers = Array.from({ length: 40 }, (_, index) => ({
+    relPath: `app/generated/page-${index}.tsx`,
+    symbolName: `GeneratedPage${index}`,
+    content: [
+      "import { Button } from '../../components/ui/button';",
+      `export function GeneratedPage${index}() {`,
+      `  return <Button>Generated ${index}</Button>;`,
+      "}",
+    ].join("\n"),
+  }));
 
   writeFixtureFile(projectRoot, "app/api/auth/callback/route.ts", routeContent);
   writeFixtureFile(projectRoot, "app/dashboard/layout.tsx", dashboardLayoutContent);
+  writeFixtureFile(projectRoot, "app/dashboard/admin/endorsements/create/client-page.tsx", adminEndorsementCreateContent);
+  writeFixtureFile(projectRoot, "app/dashboard/instructor/endorsements/create/client-page.tsx", instructorEndorsementCreateContent);
   writeFixtureFile(projectRoot, "lib/auth/session.ts", sessionContent);
   writeFixtureFile(projectRoot, "types/auth.ts", typeContent);
   writeFixtureFile(projectRoot, "components/LoginButton.tsx", loginContent);
+  writeFixtureFile(projectRoot, "components/ui/button.tsx", centralButtonContent);
+  for (const consumer of generatedButtonConsumers) {
+    writeFixtureFile(projectRoot, consumer.relPath, consumer.content);
+  }
   writeFixtureFile(projectRoot, "AGENTS.md", "Auth changes must preserve session and user type contracts.");
 
   const globalStore = openGlobalStore();
@@ -158,6 +191,22 @@ function seedProject(projectRoot: string, projectId: string): void {
         ),
         fileRecord(
           projectRoot,
+          "app/dashboard/admin/endorsements/create/client-page.tsx",
+          adminEndorsementCreateContent,
+          "tsx",
+          [{ name: "AdminEndorsementCreatePage", kind: "function", exportName: "AdminEndorsementCreatePage", lineStart: 1, lineEnd: 4 }],
+          [],
+        ),
+        fileRecord(
+          projectRoot,
+          "app/dashboard/instructor/endorsements/create/client-page.tsx",
+          instructorEndorsementCreateContent,
+          "tsx",
+          [{ name: "InstructorEndorsementCreatePage", kind: "function", exportName: "InstructorEndorsementCreatePage", lineStart: 1, lineEnd: 4 }],
+          [],
+        ),
+        fileRecord(
+          projectRoot,
           "lib/auth/session.ts",
           sessionContent,
           "typescript",
@@ -180,6 +229,22 @@ function seedProject(projectRoot: string, projectId: string): void {
           [{ name: "LoginButton", kind: "function", exportName: "LoginButton", lineStart: 1, lineEnd: 3 }],
           [],
         ),
+        fileRecord(
+          projectRoot,
+          "components/ui/button.tsx",
+          centralButtonContent,
+          "tsx",
+          [{ name: "Button", kind: "function", exportName: "Button", lineStart: 1, lineEnd: 3 }],
+          [],
+        ),
+        ...generatedButtonConsumers.map((consumer) => fileRecord(
+          projectRoot,
+          consumer.relPath,
+          consumer.content,
+          "tsx",
+          [{ name: consumer.symbolName, kind: "function", exportName: consumer.symbolName, lineStart: 2, lineEnd: 4 }],
+          [{ targetPath: "components/ui/button.tsx", specifier: "../../components/ui/button" }],
+        )),
       ],
       schemaObjects: [{
         objectKey: "table:public.user_profiles",
@@ -385,6 +450,36 @@ async function main(): Promise<void> {
       exploreToolNames.includes("verification_state"),
       false,
       "explore mode should not surface verification_state",
+    );
+
+    const duplicatePacket = await invokeTool(
+      "context_packet",
+      {
+        projectId,
+        request: "find duplicate endorsement create role checks",
+        includeLiveHints: false,
+        maxPrimaryContext: 2,
+        maxRelatedContext: 8,
+      },
+      { hotIndexCache },
+    ) as ContextPacketToolOutput;
+    const duplicatePaths = new Set(duplicatePacket.primaryContext.flatMap((candidate) => candidate.path ?? []));
+    assert.equal(
+      duplicatePacket.primaryContext.some((candidate) => candidate.strategy === "centrality_rank"),
+      false,
+      "duplicate discovery should not rank centrality candidates as primary context",
+    );
+    assert.ok(
+      duplicatePaths.has("app/dashboard/admin/endorsements/create/client-page.tsx") ||
+        duplicatePaths.has("app/dashboard/instructor/endorsements/create/client-page.tsx"),
+      "duplicate discovery should prioritize directly matching peripheral files",
+    );
+    assert.ok(
+      [...duplicatePacket.primaryContext, ...duplicatePacket.relatedContext].some((candidate) =>
+        candidate.strategy === "centrality_rank" &&
+        candidate.path === "components/ui/button.tsx"
+      ),
+      "the centrality candidate should still be available as supporting context",
     );
 
     const dashboardPacket = await invokeTool(

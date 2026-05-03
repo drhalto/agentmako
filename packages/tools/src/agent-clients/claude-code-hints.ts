@@ -65,7 +65,6 @@ export const CLAUDE_CODE_TOOL_HINTS: Record<
   },
   table_neighborhood: {
     searchHint: "table schema rls readers writers routes rpc",
-    alwaysLoad: true,
   },
   route_context: {
     searchHint: "route handler imports db rpc table rls",
@@ -122,7 +121,7 @@ export const CLAUDE_CODE_TOOL_HINTS: Record<
     searchHint: "row level security policies table",
   },
   db_rpc: {
-    searchHint: "stored procedure function signature security",
+    searchHint: "stored procedure function signature security list enumerate",
   },
   db_table_schema: {
     searchHint: "complete table columns constraints indexes",
@@ -133,7 +132,6 @@ export const CLAUDE_CODE_TOOL_HINTS: Record<
   },
   ask: {
     searchHint: "answer question one round answer loop",
-    alwaysLoad: true,
   },
   trace_file: {
     searchHint: "file trace symbols imports routes schema",
@@ -163,10 +161,12 @@ export const CLAUDE_CODE_TOOL_HINTS: Record<
     searchHint: "structural code pattern search ast grep",
   },
   live_text_search: {
-    searchHint: "live ripgrep text search filesystem",
+    searchHint: "raw live ripgrep regex glob inventory",
+    alwaysLoad: true,
   },
   lint_files: {
     searchHint: "diagnostics findings rule packs canonical helper files",
+    alwaysLoad: true,
   },
   typescript_diagnostics: {
     searchHint: "typescript compiler diagnostics reef ingest",
@@ -197,14 +197,29 @@ export const CLAUDE_CODE_TOOL_HINTS: Record<
   },
   repo_map: {
     searchHint: "repo orientation outline central files first turn",
-    alwaysLoad: true,
   },
   context_packet: {
     searchHint: "deterministic scout packet ranked context",
-    alwaysLoad: true,
   },
   tool_batch: {
     searchHint: "batch read only mako lookups",
+    alwaysLoad: true,
+  },
+  reef_ask: {
+    searchHint: "primary reef query code database findings literal where used diagnostics",
+    alwaysLoad: true,
+  },
+  reef_status: {
+    searchHint: "primary reef status issues changes stale diagnostics schema watcher",
+    alwaysLoad: true,
+  },
+  reef_verify: {
+    searchHint: "primary reef verification completion gate diagnostics open loops",
+    alwaysLoad: true,
+  },
+  reef_impact: {
+    searchHint: "primary reef impact changed files callers findings conventions",
+    alwaysLoad: true,
   },
   runtime_telemetry_report: {
     searchHint: "runtime usefulness events aggregate report",
@@ -251,6 +266,9 @@ export const CLAUDE_CODE_TOOL_HINTS: Record<
   reef_instructions: {
     searchHint: "reef scoped AGENTS mako project instructions",
   },
+  reef_learning_review: {
+    searchHint: "reef learning suggestions resolved findings rules conventions instructions",
+  },
   list_reef_rules: {
     searchHint: "reef rule descriptor metadata",
   },
@@ -265,7 +283,6 @@ export const CLAUDE_CODE_TOOL_HINTS: Record<
   },
   reef_scout: {
     searchHint: "reef ranked context scout messy request",
-    alwaysLoad: true,
   },
   reef_inspect: {
     searchHint: "reef evidence trail file subject facts findings",

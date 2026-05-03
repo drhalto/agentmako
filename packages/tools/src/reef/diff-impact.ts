@@ -1,4 +1,6 @@
 import type {
+  JsonObject,
+  JsonValue,
   ProjectConvention,
   ProjectFact,
   ProjectFinding,
@@ -14,6 +16,8 @@ import type { FileImportLink, ProjectStore, SymbolRecord } from "@mako-ai/store"
 import { normalizeFileQuery, withProjectContext } from "../entity-resolver.js";
 import type { ToolServiceOptions } from "../runtime.js";
 import { collectProjectConventions } from "./conventions.js";
+import { runCachedReefCalculation } from "./calculation-cache.js";
+import { REEF_IMPACT_NODE, REEF_IMPACT_QUERY_KIND } from "./calculation-nodes.js";
 import { applicableConventionsForFile } from "./file-preflight.js";
 import { stringDataValue } from "./shared.js";
 import { applyReefToolFreshnessPolicy, buildReefToolExecution } from "./tool-execution.js";
@@ -22,6 +26,26 @@ const DEFAULT_DEPTH = 2;
 const DEFAULT_MAX_CALLERS_PER_FILE = 50;
 const DEFAULT_MAX_FINDINGS_PER_CALLER = 10;
 const DEFAULT_MAX_CONVENTIONS = 30;
+
+type ImpactCallerSourceFile = Pick<ReefDiffImpactChangedFile, "filePath" | "exportedSymbols" | "declaredSymbols">;
+
+export interface ReefImpactStructuralChangedFile extends ImpactCallerSourceFile {
+  indexed: boolean;
+}
+
+export interface ReefImpactStructuralCalculationInput {
+  projectStore: Pick<ProjectStore, "listDependentsForFile" | "listFiles" | "listSymbolsForFile">;
+  filePaths: string[];
+  depth: number;
+  maxCallersPerFile: number;
+}
+
+export interface ReefImpactStructuralCalculationOutput {
+  changedFiles: ReefImpactStructuralChangedFile[];
+  impactedCallers: ReefDiffImpactCaller[];
+  truncated: boolean;
+  warnings: string[];
+}
 
 export async function reefDiffImpactTool(
   input: ReefDiffImpactToolInput,
@@ -34,14 +58,43 @@ export async function reefDiffImpactTool(
     const maxFindingsPerCaller = input.maxFindingsPerCaller ?? DEFAULT_MAX_FINDINGS_PER_CALLER;
     const maxConventions = input.maxConventions ?? DEFAULT_MAX_CONVENTIONS;
     const freshnessPolicy = input.freshnessPolicy ?? "allow_stale_labeled";
-    const warnings: string[] = [];
-    const indexedFiles = new Set(projectStore.listFiles().map((file) => file.path));
     const filePaths = uniqueSorted(input.filePaths.map((filePath) => normalizeFileQuery(project.canonicalPath, filePath)));
-    const changedFiles = filePaths.map((filePath) =>
-      changedFileEntry({
+    const sourceRevision = projectStore.loadReefAnalysisState(
+      project.projectId,
+      project.canonicalPath,
+    )?.materializedRevision;
+    const calculationInput: JsonObject = {
+      filePaths,
+      depth,
+      maxCallersPerFile,
+    };
+    const structural = runCachedReefCalculation({
+      projectStore,
+      projectId: project.projectId,
+      root: project.canonicalPath,
+      node: REEF_IMPACT_NODE,
+      queryKind: REEF_IMPACT_QUERY_KIND,
+      sourceRevision,
+      input: calculationInput,
+      compute: () => calculateReefImpactStructural({
+        projectStore,
+        filePaths,
+        depth,
+        maxCallersPerFile,
+      }),
+      toJson: impactStructuralToJson,
+      fromJson: impactStructuralFromJson,
+    });
+    const warnings: string[] = [
+      ...structural.value.warnings,
+      ...(structural.cache.enabled
+        ? [`impact structural calculation cache ${structural.cache.hit ? "hit" : "miss"} for ${structural.cache.path}.`]
+        : []),
+    ];
+    const changedFiles = structural.value.changedFiles.map((changedFile) =>
+      changedFileWithOverlay({
         projectId: project.projectId,
-        filePath,
-        indexed: indexedFiles.has(filePath),
+        changedFile,
         projectStore,
       })
     );
@@ -50,18 +103,10 @@ export async function reefDiffImpactTool(
       if (changedFile.overlayState === "missing") {
         warnings.push(`No working_tree_overlay file_snapshot exists for ${changedFile.filePath}; call working_tree_overlay for this file or wait for the watcher before treating diff facts as current.`);
       }
-      if (!changedFile.indexed) {
-        warnings.push(`${changedFile.filePath} is not in the indexed import graph, so dependent callers may be incomplete.`);
-      }
     }
 
-    const impactedCallers = walkImpactedCallers({
-      changedFiles,
-      projectStore,
-      depth,
-      maxCallersPerFile,
-    });
-    const truncated = impactedCallers.truncated;
+    const impactedCallers = structural.value.impactedCallers;
+    const truncated = structural.value.truncated;
     if (truncated) {
       warnings.push(`Impacted caller results were truncated to maxCallersPerFile=${maxCallersPerFile} for at least one changed file.`);
     }
@@ -69,7 +114,7 @@ export async function reefDiffImpactTool(
     const findingResult = collectPossiblyInvalidatedFindings({
       projectId: project.projectId,
       projectStore,
-      impactedCallers: impactedCallers.items,
+      impactedCallers,
       freshnessPolicy,
       maxFindingsPerCaller,
     });
@@ -79,7 +124,7 @@ export async function reefDiffImpactTool(
       projectStore,
       projectId: project.projectId,
       changedFiles,
-      impactedCallers: impactedCallers.items,
+      impactedCallers,
       maxConventions,
     });
 
@@ -94,7 +139,7 @@ export async function reefDiffImpactTool(
       staleEvidenceDropped: findingResult.staleEvidenceDropped,
       staleEvidenceLabeled: findingResult.staleEvidenceLabeled + overlayMissingCount,
       returnedCount: changedFiles.length +
-        impactedCallers.items.length +
+        impactedCallers.length +
         findingResult.items.length +
         conventionRisks.length,
     });
@@ -104,12 +149,12 @@ export async function reefDiffImpactTool(
       projectId: project.projectId,
       projectRoot: project.canonicalPath,
       changedFiles,
-      impactedCallers: impactedCallers.items,
+      impactedCallers,
       possiblyInvalidatedFindings: findingResult.items,
       conventionRisks,
       summary: {
         changedFileCount: changedFiles.length,
-        impactedCallerCount: impactedCallers.items.length,
+        impactedCallerCount: impactedCallers.length,
         possiblyInvalidatedFindingCount: findingResult.items.length,
         conventionRiskCount: conventionRisks.length,
         overlayMissingCount,
@@ -128,26 +173,93 @@ export async function reefDiffImpactTool(
   });
 }
 
-function changedFileEntry(args: {
-  projectId: string;
+export function calculateReefImpactStructural(
+  input: ReefImpactStructuralCalculationInput,
+): ReefImpactStructuralCalculationOutput {
+  const indexedFiles = new Set(input.projectStore.listFiles().map((file) => file.path));
+  const changedFiles = uniqueSorted(input.filePaths).map((filePath) =>
+    indexedChangedFileEntry({
+      filePath,
+      indexed: indexedFiles.has(filePath),
+      projectStore: input.projectStore,
+    })
+  );
+  const warnings = changedFiles
+    .filter((changedFile) => !changedFile.indexed)
+    .map((changedFile) =>
+      `${changedFile.filePath} is not in the indexed import graph, so dependent callers may be incomplete.`
+    );
+  const impactedCallers = walkImpactedCallers({
+    changedFiles,
+    projectStore: input.projectStore,
+    depth: input.depth,
+    maxCallersPerFile: input.maxCallersPerFile,
+  });
+  return {
+    changedFiles,
+    impactedCallers: impactedCallers.items,
+    truncated: impactedCallers.truncated,
+    warnings,
+  };
+}
+
+function indexedChangedFileEntry(args: {
   filePath: string;
   indexed: boolean;
+  projectStore: Pick<ProjectStore, "listSymbolsForFile">;
+}): ReefImpactStructuralChangedFile {
+  const symbols = args.projectStore.listSymbolsForFile(args.filePath);
+  return {
+    filePath: args.filePath,
+    indexed: args.indexed,
+    exportedSymbols: symbolNames(symbols, "exports"),
+    declaredSymbols: symbolNames(symbols, "declared"),
+  };
+}
+
+function changedFileWithOverlay(args: {
+  projectId: string;
+  changedFile: ReefImpactStructuralChangedFile;
   projectStore: ProjectStore;
 }): ReefDiffImpactChangedFile {
-  const overlayFact = workingTreeOverlayFact(args.projectStore, args.projectId, args.filePath);
-  const symbols = args.projectStore.listSymbolsForFile(args.filePath);
+  const overlayFact = workingTreeOverlayFact(args.projectStore, args.projectId, args.changedFile.filePath);
   const overlayState = overlayFact
     ? stringDataValue(overlayFact.data, "state") === "deleted"
       ? "deleted"
       : "present"
     : "missing";
   return {
-    filePath: args.filePath,
-    indexed: args.indexed,
+    filePath: args.changedFile.filePath,
+    indexed: args.changedFile.indexed,
     overlayState,
-    exportedSymbols: symbolNames(symbols, "exports"),
-    declaredSymbols: symbolNames(symbols, "declared"),
+    exportedSymbols: args.changedFile.exportedSymbols,
+    declaredSymbols: args.changedFile.declaredSymbols,
     ...(overlayFact ? { overlayFact } : {}),
+  };
+}
+
+function impactStructuralToJson(value: ReefImpactStructuralCalculationOutput): JsonValue {
+  return value as unknown as JsonValue;
+}
+
+function impactStructuralFromJson(value: JsonValue): ReefImpactStructuralCalculationOutput | undefined {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    return undefined;
+  }
+  const record = value as Partial<ReefImpactStructuralCalculationOutput>;
+  if (
+    !Array.isArray(record.changedFiles)
+    || !Array.isArray(record.impactedCallers)
+    || typeof record.truncated !== "boolean"
+    || !Array.isArray(record.warnings)
+  ) {
+    return undefined;
+  }
+  return {
+    changedFiles: record.changedFiles as ReefImpactStructuralChangedFile[],
+    impactedCallers: record.impactedCallers as ReefDiffImpactCaller[],
+    truncated: record.truncated,
+    warnings: record.warnings as string[],
   };
 }
 
@@ -168,8 +280,8 @@ function workingTreeOverlayFact(
 }
 
 function walkImpactedCallers(args: {
-  changedFiles: readonly ReefDiffImpactChangedFile[];
-  projectStore: ProjectStore;
+  changedFiles: readonly ImpactCallerSourceFile[];
+  projectStore: Pick<ProjectStore, "listDependentsForFile">;
   depth: number;
   maxCallersPerFile: number;
 }): { items: ReefDiffImpactCaller[]; truncated: boolean } {
@@ -385,7 +497,7 @@ function conventionRiskReason(
   return `${prefix}; convention ${convention.id} (${convention.kind}) may apply.`;
 }
 
-function affectedSymbols(changedFile: ReefDiffImpactChangedFile): string[] {
+function affectedSymbols(changedFile: ImpactCallerSourceFile): string[] {
   return changedFile.exportedSymbols.length > 0 ? changedFile.exportedSymbols : changedFile.declaredSymbols;
 }
 

@@ -124,20 +124,26 @@ export const DbRlsToolOutputSchema = z.object({
 export type DbRlsToolOutput = z.infer<typeof DbRlsToolOutputSchema>;
 
 export interface DbRpcToolInput extends ProjectLocatorInput {
-  name: string;
+  name?: string;
   schema?: string;
   argTypes?: string[];
   includeSource?: boolean;
+  list?: boolean;
+  limit?: number;
+  includeSystemSchemas?: boolean;
 }
 
 export const DbRpcToolInputSchema = z
   .object({
     projectId: z.string().trim().min(1).optional(),
     projectRef: z.string().trim().min(1).optional(),
-    name: z.string().trim().min(1),
+    name: z.string().trim().min(1).optional(),
     schema: z.string().trim().min(1).optional(),
     argTypes: z.array(z.string().trim().min(1)).optional(),
     includeSource: z.boolean().optional(),
+    list: z.boolean().optional(),
+    limit: z.number().int().min(1).max(1_000).optional(),
+    includeSystemSchemas: z.boolean().optional(),
   })
   .strict() satisfies z.ZodType<DbRpcToolInput>;
 
@@ -147,7 +153,7 @@ export const DbRpcArgumentSchema = z.object({
   mode: z.enum(["in", "out", "inout", "variadic", "table"]),
 });
 
-export const DbRpcToolOutputSchema = z.object({
+export const DbRpcLookupToolOutputSchema = z.object({
   toolName: z.literal("db_rpc"),
   name: z.string(),
   schema: z.string(),
@@ -157,6 +163,45 @@ export const DbRpcToolOutputSchema = z.object({
   securityDefiner: z.boolean(),
   volatility: z.enum(["immutable", "stable", "volatile"]),
   source: z.string().nullable(),
+});
+
+export const DbRpcListEntrySchema = z.object({
+  name: z.string(),
+  schema: z.string(),
+  kind: z.enum(["function", "procedure"]),
+  argTypes: z.array(z.string()),
+  args: z.array(DbRpcArgumentSchema),
+  returns: z.string(),
+  language: z.string(),
+  securityDefiner: z.boolean(),
+  volatility: z.enum(["immutable", "stable", "volatile"]),
+});
+
+export const DbRpcListToolOutputSchema = z.object({
+  toolName: z.literal("db_rpc"),
+  mode: z.literal("list"),
+  schema: z.string().optional(),
+  rpcs: z.array(DbRpcListEntrySchema),
+  totalReturned: z.number().int().nonnegative(),
+  truncated: z.boolean(),
+  limit: z.number().int().min(1),
+});
+
+export const DbRpcToolOutputSchema = z.object({
+  toolName: z.literal("db_rpc"),
+  mode: z.enum(["lookup", "list"]).optional(),
+  name: z.string().optional(),
+  schema: z.string().optional(),
+  args: z.array(DbRpcArgumentSchema).optional(),
+  returns: z.string().optional(),
+  language: z.string().optional(),
+  securityDefiner: z.boolean().optional(),
+  volatility: z.enum(["immutable", "stable", "volatile"]).optional(),
+  source: z.string().nullable().optional(),
+  rpcs: z.array(DbRpcListEntrySchema).optional(),
+  totalReturned: z.number().int().nonnegative().optional(),
+  truncated: z.boolean().optional(),
+  limit: z.number().int().min(1).optional(),
 });
 
 export type DbRpcToolOutput = z.infer<typeof DbRpcToolOutputSchema>;
@@ -210,4 +255,3 @@ export const DbTableSchemaToolOutputSchema = z.object({
 });
 
 export type DbTableSchemaToolOutput = z.infer<typeof DbTableSchemaToolOutputSchema>;
-

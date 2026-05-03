@@ -8,6 +8,8 @@ import {
   indexProject,
   REEF_AST_SYMBOLS_ARTIFACT_KIND,
   REEF_AST_SYMBOLS_EXTRACTOR_VERSION,
+  REEF_CODE_INTERACTIONS_ARTIFACT_KIND,
+  REEF_CODE_INTERACTIONS_EXTRACTOR_VERSION,
   REEF_IMPORT_EDGES_ARTIFACT_KIND,
   REEF_IMPORT_EDGES_EXTRACTOR_VERSION,
   REEF_ROUTES_ARTIFACT_KIND,
@@ -26,7 +28,20 @@ async function main(): Promise<void> {
 
   mkdirSync(path.join(projectRoot, "src"), { recursive: true });
   writeFileSync(path.join(projectRoot, "package.json"), JSON.stringify({ name: "reef-structural-artifacts-smoke" }));
-  writeFileSync(path.join(projectRoot, "src", "beta.ts"), "export const beta = 'beta';\n");
+  writeFileSync(path.join(projectRoot, "src", "beta.ts"), "export function beta() { return 'beta'; }\n");
+  writeFileSync(
+    path.join(projectRoot, "src", "Button.tsx"),
+    "export function Button() { return <button />; }\n",
+  );
+  const renderSource = [
+    "import { beta } from './beta';",
+    "import { Button } from './Button';",
+    "export function RenderPage() {",
+    "  beta();",
+    "  return <Button />;",
+    "}",
+  ].join("\n") + "\n";
+  writeFileSync(path.join(projectRoot, "src", "render.tsx"), renderSource);
   const routePath = "src/routes.ts";
   const firstRouteSource = [
     "export const apiRoutes = {",
@@ -65,6 +80,14 @@ async function main(): Promise<void> {
     assert.equal(
       registry.findProducer({
         kind: "artifact",
+        artifactKind: REEF_CODE_INTERACTIONS_ARTIFACT_KIND,
+        extractorVersion: REEF_CODE_INTERACTIONS_EXTRACTOR_VERSION,
+      })?.id,
+      "reef.indexer.code_interactions",
+    );
+    assert.equal(
+      registry.findProducer({
+        kind: "artifact",
         artifactKind: REEF_ROUTES_ARTIFACT_KIND,
         extractorVersion: REEF_ROUTES_EXTRACTOR_VERSION,
       })?.id,
@@ -72,6 +95,7 @@ async function main(): Promise<void> {
     );
 
     const indexed = await indexProject(projectRoot, { projectStoreCache: cache, reefRevision: 1 });
+    assert.equal(indexed.run.stats?.codeInteractionsIndexed, 2);
     const store = cache.borrow({ projectRoot });
     const firstTags = store.queryReefArtifactTags({
       projectId: indexed.project.projectId,
@@ -110,6 +134,99 @@ async function main(): Promise<void> {
     assert.ok(JSON.stringify(firstImportArtifact?.payload).includes("./beta"));
     assert.equal(firstImportArtifact?.metadata?.outputFingerprint, firstImportOutputHash);
     assert.equal(firstImportArtifact?.metadata?.inputContentHash, hashText(firstSource));
+
+    const firstInteractionTags = store.queryReefArtifactTags({
+      projectId: indexed.project.projectId,
+      root: indexed.project.canonicalPath,
+      branch: "",
+      worktree: "",
+      overlay: "indexed",
+      path: "src/render.tsx",
+      artifactKind: REEF_CODE_INTERACTIONS_ARTIFACT_KIND,
+      extractorVersion: REEF_CODE_INTERACTIONS_EXTRACTOR_VERSION,
+    });
+    assert.equal(firstInteractionTags.length, 1);
+    const firstInteractionOutputHash = firstInteractionTags[0]!.contentHash;
+    const firstInteractionArtifact = store.queryReefArtifacts({ artifactId: firstInteractionTags[0]!.artifactId })[0];
+    const firstInteractionPayload = JSON.stringify(firstInteractionArtifact?.payload);
+    assert.ok(firstInteractionPayload.includes("\"kind\":\"call\""));
+    assert.ok(firstInteractionPayload.includes("\"kind\":\"render\""));
+    assert.ok(firstInteractionPayload.includes("src/beta.ts"));
+    assert.ok(firstInteractionPayload.includes("src/Button.tsx"));
+    assert.equal(firstInteractionArtifact?.metadata?.outputFingerprint, firstInteractionOutputHash);
+    assert.equal(firstInteractionArtifact?.metadata?.inputContentHash, hashText(renderSource));
+
+    const renderCommentSource = "// inserted render comment\n" + renderSource;
+    writeFileSync(path.join(projectRoot, "src", "render.tsx"), renderCommentSource);
+    const interactionCommentRefreshed = await refreshProjectPaths(projectRoot, ["src/render.tsx"], {
+      projectStoreCache: cache,
+      triggerSource: "reef_structural_artifacts_interaction_comment_smoke",
+    });
+    assert.equal(interactionCommentRefreshed.mode, "paths");
+    assert.equal("codeInteractionsIndexed" in (interactionCommentRefreshed.run.stats ?? {}), false);
+    const interactionCommentTags = store.queryReefArtifactTags({
+      projectId: indexed.project.projectId,
+      root: indexed.project.canonicalPath,
+      branch: "",
+      worktree: "",
+      overlay: "indexed",
+      path: "src/render.tsx",
+      artifactKind: REEF_CODE_INTERACTIONS_ARTIFACT_KIND,
+      extractorVersion: REEF_CODE_INTERACTIONS_EXTRACTOR_VERSION,
+    });
+    assert.equal(interactionCommentTags.length, 1);
+    assert.equal(interactionCommentTags[0]?.contentHash, firstInteractionOutputHash);
+    assert.equal(interactionCommentTags[0]?.artifactId, firstInteractionTags[0]?.artifactId);
+    const interactionCommentArtifact = store.queryReefArtifacts({ artifactId: interactionCommentTags[0]!.artifactId })[0];
+    assert.equal(interactionCommentArtifact?.metadata?.inputContentHash, hashText(renderCommentSource));
+
+    const noInteractionSource = [
+      "export function RenderPage() {",
+      "  return <div />;",
+      "}",
+    ].join("\n") + "\n";
+    writeFileSync(path.join(projectRoot, "src", "render.tsx"), noInteractionSource);
+    const interactionRemoved = await refreshProjectPaths(projectRoot, ["src/render.tsx"], {
+      projectStoreCache: cache,
+      triggerSource: "reef_structural_artifacts_interaction_removed_smoke",
+    });
+    assert.equal(interactionRemoved.mode, "paths");
+    assert.equal(
+      store.queryReefArtifactTags({
+        projectId: indexed.project.projectId,
+        root: indexed.project.canonicalPath,
+        branch: "",
+        worktree: "",
+        overlay: "indexed",
+        path: "src/render.tsx",
+        artifactKind: REEF_CODE_INTERACTIONS_ARTIFACT_KIND,
+        extractorVersion: REEF_CODE_INTERACTIONS_EXTRACTOR_VERSION,
+      }).length,
+      0,
+    );
+
+    writeFileSync(path.join(projectRoot, "src", "render.tsx"), renderSource);
+    const interactionRestored = await refreshProjectPaths(projectRoot, ["src/render.tsx"], {
+      projectStoreCache: cache,
+      triggerSource: "reef_structural_artifacts_interaction_restored_smoke",
+    });
+    assert.equal(interactionRestored.mode, "paths");
+    const interactionRestoredTags = store.queryReefArtifactTags({
+      projectId: indexed.project.projectId,
+      root: indexed.project.canonicalPath,
+      branch: "",
+      worktree: "",
+      overlay: "indexed",
+      path: "src/render.tsx",
+      artifactKind: REEF_CODE_INTERACTIONS_ARTIFACT_KIND,
+      extractorVersion: REEF_CODE_INTERACTIONS_EXTRACTOR_VERSION,
+    });
+    assert.equal(interactionRestoredTags.length, 1);
+    assert.equal(interactionRestoredTags[0]?.contentHash, firstInteractionOutputHash);
+    const interactionRestoredArtifact = store.queryReefArtifacts({ artifactId: interactionRestoredTags[0]!.artifactId })[0];
+    const interactionRestoredPayload = JSON.stringify(interactionRestoredArtifact?.payload);
+    assert.ok(interactionRestoredPayload.includes("\"kind\":\"call\""));
+    assert.ok(interactionRestoredPayload.includes("\"kind\":\"render\""));
 
     const firstRouteTags = store.queryReefArtifactTags({
       projectId: indexed.project.projectId,
@@ -439,6 +556,19 @@ async function main(): Promise<void> {
         extractorVersion: REEF_IMPORT_EDGES_EXTRACTOR_VERSION,
       }).length,
       0,
+    );
+    assert.equal(
+      store.queryReefArtifactTags({
+        projectId: indexed.project.projectId,
+        root: indexed.project.canonicalPath,
+        branch: "",
+        worktree: "",
+        overlay: "indexed",
+        path: "src/render.tsx",
+        artifactKind: REEF_CODE_INTERACTIONS_ARTIFACT_KIND,
+        extractorVersion: REEF_CODE_INTERACTIONS_EXTRACTOR_VERSION,
+      }).length,
+      1,
     );
 
     console.log("reef-structural-artifacts: PASS");

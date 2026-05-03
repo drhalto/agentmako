@@ -22,9 +22,10 @@ Mako is deterministic project context, not a replacement for reading files,
 editing carefully, and running tests. Use it to narrow scope: relevant files,
 symbols, routes, schema objects, findings, freshness, and risks.
 
-Prefer Mako before broad grep when the question is about structure,
-cross-file impact, routing, auth, database usage, or known findings. Prefer
-`live_text_search` or shell `rg` when exact current disk text matters.
+Prefer `reef_ask` before broad grep when the question is about structure,
+cross-file impact, routing, auth, database usage, diagnostics, or known
+findings. Prefer `live_text_search` or shell `rg` when exact current disk text
+matters.
 
 Evidence modes:
 
@@ -38,8 +39,21 @@ and often give the best next step.
 
 ## Default Workflow
 
-When unsure, call `mako_help` first. It returns an ordered recipe with
-suggested args and verification steps:
+Default to `reef_ask` for project questions. It combines codebase, database,
+durable findings, diagnostics, instructions, freshness, and quoted literal
+checks without making the agent manually orchestrate broad tool chains:
+
+```json
+{
+  "question": "what matters if I change tenant-scoped dashboard role checks?",
+  "mode": "plan",
+  "focus": ["app/dashboard/layout.tsx"],
+  "changedFiles": ["app/dashboard/layout.tsx"]
+}
+```
+
+When you need an ordered workflow instead of an answer, call `mako_help`. It
+returns a recipe with suggested args and verification steps:
 
 ```json
 {
@@ -49,7 +63,7 @@ suggested args and verification steps:
 }
 ```
 
-For broad or vague work, start with `context_packet`:
+When `reef_ask` needs raw ranked context expansion, call `context_packet`:
 
 ```json
 {
@@ -123,10 +137,31 @@ Fallbacks:
 - `diagnostic_refresh`: run selected diagnostics when watcher-backed
   verification still reports stale, failed, unavailable, or unknown.
 
+## Compact Surface
+
+The default model-facing Mako surface is intentionally small:
+
+- `reef_ask`: primary query over code, DB, findings, diagnostics, freshness,
+  and quoted literal checks.
+- `reef_status`: maintained issues, changed files, stale diagnostics, schema,
+  watcher state, and queue health.
+- `reef_verify`: completion gate for diagnostic freshness and unresolved open
+  loops.
+- `reef_impact`: changed-file impact over downstream callers, invalidated
+  findings, and convention risks.
+- `mako_help`: ordered workflow recipe with prefilled args.
+- `live_text_search`: current-disk regex/glob/raw inventory fallback.
+- `lint_files`: bounded diagnostics and rule-pack findings.
+- `tool_batch`: batch independent read-only follow-ups.
+- `tool_search`: find specialized tools only when needed.
+
 ## Search And Code Intelligence
 
-- `cross_search`: broad indexed search across code, routes, schema, RPCs,
-  triggers, and memories. Defaults compact.
+- `reef_ask`: use a normal question for broad code/schema/route/RPC/finding
+  search. Quoted literals trigger bounded live checks.
+- `cross_search`: specialist broad indexed search across code, routes, schema,
+  RPCs, triggers, and memories. Defaults compact; use after `reef_ask` or
+  `tool_search` points at it.
 - `live_text_search`: exact current disk search; defaults fixed string.
 - `ast_find_pattern`: structural TS/JS/TSX/JSX search. TSX snippets starting
   with `{`, `[`, or `<` also try an auto-anchored parser context.
@@ -145,14 +180,17 @@ Fallbacks:
 
 Reef is Mako's durable fact/finding layer.
 
-- Start messy investigations with `reef_scout`.
+- Start messy investigations with `reef_ask`.
+- Use `reef_scout` only when you specifically need the lower-level ranked fact
+  and finding scout output.
 - Inspect one evidence trail with `reef_inspect`.
 - Before editing a risky file, use `file_preflight` instead of separate
   `file_findings`, `verification_state`, `project_conventions`, and ack
   history calls.
-- Mid-edit or before review, use `reef_diff_impact` for changed files. It
+- Mid-edit or before review, use `reef_impact` for changed files. It
   reports downstream callers, active caller findings that may need re-checking,
-  and convention risks. It does not refresh Reef.
+  and convention risks. It does not refresh Reef. `reef_diff_impact` remains
+  the lower-level compatibility name for the same calculation.
 - Use `reef_where_used` for definitions/usages of a symbol, component, file, or
   route. For symbols/components it now includes indexed identifier-text
   references plus related durable findings, and `coverage` explains what is
@@ -200,13 +238,15 @@ directories, required checks, and `.mako/instructions.md` location.
 
 For risky auth, route, tenant, RLS, or role changes:
 
-1. `context_packet` with instructions and risks.
-2. `reef_instructions` for target files if needed.
-3. `auth_path`, `route_context`, or `route_trace`.
-4. `db_rls`, `db_rpc`, and `tenant_leak_audit` for privileged data or tenant
+1. `reef_ask` with mode/target files for code, DB, findings, diagnostics, and
+   instructions in one answer.
+2. `context_packet` only when raw ranked context needs expansion.
+3. `reef_instructions` for target files if needed.
+4. `auth_path`, `route_context`, or `route_trace`.
+5. `db_rls`, `db_rpc`, and `tenant_leak_audit` for privileged data or tenant
    isolation.
-5. `file_preflight` before editing and `verification_state` / tests after.
-6. `git_precommit_check` before committing boundary-sensitive changes.
+6. `file_preflight` before editing and `verification_state` / tests after.
+7. `git_precommit_check` before committing boundary-sensitive changes.
 
 ## Shell Fallback
 

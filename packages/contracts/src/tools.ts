@@ -254,10 +254,14 @@ import type {
   ProjectFactsToolOutput,
   ProjectFindingsToolInput,
   ProjectFindingsToolOutput,
+  ReefAskToolInput,
+  ReefAskToolOutput,
   ProjectOpenLoopsToolInput,
   ProjectOpenLoopsToolOutput,
   ReefDiffImpactToolInput,
   ReefDiffImpactToolOutput,
+  ReefImpactToolInput,
+  ReefImpactToolOutput,
   ReefOverlayDiffToolInput,
   ReefOverlayDiffToolOutput,
   ReefInstructionsToolInput,
@@ -266,10 +270,16 @@ import type {
   ReefInspectToolOutput,
   ReefAgentStatusToolInput,
   ReefAgentStatusToolOutput,
+  ReefStatusToolInput,
+  ReefStatusToolOutput,
   ReefKnownIssuesToolInput,
   ReefKnownIssuesToolOutput,
+  ReefLearningReviewToolInput,
+  ReefLearningReviewToolOutput,
   ReefScoutToolInput,
   ReefScoutToolOutput,
+  ReefVerifyToolInput,
+  ReefVerifyToolOutput,
   ReefWhereUsedToolInput,
   ReefWhereUsedToolOutput,
   RulePackValidateToolInput,
@@ -523,6 +533,7 @@ export type ToolInput =
   | ProjectIndexStatusToolInput
   | ProjectIndexRefreshToolInput
   | ContextPacketToolInput
+  | ReefAskToolInput
   | ToolBatchInput
   | FindingAckToolInput
   | FindingAckBatchToolInput
@@ -535,7 +546,9 @@ export type ToolInput =
   | WorkingTreeOverlayToolInput
   | ReefOverlayDiffToolInput
   | ReefDiffImpactToolInput
+  | ReefImpactToolInput
   | ReefInstructionsToolInput
+  | ReefLearningReviewToolInput
   | ListReefRulesToolInput
   | RulePackValidateToolInput
   | ExtractRuleTemplateToolInput
@@ -543,6 +556,7 @@ export type ToolInput =
   | ReefScoutToolInput
   | ReefInspectToolInput
   | ReefWhereUsedToolInput
+  | ReefVerifyToolInput
   | ProjectOpenLoopsToolInput
   | VerificationStateToolInput
   | ProjectConventionsToolInput
@@ -550,6 +564,7 @@ export type ToolInput =
   | EvidenceConfidenceToolInput
   | EvidenceConflictsToolInput
   | ReefKnownIssuesToolInput
+  | ReefStatusToolInput
   | ReefAgentStatusToolInput;
 
 export type ToolOutput = (
@@ -617,6 +632,7 @@ export type ToolOutput = (
   | ProjectIndexStatusToolOutput
   | ProjectIndexRefreshToolOutput
   | ContextPacketToolOutput
+  | ReefAskToolOutput
   | ToolBatchToolOutput
   | FindingAckToolOutput
   | FindingAckBatchToolOutput
@@ -629,7 +645,9 @@ export type ToolOutput = (
   | WorkingTreeOverlayToolOutput
   | ReefOverlayDiffToolOutput
   | ReefDiffImpactToolOutput
+  | ReefImpactToolOutput
   | ReefInstructionsToolOutput
+  | ReefLearningReviewToolOutput
   | ListReefRulesToolOutput
   | RulePackValidateToolOutput
   | ExtractRuleTemplateToolOutput
@@ -637,6 +655,7 @@ export type ToolOutput = (
   | ReefScoutToolOutput
   | ReefInspectToolOutput
   | ReefWhereUsedToolOutput
+  | ReefVerifyToolOutput
   | ProjectOpenLoopsToolOutput
   | VerificationStateToolOutput
   | ProjectConventionsToolOutput
@@ -644,6 +663,7 @@ export type ToolOutput = (
   | EvidenceConfidenceToolOutput
   | EvidenceConflictsToolOutput
   | ReefKnownIssuesToolOutput
+  | ReefStatusToolOutput
   | ReefAgentStatusToolOutput
 ) & Partial<ToolHints>;
 

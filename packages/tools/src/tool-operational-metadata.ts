@@ -107,6 +107,7 @@ export const TOOL_OPERATIONAL_METADATA = {
   project_index_refresh: mutation(MUTATION_OPEN, "index_refresh", "skip", "Refresh command is already the explicit local index write."),
   context_packet: readOnly(RO_OPEN),
   tool_batch: readOnly({ readOnlyHint: true, derivedOnly: true, openWorldHint: true }),
+  reef_ask: readOnly(RO_ADVISORY_DERIVED_OPEN),
   finding_ack: mutation({ mutation: true }, "append_log", "useful", "Acknowledgement suppresses future findings for a reviewed fingerprint."),
   finding_ack_batch: mutation({ mutation: true }, "append_log", "required", "Batch acknowledgement may suppress many future findings."),
   finding_acks_report: readOnly(RO),
@@ -118,7 +119,9 @@ export const TOOL_OPERATIONAL_METADATA = {
   working_tree_overlay: mutation(MUTATION_ADVISORY_OPEN, "working_tree_snapshot", "skip", "Local cache snapshot; preview would duplicate the output."),
   reef_overlay_diff: readOnly(RO),
   reef_diff_impact: readOnly(RO_DERIVED),
+  reef_impact: readOnly(RO_DERIVED),
   reef_instructions: readOnly(RO_ADVISORY_DERIVED_OPEN),
+  reef_learning_review: readOnly(RO_ADVISORY_DERIVED_OPEN),
   list_reef_rules: readOnly(RO),
   rule_pack_validate: readOnly(RO_ADVISORY_DERIVED_OPEN),
   extract_rule_template: readOnly(RO_ADVISORY_DERIVED_OPEN),
@@ -126,6 +129,7 @@ export const TOOL_OPERATIONAL_METADATA = {
   reef_scout: readOnly(RO),
   reef_inspect: readOnly(RO),
   reef_where_used: readOnly(RO_DERIVED),
+  reef_verify: readOnly(RO_ADVISORY_DERIVED),
   project_open_loops: readOnly(RO),
   verification_state: readOnly(RO),
   project_conventions: readOnly(RO),
@@ -133,6 +137,7 @@ export const TOOL_OPERATIONAL_METADATA = {
   evidence_confidence: readOnly(RO),
   evidence_conflicts: readOnly(RO),
   reef_known_issues: readOnly(RO_DERIVED),
+  reef_status: readOnly(RO_ADVISORY_DERIVED),
   reef_agent_status: readOnly(RO_ADVISORY_DERIVED),
 } satisfies Record<ToolName, ToolOperationalMetadata>;
 

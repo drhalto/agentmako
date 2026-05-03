@@ -67,7 +67,11 @@ export async function invokeTool(name: string, input: unknown, options: ToolServ
   } catch (error) {
     if (error instanceof ZodError) {
       outcome = classifyToolFailure(error);
-      const mappedError = MakoToolError.fromZodError(error);
+      const mappedError = MakoToolError.fromZodError(error, {
+        toolName: definition.name,
+        expectedKeys: expectedInputKeys(definition.inputSchema),
+        receivedKeys: receivedInputKeys(input),
+      });
       errorText = toErrorText(mappedError);
       throw mappedError;
     }
@@ -104,6 +108,62 @@ export async function invokeTool(name: string, input: unknown, options: ToolServ
 }
 
 export { runAnswerPacket };
+
+function expectedInputKeys(schema: ZodTypeAny): string[] {
+  return uniquePreservingOrder(collectObjectKeys(schema));
+}
+
+function collectObjectKeys(schema: ZodTypeAny): string[] {
+  const typeName = schema._def.typeName as string;
+  if (
+    typeName === "ZodOptional"
+    || typeName === "ZodNullable"
+    || typeName === "ZodDefault"
+    || typeName === "ZodCatch"
+  ) {
+    return collectObjectKeys(schema._def.innerType as ZodTypeAny);
+  }
+  if (typeName === "ZodEffects") {
+    return collectObjectKeys(schema._def.schema as ZodTypeAny);
+  }
+  if (typeName === "ZodIntersection") {
+    return [
+      ...collectObjectKeys(schema._def.left as ZodTypeAny),
+      ...collectObjectKeys(schema._def.right as ZodTypeAny),
+    ];
+  }
+  if (typeName === "ZodUnion") {
+    return (schema._def.options as ZodTypeAny[]).flatMap((option) => collectObjectKeys(option));
+  }
+  if (typeName === "ZodDiscriminatedUnion") {
+    return [...schema._def.optionsMap.values()].flatMap((option) => collectObjectKeys(option as ZodTypeAny));
+  }
+  if (typeName !== "ZodObject") {
+    return [];
+  }
+
+  const shapeFactory = schema._def.shape as (() => Record<string, ZodTypeAny>) | Record<string, ZodTypeAny>;
+  const shape = typeof shapeFactory === "function" ? shapeFactory() : shapeFactory;
+  return Object.keys(shape);
+}
+
+function receivedInputKeys(input: unknown): string[] {
+  const objectValue = parseJsonObjectLike(input);
+  return objectValue && typeof objectValue === "object" && !Array.isArray(objectValue)
+    ? Object.keys(objectValue)
+    : [];
+}
+
+function uniquePreservingOrder(values: readonly string[]): string[] {
+  const seen = new Set<string>();
+  const out: string[] = [];
+  for (const value of values) {
+    if (seen.has(value)) continue;
+    seen.add(value);
+    out.push(value);
+  }
+  return out;
+}
 
 function parseToolInput(definition: MakoToolDefinition<string>, input: unknown): ToolInput {
   try {

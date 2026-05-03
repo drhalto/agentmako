@@ -79,6 +79,7 @@ export type IndexRunStats = JsonObject & {
   chunksIndexed?: number;
   symbolsIndexed?: number;
   importsIndexed?: number;
+  codeInteractionsIndexed?: number;
   routesIndexed?: number;
   schemaObjectsIndexed?: number;
   schemaUsagesIndexed?: number;
@@ -169,6 +170,7 @@ export interface ToolRunInsert {
 }
 
 export interface QueryToolRunsOptions {
+  runIds?: string[];
   toolName?: string;
   outcome?: ToolRunOutcome;
   requestId?: string;
@@ -807,6 +809,19 @@ export interface ImportEdgeRecord {
   line?: number;
 }
 
+export type CodeInteractionKind = "call" | "render";
+
+export interface CodeInteractionRecord {
+  kind: CodeInteractionKind;
+  sourcePath: string;
+  sourceSymbolName?: string;
+  targetName: string;
+  targetPath?: string;
+  importSpecifier?: string;
+  line?: number;
+  confidence: number;
+}
+
 export interface RouteRecord {
   routeKey: string;
   framework: string;
@@ -828,6 +843,7 @@ export interface IndexedFileRecord {
   chunks: FileChunkRecord[];
   symbols: SymbolRecord[];
   imports: ImportEdgeRecord[];
+  interactions?: CodeInteractionRecord[];
   routes: RouteRecord[];
 }
 
@@ -929,6 +945,7 @@ export interface ProjectScanStats {
   chunks: number;
   symbols: number;
   importEdges: number;
+  codeInteractions?: number;
   routes: number;
   schemaObjects: number;
   schemaUsages: number;

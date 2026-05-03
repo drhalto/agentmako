@@ -2,6 +2,7 @@ import type { JsonObject, JsonValue, ReefCalculationNode } from "@mako-ai/contra
 import { ReefCalculationRegistry } from "@mako-ai/contracts";
 import { createLogger } from "@mako-ai/logger";
 import type {
+  CodeInteractionRecord,
   FileChunkRecord,
   ImportEdgeRecord,
   IndexedFileRecord,
@@ -18,6 +19,8 @@ export const REEF_AST_SYMBOLS_ARTIFACT_KIND = "ast_symbols";
 export const REEF_AST_SYMBOLS_EXTRACTOR_VERSION = "mako-ts-js-structure@1";
 export const REEF_IMPORT_EDGES_ARTIFACT_KIND = "import_edges";
 export const REEF_IMPORT_EDGES_EXTRACTOR_VERSION = "mako-ts-js-structure@1";
+export const REEF_CODE_INTERACTIONS_ARTIFACT_KIND = "code_interactions";
+export const REEF_CODE_INTERACTIONS_EXTRACTOR_VERSION = "mako-ts-js-structure@1";
 export const REEF_ROUTES_ARTIFACT_KIND = "routes";
 export const REEF_ROUTES_EXTRACTOR_VERSION = "mako-ts-js-structure@1";
 
@@ -37,6 +40,16 @@ export const REEF_AST_SYMBOLS_CHANGED_RANGE_KINDS = [
 export const REEF_IMPORT_EDGES_CHANGED_RANGE_KINDS = [
   "import_statement",
   "export_statement",
+] as const;
+
+export const REEF_CODE_INTERACTIONS_CHANGED_RANGE_KINDS = [
+  "import_statement",
+  "call_expression",
+  "member_expression",
+  "identifier",
+  "jsx_element",
+  "jsx_opening_element",
+  "jsx_self_closing_element",
 ] as const;
 
 export const REEF_STRUCTURAL_SYMBOLS_NODE: ReefCalculationNode = {
@@ -85,6 +98,31 @@ export const REEF_IMPORT_EDGES_NODE: ReefCalculationNode = {
   },
 };
 
+export const REEF_CODE_INTERACTIONS_NODE: ReefCalculationNode = {
+  id: "reef.indexer.code_interactions",
+  kind: "artifact_writer",
+  version: "1.0.0",
+  description: "Materializes imported TS/JS call and JSX render edges as content-addressed artifacts.",
+  outputs: [{
+    kind: "artifact",
+    artifactKind: REEF_CODE_INTERACTIONS_ARTIFACT_KIND,
+    extractorVersion: REEF_CODE_INTERACTIONS_EXTRACTOR_VERSION,
+  }],
+  dependsOn: [
+    { kind: "glob", pattern: "**/*.{ts,tsx,js,jsx,mjs,cjs}" },
+    { kind: "config", path: "tsconfig.json" },
+    { kind: "config", path: "jsconfig.json" },
+  ],
+  refreshScope: "path_scoped",
+  fallback: "full_refresh",
+  durability: "low",
+  backdating: {
+    strategy: "structural_changed_ranges",
+    relevantRangeKinds: [...REEF_CODE_INTERACTIONS_CHANGED_RANGE_KINDS],
+    equalityKeys: ["interactions"],
+  },
+};
+
 export const REEF_ROUTES_NODE: ReefCalculationNode = {
   id: "reef.indexer.routes",
   kind: "artifact_writer",
@@ -108,6 +146,7 @@ export const REEF_ROUTES_NODE: ReefCalculationNode = {
 export const REEF_INDEXER_CALCULATION_NODES = [
   REEF_STRUCTURAL_SYMBOLS_NODE,
   REEF_IMPORT_EDGES_NODE,
+  REEF_CODE_INTERACTIONS_NODE,
   REEF_ROUTES_NODE,
 ] as const;
 
@@ -170,6 +209,15 @@ const STRUCTURAL_ARTIFACT_PRODUCERS: readonly ReefStructuralArtifactProducer[] =
     changedRangeKinds: REEF_IMPORT_EDGES_CHANGED_RANGE_KINDS,
     selectPayload: (file) => stableImportEdges(file.imports, { includeLocations: true }),
     selectEqualityPayload: (file) => stableImportEdges(file.imports, { includeLocations: false }),
+  },
+  {
+    node: REEF_CODE_INTERACTIONS_NODE,
+    artifactKind: REEF_CODE_INTERACTIONS_ARTIFACT_KIND,
+    extractorVersion: REEF_CODE_INTERACTIONS_EXTRACTOR_VERSION,
+    payloadKey: "interactions",
+    changedRangeKinds: REEF_CODE_INTERACTIONS_CHANGED_RANGE_KINDS,
+    selectPayload: (file) => stableCodeInteractions(file.interactions ?? [], { includeLocations: true }),
+    selectEqualityPayload: (file) => stableCodeInteractions(file.interactions ?? [], { includeLocations: false }),
   },
   {
     node: REEF_ROUTES_NODE,
@@ -520,6 +568,24 @@ function stableImportEdges(
   }));
 }
 
+function stableCodeInteractions(
+  interactions: readonly CodeInteractionRecord[],
+  options: { includeLocations: boolean },
+): JsonObject[] {
+  return [...interactions]
+    .sort(compareCodeInteractions)
+    .map((interaction) => ({
+      kind: interaction.kind,
+      sourcePath: interaction.sourcePath,
+      ...(interaction.sourceSymbolName ? { sourceSymbolName: interaction.sourceSymbolName } : {}),
+      targetName: interaction.targetName,
+      ...(interaction.targetPath ? { targetPath: interaction.targetPath } : {}),
+      ...(interaction.importSpecifier ? { importSpecifier: interaction.importSpecifier } : {}),
+      confidence: interaction.confidence,
+      ...(options.includeLocations && interaction.line != null ? { line: interaction.line } : {}),
+    }));
+}
+
 function stableRoutes(
   routes: readonly RouteRecord[],
   options: { includeLocations: boolean },
@@ -550,6 +616,17 @@ function stableRouteMetadata(
     out[key] = value;
   }
   return out;
+}
+
+function compareCodeInteractions(
+  left: CodeInteractionRecord,
+  right: CodeInteractionRecord,
+): number {
+  return left.sourcePath.localeCompare(right.sourcePath) ||
+    (left.line ?? 0) - (right.line ?? 0) ||
+    left.kind.localeCompare(right.kind) ||
+    (left.targetPath ?? "").localeCompare(right.targetPath ?? "") ||
+    left.targetName.localeCompare(right.targetName);
 }
 
 function stableJson(value: unknown): string {

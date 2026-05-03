@@ -2,9 +2,9 @@
 description: >-
   TRIGGER when: user is working in an unfamiliar repo, asks 'where is X', 'what
   touches Y', needs broad search across code/schema/routes, or is unsure which
-  mako tool fits the task. Covers `mako_help`, `tool_search`, `repo_map`,
-  `context_packet`, `ask`, `cross_search`, `reef_scout`, `file_preflight`,
-  `reef_diff_impact`, `project_conventions`.
+  mako tool fits the task. Covers `reef_ask`, `reef_status`, `reef_verify`,
+  `reef_impact`, `mako_help`, `tool_search`, `context_packet`,
+  `live_text_search`, `lint_files`, and `tool_batch`.
 when_to_use: >-
   Use before targeted tracing when the implementation location, entity type, or
   best Mako tool is not yet clear.
@@ -14,7 +14,9 @@ allowed-tools: "mcp__mako-ai__*"
 # Mako Discovery
 
 Use this skill for orientation and broad discovery. Prefer it when the user has
-not yet named a precise file, route, table, RPC, or symbol.
+not yet named a precise file, route, table, RPC, or symbol. Default to
+`reef_ask`; load specialist tools only when Reef or `tool_search` identifies a
+concrete need.
 
 ## Tools
 
@@ -40,19 +42,34 @@ Use when you know the task but not the Mako workflow order.
 - Use the returned `batchHint` to batch independent read-only follow-ups after
   the first orientation call.
 
-### `repo_map`
+### `reef_ask`
 
-Use for first-turn repo orientation, entry points, central files, and major
-modules.
+Use for the primary answer loop over codebase, database, findings,
+diagnostics, instructions, freshness, and quoted literal checks.
 
-- Use when the user asks what is important in a repo or package.
-- Use before editing unfamiliar code when the likely blast radius is unclear.
-- Do not use when the user has already named a specific route/table/RPC and
-  wants direct evidence; use trace or neighborhood tools instead.
+- Use for open-ended repo questions, planning questions, debugging questions,
+  where-used questions, database inventory questions, and known-finding
+  questions.
+- Pass `focus` or `changedFiles` when known.
+- Read `evidence`, `risks`, `freshness`, `missingEvidence`, and `nextQueries`
+  before choosing any follow-up.
+- Use `evidenceMode: "full"` only when compact evidence is insufficient.
+
+### Reef Loop Tools
+
+Use these direct Reef adapters for the normal agent loop after `reef_ask`.
+
+- `reef_status`: maintained issues, changed files, stale diagnostics, schema,
+  watcher state, and queue health.
+- `reef_verify`: completion gate for diagnostic freshness and unresolved open
+  loops; read it before claiming work is verified.
+- `reef_impact`: changed-file impact over downstream callers, invalidated
+  findings, and convention risks.
 
 ### `context_packet`
 
-Use for first-mile task context before reading or editing.
+Use when `reef_ask` needs raw ranked context expansion before reading or
+editing.
 
 - Use `mode: "explore"` for discovery, `"plan"` before outlining
   implementation work, `"implement"` before editing code, and `"review"` for
@@ -62,41 +79,23 @@ Use for first-mile task context before reading or editing.
 - Read `_hints`, `freshnessGate`, `risks`, `scopedInstructions`, and
   `expandableTools` before choosing the next call.
 
-### `ask`
+### `live_text_search`
 
-Use for one evidence-backed engineering question when a compact answer loop is
-enough.
+Use when exact current disk text matters more than indexed/project knowledge.
 
-- Use when the user asks a natural-language question and does not need a full
-  artifact or multi-tool packet.
-- Prefer targeted tools directly when the question shape is already obvious.
-- When routed to `cross_search`, Mako preserves the full normalized question
-  instead of compressing it into a tiny keyword pair.
-- Treat the answer as a starting point if the task needs implementation or
-  review-quality evidence.
+- Use for regex, custom globs, generated or unindexed files, and raw full
+  inventories.
+- For bounded quoted literal checks, prefer `reef_ask` first.
 
-### `cross_search`
+### Specialist discovery
 
-Use for broad search across code, schema, route, and type surfaces when the
-relevant implementation location is uncertain.
+Use `tool_search` for specialist tools such as `repo_map`, `cross_search`,
+`ast_find_pattern`, `reef_scout`, route/table/RPC neighborhoods, graph tools,
+DB inspection, or finding/ack workflows.
 
-- Use for "where is X", "what touches Y", or "find the code/schema/route for Z".
-- Use when exact text search is too narrow and repo relationships matter.
-- Defaults to compact output. Pass an explicit `limit` or
-  `verbosity: "full"` when you need a broader search result.
-- Follow up with `route_trace`, `schema_usage`, `trace_table`,
-  `trace_rpc`, or graph tools once the target is known.
-
-### `reef_scout`
-
-Use for durable, ranked Reef context before reading or editing.
-
-- Use for messy requests where existing facts, findings, rules, diagnostics, or
-  DB review comments may already point at the right files.
-- Ranking is intent-aware: app-flow questions favor files, routes, and
-  findings; RLS/schema questions favor database evidence.
-- Treat the top candidates as a reading queue, then use normal reads/search and
-  targeted tools to verify.
+- Do not load specialist tools just to browse the catalog.
+- Prefer `reef_ask` or `mako_help` first unless the exact specialist target is
+  already known.
 
 ### `project_conventions`
 
@@ -126,7 +125,7 @@ Use before editing a known risky file.
 - Use `reef_inspect` only when a returned finding or fact needs deeper
   evidence.
 
-### `reef_diff_impact`
+### `reef_impact`
 
 Use mid-edit or before review when changed files may affect callers.
 
@@ -135,6 +134,8 @@ Use mid-edit or before review when changed files may affect callers.
   need re-checking, and applicable convention risks.
 - It is read-only and does not run `working_tree_overlay`; if overlay facts are
   missing, call `working_tree_overlay` or wait for the watcher first.
+- `reef_diff_impact` remains the lower-level compatibility name for the same
+  calculation.
 
 ## Feedback Logging
 

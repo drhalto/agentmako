@@ -65,10 +65,42 @@ function filesForDiagnostics(input: MakoHelpToolInput): string[] {
       : ["<changed-file>"];
 }
 
-function classifyRecipe(task: string): MakoHelpRecipeId {
-  const lower = task.toLowerCase();
+function reefAskStep(input: MakoHelpToolInput, mode: "explore" | "plan" | "implement" | "review" | "verify" = "explore"): MakoHelpToolStep {
+  const focusDatabaseObjects = [
+    ...(input.table ? [input.table] : []),
+    ...(input.rpc ? [input.rpc] : []),
+  ];
+  return step({
+    id: "reef-ask",
+    phase: "orient",
+    toolName: "reef_ask",
+    title: "Ask Reef for the compiled project answer",
+    why: "Combines codebase, database, findings, risks, instructions, freshness, and diagnostic state without making the agent orchestrate broad tool chains.",
+    whenToUse: "Use first for structural questions and bounded quoted literal lookups.",
+    suggestedArgs: withLocator(input, {
+      question: input.task,
+      mode,
+      ...(input.focusFiles?.length ? { focusFiles: input.focusFiles } : {}),
+      ...(input.changedFiles?.length ? { changedFiles: input.changedFiles } : {}),
+      ...(input.route ? { focusRoutes: [input.route] } : {}),
+      ...(focusDatabaseObjects.length ? { focusDatabaseObjects } : {}),
+      freshnessPolicy: "prefer_fresh",
+      budgetTokens: 5000,
+    }),
+  });
+}
+
+function hasDuplicationDiscoveryIntent(lower: string): boolean {
+  return /\b(duplicate|duplicates|duplicated|duplication|clone|clones|copy[-/ ]?paste|near[- ]?twin|dead code|unused|orphan|orphaned|unreferenced)\b/.test(lower);
+}
+
+function classifyRecipe(input: MakoHelpToolInput): MakoHelpRecipeId {
+  const lower = input.task.toLowerCase();
   if (/\b(auth|authorization|session|tenant|role|permission|guard|login|dashboard)\b/.test(lower)) {
     return "auth_flow_audit";
+  }
+  if (hasDuplicationDiscoveryIntent(lower) && input.table == null && input.rpc == null) {
+    return "general_orientation";
   }
   if (/\b(rls|schema|table|database|postgres|supabase|rpc|policy|migration)\b/.test(lower)) {
     return "db_schema_rls_audit";
@@ -90,9 +122,9 @@ function contextPacketStep(input: MakoHelpToolInput, mode: "explore" | "plan" | 
     id: "context",
     phase: "orient",
     toolName: "context_packet",
-    title: "Start with a scoped context packet",
+    title: "Expand into a scoped context packet",
     why: "Ranks likely files, routes, schema objects, instructions, freshness, findings, risks, and expansion tools before broad searching.",
-    whenToUse: "Use first for vague or cross-file work.",
+    whenToUse: "Use when reef_ask needs more raw ranked files, routes, symbols, or schema objects.",
     suggestedArgs: withLocator(input, {
       request: input.task,
       mode,
@@ -110,17 +142,8 @@ function contextPacketStep(input: MakoHelpToolInput, mode: "explore" | "plan" | 
 
 function generalRecipe(input: MakoHelpToolInput): { summary: string; steps: MakoHelpToolStep[]; notes: string[] } {
   const steps = [
+    reefAskStep(input, "explore"),
     contextPacketStep(input),
-    step({
-      id: "reef-scout",
-      phase: "expand",
-      toolName: "reef_scout",
-      title: "Ask Reef what it already knows",
-      why: "Finds durable facts, findings, rules, conventions, and diagnostic runs relevant to the task.",
-      whenToUse: "Use after the packet when the task is still broad or spans project memory.",
-      suggestedArgs: withLocator(input, { query: input.task, limit: 10 }),
-      batchable: true,
-    }),
     step({
       id: "cross-search",
       phase: "expand",
@@ -143,11 +166,12 @@ function generalRecipe(input: MakoHelpToolInput): { summary: string; steps: Mako
     }),
   ];
   return {
-    summary: "General Mako orientation: packet first, Reef/project memory second, broad search only when needed, then freshness before relying on exact evidence.",
+    summary: "General Mako orientation: ask Reef first, expand with context/search only when needed, then check freshness before relying on indexed line evidence.",
     steps,
     notes: [
-      "Use live_text_search or shell rg for exact current disk text after edits.",
-      "Use tool_batch for independent read-only follow-ups after the first context_packet.",
+      "Ask reef_ask with a quoted literal for bounded current-disk text checks; use live_text_search or shell rg for regex, custom globs, or raw full inventories.",
+      "When RPC/schema terms are only part of a duplicate or structural search scope, stay with reef_ask/context_packet before using DB-object inspection tools.",
+      "Use tool_batch for independent read-only follow-ups after the first reef_ask result.",
     ],
   };
 }
@@ -159,7 +183,7 @@ function authRecipe(input: MakoHelpToolInput): { summary: string; steps: MakoHel
       ? { filePath: input.focusFiles[0] }
       : { feature: input.task };
   const steps = [
-    contextPacketStep(input, "review"),
+    reefAskStep(input, "review"),
     step({
       id: "auth-path",
       phase: "inspect",
@@ -232,11 +256,11 @@ function authRecipe(input: MakoHelpToolInput): { summary: string; steps: MakoHel
     }),
   ];
   return {
-    summary: "Auth workflow: context_packet first, auth_path for the boundary, conventions/open loops for project rules, cross_search for fallback, then file_preflight and focused diagnostics around edits.",
+    summary: "Auth workflow: ask Reef first for combined code/database/findings context, inspect the auth boundary, then use focused preflight and diagnostics around edits.",
     steps,
     notes: [
       "If auth_path returns matched:false, follow its suggested cross_search args.",
-      "For exact post-edit text, use live_text_search or shell rg; indexed stability is not filesystem freshness.",
+      "For bounded exact post-edit text, ask reef_ask with a quoted literal; use live_text_search or shell rg for regex or raw full inventories.",
     ],
   };
 }
@@ -245,17 +269,7 @@ function dbRecipe(input: MakoHelpToolInput): { summary: string; steps: MakoHelpT
   const table = input.table ?? "<schema.table>";
   const rpc = input.rpc ?? "<rpc-name>";
   const steps = [
-    contextPacketStep(input, "review"),
-    step({
-      id: "schema-scout",
-      phase: "inspect",
-      toolName: "reef_scout",
-      title: "Classify schema versus app-flow evidence",
-      why: "Ranks database facts first for RLS/schema tasks while still surfacing app call sites.",
-      whenToUse: "Use when the task mentions RLS, policies, tables, RPCs, or migrations.",
-      suggestedArgs: withLocator(input, { query: input.task, limit: 10 }),
-      batchable: true,
-    }),
+    reefAskStep(input, "review"),
     step({
       id: "table-schema",
       phase: "inspect",
@@ -298,10 +312,11 @@ function dbRecipe(input: MakoHelpToolInput): { summary: string; steps: MakoHelpT
     }),
   ];
   return {
-    summary: "Database workflow: orient with context_packet, inspect live DB facts for table/RLS/RPC questions, then use neighborhoods/traces to connect schema facts back to app code.",
+    summary: "Database workflow: ask Reef first for combined code/database context, inspect live DB facts for table/RLS/RPC questions, then use neighborhoods/traces only when deeper expansion is needed.",
     steps,
     notes: [
       "Run db_reef_refresh after schema migrations or Supabase type regeneration so Reef-backed tools use current database facts.",
+      "For inventory questions such as listing RPCs, tables, views, or RLS policies, ask reef_ask first; use live DB tools when inspecting one named object deeply.",
       "If no live DB binding is configured, use reef_scout, schema_usage, trace_rpc, and table_neighborhood against indexed facts.",
     ],
   };
@@ -309,7 +324,7 @@ function dbRecipe(input: MakoHelpToolInput): { summary: string; steps: MakoHelpT
 
 function fileEditRecipe(input: MakoHelpToolInput): { summary: string; steps: MakoHelpToolStep[]; notes: string[] } {
   const steps = [
-    contextPacketStep(input, "implement"),
+    reefAskStep(input, "implement"),
     step({
       id: "file-preflight",
       phase: "pre_edit",
@@ -324,9 +339,9 @@ function fileEditRecipe(input: MakoHelpToolInput): { summary: string; steps: Mak
       id: "exact-text",
       phase: "inspect",
       toolName: "live_text_search",
-      title: "Check exact live text when needed",
-      why: "Reads current disk text without waiting on index refresh.",
-      whenToUse: "Use for exact strings after edits or generated/unindexed files.",
+      title: "Fallback to raw live text search",
+      why: "Reads current disk text with raw match rows, glob scope, and regex support.",
+      whenToUse: "Use when reef_ask's bounded literal lane is not enough: regex, custom globs, generated/unindexed files, or full inventories.",
       suggestedArgs: withLocator(input, { query: input.task, fixedStrings: true, maxMatches: 50 }),
       batchable: true,
     }),
@@ -362,7 +377,7 @@ function fileEditRecipe(input: MakoHelpToolInput): { summary: string; steps: Mak
     }),
   ];
   return {
-    summary: "File-edit workflow: context_packet for scope, file_preflight before touching the file, exact live search when needed, reef_diff_impact mid-edit, then lint_files and verification_state after edits.",
+    summary: "File-edit workflow: ask Reef for scope, run file_preflight before touching the file, use raw live search only when Reef's bounded literal lane is not enough, then diff impact and verification after edits.",
     steps,
     notes: ["If file_preflight uses <target-file>, pass focusFiles or changedFiles to get fully pre-filled args."],
   };
@@ -370,7 +385,7 @@ function fileEditRecipe(input: MakoHelpToolInput): { summary: string; steps: Mak
 
 function reviewRecipe(input: MakoHelpToolInput): { summary: string; steps: MakoHelpToolStep[]; notes: string[] } {
   const steps = [
-    contextPacketStep(input, "review"),
+    reefAskStep(input, "review"),
     step({
       id: "open-loops",
       phase: "inspect",
@@ -423,7 +438,7 @@ function reviewRecipe(input: MakoHelpToolInput): { summary: string; steps: MakoH
     }),
   ];
   return {
-    summary: "Review workflow: use context_packet review mode, inspect open loops, file preflight, and diff impact data, verify diagnostic freshness, then run staged boundary checks when committing.",
+    summary: "Review workflow: ask Reef for a compiled review packet, inspect open loops and file preflight details, verify diagnostic freshness, then run staged boundary checks when committing.",
     steps,
     notes: ["Use lint_files with changedFiles when verification_state says lint_files is stale."],
   };
@@ -431,7 +446,7 @@ function reviewRecipe(input: MakoHelpToolInput): { summary: string; steps: MakoH
 
 function diagnosticsRecipe(input: MakoHelpToolInput): { summary: string; steps: MakoHelpToolStep[]; notes: string[] } {
   const steps = [
-    contextPacketStep(input, "review"),
+    reefAskStep(input, "verify"),
     step({
       id: "known-issues",
       phase: "inspect",
@@ -481,7 +496,7 @@ function diagnosticsRecipe(input: MakoHelpToolInput): { summary: string; steps: 
 }
 
 export async function makoHelpTool(input: MakoHelpToolInput): Promise<MakoHelpToolOutput> {
-  const recipeId = classifyRecipe(input.task);
+  const recipeId = classifyRecipe(input);
   const recipe = recipeId === "auth_flow_audit"
     ? authRecipe(input)
     : recipeId === "db_schema_rls_audit"

@@ -102,6 +102,12 @@ export function insertToolRunImpl(db: DatabaseSync, input: ToolRunInsert): ToolR
 export function queryToolRunsImpl(db: DatabaseSync, options: QueryToolRunsOptions = {}): ToolRunRecord[] {
   const clauses: string[] = [];
   const values: Array<string | number> = [];
+  const runIds = [...new Set(options.runIds ?? [])];
+
+  if (runIds.length > 0) {
+    clauses.push(`run_id IN (${runIds.map(() => "?").join(", ")})`);
+    values.push(...runIds);
+  }
 
   if (options.toolName) {
     clauses.push("tool_name = ?");
@@ -119,7 +125,7 @@ export function queryToolRunsImpl(db: DatabaseSync, options: QueryToolRunsOption
   }
 
   const whereClause = clauses.length > 0 ? `WHERE ${clauses.join(" AND ")}` : "";
-  const limit = options.limit ?? 50;
+  const limit = Math.max(options.limit ?? 50, runIds.length || 0);
   const rows = db
     .prepare(`
       SELECT

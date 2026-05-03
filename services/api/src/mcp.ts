@@ -121,12 +121,12 @@ function createMcpInputSchema(schema: ZodTypeAny): ZodTypeAny {
 
   let objectSchema: z.AnyZodObject = z.object(coercedShape);
   const unknownKeys = schema._def.unknownKeys as "passthrough" | "strict" | "strip" | undefined;
-  if (unknownKeys === "strict") {
-    objectSchema = objectSchema.strict();
-  } else if (unknownKeys === "passthrough") {
+  if (unknownKeys === "passthrough") {
     objectSchema = objectSchema.passthrough();
   } else {
-    objectSchema = objectSchema.strip();
+    objectSchema = objectSchema.strict(
+      `Unexpected input key. Expected top-level fields: ${formatMcpInputKeys(Object.keys(shape))}.`,
+    );
   }
 
   const catchall = schema._def.catchall as ZodTypeAny | undefined;
@@ -135,6 +135,12 @@ function createMcpInputSchema(schema: ZodTypeAny): ZodTypeAny {
   }
 
   return schema.description ? objectSchema.describe(schema.description) : objectSchema;
+}
+
+function formatMcpInputKeys(keys: readonly string[]): string {
+  const visible = keys.slice(0, 16).map((key) => `"${key}"`);
+  const remaining = keys.length - visible.length;
+  return remaining > 0 ? `${visible.join(", ")}, +${remaining} more` : visible.join(", ");
 }
 
 export interface McpSession {

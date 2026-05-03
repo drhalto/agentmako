@@ -10,6 +10,7 @@ import {
   ProjectFindingStatusSchema,
   ProjectOverlaySchema,
   ReefDiagnosticRunSchema,
+  ReefEvidenceGraphSchema,
   ReefDiagnosticRunStatusSchema,
   ReefSeveritySchema,
   ReefRuleDescriptorSchema,
@@ -23,6 +24,7 @@ import {
   type ProjectFindingStatus,
   type ProjectOverlay,
   type ReefDiagnosticRun,
+  type ReefEvidenceGraph,
   type ReefDiagnosticRunStatus,
   type ReefSeverity,
   type ReefRuleDescriptor,
@@ -53,9 +55,33 @@ import {
   JsonObjectSchema,
 } from "./tool-schema-shared.js";
 import {
+  ContextPacketDatabaseObjectSchema,
+  ContextPacketIntentSchema,
   ContextPacketInstructionSchema,
+  ContextPacketReadableCandidateSchema,
+  ContextPacketRiskSchema,
+  ContextPacketRouteSchema,
+  ContextPacketSymbolSchema,
+  type ContextPacketDatabaseObject,
+  type ContextPacketIntent,
   type ContextPacketInstruction,
+  type ContextPacketReadableCandidate,
+  type ContextPacketRisk,
+  type ContextPacketRoute,
+  type ContextPacketSymbol,
 } from "./tool-context-packet-schemas.js";
+import {
+  LiveTextSearchMatchSchema,
+  type LiveTextSearchMatch,
+} from "./tool-live-text-search-schemas.js";
+import {
+  RouteContextToolOutputSchema,
+  RpcNeighborhoodToolOutputSchema,
+  TableNeighborhoodToolOutputSchema,
+  type RouteContextToolOutput,
+  type RpcNeighborhoodToolOutput,
+  type TableNeighborhoodToolOutput,
+} from "./tool-neighborhood-schemas.js";
 import { ProjectLocatorInputObjectSchema, type ProjectLocatorInput } from "./tool-project-locator.js";
 
 export interface ProjectFindingsToolInput extends ProjectLocatorInput {
@@ -704,6 +730,138 @@ export const ExtractRuleTemplateToolOutputSchema = z.object({
   reefExecution: ReefToolExecutionSchema,
   warnings: z.array(z.string().min(1)),
 }) satisfies z.ZodType<ExtractRuleTemplateToolOutput>;
+
+export const ReefLearningReviewModeSchema = z.enum(["suggest"]);
+export type ReefLearningReviewMode = z.infer<typeof ReefLearningReviewModeSchema>;
+
+export const ReefLearningSuggestionKindSchema = z.enum([
+  "rule_pack_template",
+  "sentinel_rule",
+  "instruction_patch",
+  "project_convention_candidate",
+  "conjecture",
+  "session_recall_note",
+]);
+export type ReefLearningSuggestionKind = z.infer<typeof ReefLearningSuggestionKindSchema>;
+
+export const ReefLearningSuggestionStatusSchema = z.enum(["proposed"]);
+export type ReefLearningSuggestionStatus = z.infer<typeof ReefLearningSuggestionStatusSchema>;
+
+export interface ReefLearningSuggestionDraft {
+  path?: string;
+  content?: string;
+  patch?: string;
+}
+
+export const ReefLearningSuggestionDraftSchema = z.object({
+  path: z.string().min(1).optional(),
+  content: z.string().min(1).optional(),
+  patch: z.string().min(1).optional(),
+}) satisfies z.ZodType<ReefLearningSuggestionDraft>;
+
+export interface ReefLearningSuggestionTarget {
+  filePath?: string;
+  ruleId?: string;
+  findingFingerprint?: string;
+  toolRunId?: string;
+  requestId?: string;
+}
+
+export const ReefLearningSuggestionTargetSchema = z.object({
+  filePath: z.string().min(1).optional(),
+  ruleId: z.string().min(1).optional(),
+  findingFingerprint: z.string().min(1).optional(),
+  toolRunId: z.string().min(1).optional(),
+  requestId: z.string().min(1).optional(),
+}) satisfies z.ZodType<ReefLearningSuggestionTarget>;
+
+export interface ReefLearningSuggestion {
+  id: string;
+  kind: ReefLearningSuggestionKind;
+  status: ReefLearningSuggestionStatus;
+  title: string;
+  confidence: number;
+  rationale: string;
+  evidenceRefs: string[];
+  sourceSignals: string[];
+  suggestedAction: string;
+  target?: ReefLearningSuggestionTarget;
+  draft?: ReefLearningSuggestionDraft;
+  metadata?: JsonObject;
+}
+
+export const ReefLearningSuggestionSchema = z.object({
+  id: z.string().min(1),
+  kind: ReefLearningSuggestionKindSchema,
+  status: ReefLearningSuggestionStatusSchema,
+  title: z.string().min(1),
+  confidence: z.number().min(0).max(1),
+  rationale: z.string().min(1),
+  evidenceRefs: z.array(z.string().min(1)),
+  sourceSignals: z.array(z.string().min(1)),
+  suggestedAction: z.string().min(1),
+  target: ReefLearningSuggestionTargetSchema.optional(),
+  draft: ReefLearningSuggestionDraftSchema.optional(),
+  metadata: JsonObjectSchema.optional(),
+}) satisfies z.ZodType<ReefLearningSuggestion>;
+
+export interface ReefLearningReviewToolInput extends ProjectLocatorInput {
+  changedFiles?: string[];
+  resolvedFindingIds?: string[];
+  recentToolRunIds?: string[];
+  since?: string;
+  mode?: ReefLearningReviewMode;
+  includeLowConfidence?: boolean;
+  limit?: number;
+}
+
+export const ReefLearningReviewToolInputSchema = ProjectLocatorInputObjectSchema.extend({
+  changedFiles: z.array(z.string().trim().min(1)).min(1).max(100).optional(),
+  resolvedFindingIds: z.array(z.string().trim().min(1)).min(1).max(100).optional(),
+  recentToolRunIds: z.array(z.string().trim().min(1)).min(1).max(100).optional(),
+  since: z.string().min(1).optional(),
+  mode: ReefLearningReviewModeSchema.optional(),
+  includeLowConfidence: z.boolean().optional(),
+  limit: z.number().int().min(1).max(100).optional(),
+}).strict() satisfies z.ZodType<ReefLearningReviewToolInput>;
+
+export interface ReefLearningReviewToolOutput {
+  toolName: "reef_learning_review";
+  projectId: string;
+  projectRoot: string;
+  mode: ReefLearningReviewMode;
+  suggestions: ReefLearningSuggestion[];
+  summary: {
+    changedFileCount: number;
+    resolvedFindingCount: number;
+    repeatedRuleCount: number;
+    recentToolRunCount: number;
+    feedbackSignalCount: number;
+    suggestionCount: number;
+  };
+  guardrails: string[];
+  reefExecution: ReefToolExecution;
+  warnings: string[];
+}
+
+export const ReefLearningReviewToolOutputSchema = z.object({
+  toolName: z.literal("reef_learning_review"),
+  projectId: z.string().min(1),
+  projectRoot: z.string().min(1),
+  mode: ReefLearningReviewModeSchema,
+  suggestions: z.array(ReefLearningSuggestionSchema),
+  summary: z.object({
+    changedFileCount: z.number().int().nonnegative(),
+    resolvedFindingCount: z.number().int().nonnegative(),
+    repeatedRuleCount: z.number().int().nonnegative(),
+    recentToolRunCount: z.number().int().nonnegative(),
+    feedbackSignalCount: z.number().int().nonnegative(),
+    suggestionCount: z.number().int().nonnegative(),
+  }),
+  guardrails: z.array(z.string().min(1)),
+  reefExecution: ReefToolExecutionSchema,
+  warnings: z.array(z.string().min(1)),
+}) satisfies z.ZodType<ReefLearningReviewToolOutput>;
 
 export const DiagnosticRefreshSourceSchema = z.enum([
   "lint_files",
@@ -1437,6 +1595,68 @@ export const VerificationStateToolOutputSchema = z.object({
   warnings: z.array(z.string().min(1)),
 }) satisfies z.ZodType<VerificationStateToolOutput>;
 
+export interface ReefVerifyToolInput extends VerificationStateToolInput {
+  includeOpenLoops?: boolean;
+  includeAcknowledgedLoops?: boolean;
+  openLoopsLimit?: number;
+}
+
+export const ReefVerifyToolInputSchema = VerificationStateToolInputSchema.extend({
+  includeOpenLoops: z.boolean().optional(),
+  includeAcknowledgedLoops: z.boolean().optional(),
+  openLoopsLimit: z.number().int().min(1).max(200).optional(),
+}) satisfies z.ZodType<ReefVerifyToolInput>;
+
+export interface ReefVerifyToolOutput {
+  toolName: "reef_verify";
+  projectId: string;
+  projectRoot: string;
+  status: VerificationStateToolOutput["status"];
+  verification: VerificationStateToolOutput;
+  openLoops?: ProjectOpenLoopsToolOutput;
+  summary: {
+    verificationStatus: VerificationStateToolOutput["status"];
+    sourceCount: number;
+    staleSourceCount: number;
+    failedSourceCount: number;
+    unknownSourceCount: number;
+    changedFileCount: number;
+    recentRunCount: number;
+    openLoopCount: number;
+    openLoopErrorCount: number;
+    openLoopWarningCount: number;
+    canClaimVerified: boolean;
+  };
+  reefExecution: ReefToolExecution;
+  suggestedActions: string[];
+  warnings: string[];
+}
+
+export const ReefVerifyToolOutputSchema = z.object({
+  toolName: z.literal("reef_verify"),
+  projectId: z.string().min(1),
+  projectRoot: z.string().min(1),
+  status: z.enum(["fresh", "stale", "unknown", "failed"]),
+  verification: VerificationStateToolOutputSchema,
+  openLoops: ProjectOpenLoopsToolOutputSchema.optional(),
+  summary: z.object({
+    verificationStatus: z.enum(["fresh", "stale", "unknown", "failed"]),
+    sourceCount: z.number().int().nonnegative(),
+    staleSourceCount: z.number().int().nonnegative(),
+    failedSourceCount: z.number().int().nonnegative(),
+    unknownSourceCount: z.number().int().nonnegative(),
+    changedFileCount: z.number().int().nonnegative(),
+    recentRunCount: z.number().int().nonnegative(),
+    openLoopCount: z.number().int().nonnegative(),
+    openLoopErrorCount: z.number().int().nonnegative(),
+    openLoopWarningCount: z.number().int().nonnegative(),
+    canClaimVerified: z.boolean(),
+  }),
+  reefExecution: ReefToolExecutionSchema,
+  suggestedActions: z.array(z.string().min(1)),
+  warnings: z.array(z.string().min(1)),
+}) satisfies z.ZodType<ReefVerifyToolOutput>;
+
 export interface ProjectConvention {
   id: string;
   kind: string;
@@ -1740,6 +1960,17 @@ export const ReefDiffImpactToolOutputSchema = z.object({
   }),
   warnings: z.array(z.string().min(1)),
 }) satisfies z.ZodType<ReefDiffImpactToolOutput>;
+
+export type ReefImpactToolInput = ReefDiffImpactToolInput;
+export const ReefImpactToolInputSchema = ReefDiffImpactToolInputSchema satisfies z.ZodType<ReefImpactToolInput>;
+
+export interface ReefImpactToolOutput extends Omit<ReefDiffImpactToolOutput, "toolName"> {
+  toolName: "reef_impact";
+}
+
+export const ReefImpactToolOutputSchema = ReefDiffImpactToolOutputSchema.extend({
+  toolName: z.literal("reef_impact"),
+}) satisfies z.ZodType<ReefImpactToolOutput>;
 
 export interface RuleMemoryEntry {
   ruleId: string;
@@ -2050,3 +2281,833 @@ export const ReefAgentStatusToolOutputSchema = z.object({
   suggestedActions: z.array(z.string().min(1)),
   warnings: z.array(z.string().min(1)),
 }) satisfies z.ZodType<ReefAgentStatusToolOutput>;
+
+export type ReefStatusToolInput = ReefAgentStatusToolInput;
+export const ReefStatusToolInputSchema = ReefAgentStatusToolInputSchema satisfies z.ZodType<ReefStatusToolInput>;
+
+export interface ReefStatusToolOutput extends Omit<ReefAgentStatusToolOutput, "toolName"> {
+  toolName: "reef_status";
+}
+
+export const ReefStatusToolOutputSchema = ReefAgentStatusToolOutputSchema.extend({
+  toolName: z.literal("reef_status"),
+}) satisfies z.ZodType<ReefStatusToolOutput>;
+
+export const ReefAskModeSchema = z.enum(["explore", "plan", "implement", "review", "verify"]);
+export type ReefAskMode = z.infer<typeof ReefAskModeSchema>;
+
+export const ReefAskConfidenceSchema = z.enum(["high", "medium", "low"]);
+export type ReefAskConfidence = z.infer<typeof ReefAskConfidenceSchema>;
+
+export const ReefAskEvidenceModeSchema = z.enum(["compact", "full"]);
+export type ReefAskEvidenceMode = z.infer<typeof ReefAskEvidenceModeSchema>;
+
+export const ReefAskEngineStepStatusSchema = z.enum(["included", "skipped"]);
+export type ReefAskEngineStepStatus = z.infer<typeof ReefAskEngineStepStatusSchema>;
+
+export interface ReefAskToolInput extends ProjectLocatorInput {
+  question: string;
+  mode?: ReefAskMode;
+  focusFiles?: string[];
+  changedFiles?: string[];
+  focusRoutes?: string[];
+  focusSymbols?: string[];
+  focusDatabaseObjects?: string[];
+  includeInstructions?: boolean;
+  includeRisks?: boolean;
+  includeOpenLoops?: boolean;
+  includeVerification?: boolean;
+  freshnessPolicy?: "report" | "prefer_fresh";
+  budgetTokens?: number;
+  maxPrimaryContext?: number;
+  maxRelatedContext?: number;
+  maxOpenLoops?: number;
+  evidenceMode?: ReefAskEvidenceMode;
+  maxEvidenceItemsPerSection?: number;
+  risksMinConfidence?: number;
+}
+
+export const ReefAskToolInputSchema = ProjectLocatorInputObjectSchema.extend({
+  question: z.string().trim().min(1),
+  mode: ReefAskModeSchema.optional(),
+  focusFiles: z.array(z.string().min(1)).min(1).max(100).optional(),
+  changedFiles: z.array(z.string().min(1)).min(1).max(100).optional(),
+  focusRoutes: z.array(z.string().min(1)).min(1).max(50).optional(),
+  focusSymbols: z.array(z.string().min(1)).min(1).max(100).optional(),
+  focusDatabaseObjects: z.array(z.string().min(1)).min(1).max(100).optional(),
+  includeInstructions: z.boolean().optional(),
+  includeRisks: z.boolean().optional(),
+  includeOpenLoops: z.boolean().optional(),
+  includeVerification: z.boolean().optional(),
+  freshnessPolicy: z.enum(["report", "prefer_fresh"]).optional(),
+  budgetTokens: z.number().int().min(512).max(24_000).optional(),
+  maxPrimaryContext: z.number().int().min(1).max(50).optional(),
+  maxRelatedContext: z.number().int().min(1).max(100).optional(),
+  maxOpenLoops: z.number().int().min(1).max(50).optional(),
+  evidenceMode: ReefAskEvidenceModeSchema.optional(),
+  maxEvidenceItemsPerSection: z.number().int().min(1).max(500).optional(),
+  risksMinConfidence: z.number().min(0).max(1).optional(),
+}) satisfies z.ZodType<ReefAskToolInput>;
+
+export interface ReefAskEngineStep {
+  name: string;
+  status: ReefAskEngineStepStatus;
+  reason: string;
+  returnedCount: number;
+}
+
+export const ReefAskEngineStepSchema = z.object({
+  name: z.string().min(1),
+  status: ReefAskEngineStepStatusSchema,
+  reason: z.string().min(1),
+  returnedCount: z.number().int().nonnegative(),
+}) satisfies z.ZodType<ReefAskEngineStep>;
+
+export interface ReefAskPlannedCalculation {
+  nodeId: string;
+  queryKind: string;
+  lane: string;
+  status: ReefAskEngineStepStatus;
+  reason: string;
+  returnedCount: number;
+}
+
+export const ReefAskPlannedCalculationSchema = z.object({
+  nodeId: z.string().min(1),
+  queryKind: z.string().min(1),
+  lane: z.string().min(1),
+  status: ReefAskEngineStepStatusSchema,
+  reason: z.string().min(1),
+  returnedCount: z.number().int().nonnegative(),
+}) satisfies z.ZodType<ReefAskPlannedCalculation>;
+
+export interface ReefAskGraphSummary {
+  returnedNodes: number;
+  totalNodes: number;
+  droppedNodes: number;
+  returnedEdges: number;
+  totalEdges: number;
+  droppedEdges: number;
+  truncated: boolean;
+  nodeKinds: Record<string, number>;
+  edgeKinds: Record<string, number>;
+  sourceCounts: Record<string, number>;
+}
+
+export const ReefAskGraphSummarySchema = z.object({
+  returnedNodes: z.number().int().nonnegative(),
+  totalNodes: z.number().int().nonnegative(),
+  droppedNodes: z.number().int().nonnegative(),
+  returnedEdges: z.number().int().nonnegative(),
+  totalEdges: z.number().int().nonnegative(),
+  droppedEdges: z.number().int().nonnegative(),
+  truncated: z.boolean(),
+  nodeKinds: z.record(z.string().min(1), z.number().int().nonnegative()),
+  edgeKinds: z.record(z.string().min(1), z.number().int().nonnegative()),
+  sourceCounts: z.record(z.string().min(1), z.number().int().nonnegative()),
+}) satisfies z.ZodType<ReefAskGraphSummary>;
+
+export interface ReefAskQueryPlan {
+  mode: ReefAskMode;
+  intent: ContextPacketIntent;
+  evidenceLanes: string[];
+  graphSummary: ReefAskGraphSummary;
+  assumptions: string[];
+  engineSteps: ReefAskEngineStep[];
+  calculations: ReefAskPlannedCalculation[];
+}
+
+export const ReefAskQueryPlanSchema = z.object({
+  mode: ReefAskModeSchema,
+  intent: ContextPacketIntentSchema,
+  evidenceLanes: z.array(z.string().min(1)),
+  graphSummary: ReefAskGraphSummarySchema,
+  assumptions: z.array(z.string().min(1)),
+  engineSteps: z.array(ReefAskEngineStepSchema),
+  calculations: z.array(ReefAskPlannedCalculationSchema),
+}) satisfies z.ZodType<ReefAskQueryPlan>;
+
+export interface ReefAskAnswer {
+  summary: string;
+  confidence: ReefAskConfidence;
+  confidenceReasons: string[];
+  inventorySummary?: ReefAskInventorySummary;
+  databaseObjectSummary?: ReefAskDatabaseObjectSummary;
+  diagnosticSummary?: ReefAskDiagnosticSummary;
+  findingsSummary?: ReefAskFindingsSummary;
+  literalMatchesSummary?: ReefAskLiteralMatchesSummary;
+  whereUsedSummary?: ReefAskWhereUsedSummary;
+  decisionTrace: ReefAskDecisionTrace;
+  nextQueries: ReefAskNextQuery[];
+  suggestedNextActions: string[];
+}
+
+export interface ReefAskInventoryItem {
+  kind: string;
+  name: string;
+  schemaName?: string;
+  freshness: FactFreshness;
+}
+
+export const ReefAskInventoryItemSchema = z.object({
+  kind: z.string().min(1),
+  name: z.string().min(1),
+  schemaName: z.string().min(1).optional(),
+  freshness: FactFreshnessSchema,
+}) satisfies z.ZodType<ReefAskInventoryItem>;
+
+export interface ReefAskInventorySummary {
+  total: number;
+  byKind: Record<string, number>;
+  staleCount: number;
+  items: ReefAskInventoryItem[];
+  truncated: boolean;
+}
+
+export const ReefAskInventorySummarySchema = z.object({
+  total: z.number().int().nonnegative(),
+  byKind: z.record(z.string().min(1), z.number().int().nonnegative()),
+  staleCount: z.number().int().nonnegative(),
+  items: z.array(ReefAskInventoryItemSchema),
+  truncated: z.boolean(),
+}) satisfies z.ZodType<ReefAskInventorySummary>;
+
+export interface ReefAskDatabaseTableSummary {
+  columnCount?: number;
+  primaryKey: string[];
+  indexCount?: number;
+  outboundForeignKeyCount?: number;
+  inboundForeignKeyCount?: number;
+  rlsEnabled?: boolean;
+  forceRls?: boolean;
+  policyCount?: number;
+  triggerCount?: number;
+  freshness: FactFreshness;
+}
+
+export const ReefAskDatabaseTableSummarySchema = z.object({
+  columnCount: z.number().int().nonnegative().optional(),
+  primaryKey: z.array(z.string().min(1)),
+  indexCount: z.number().int().nonnegative().optional(),
+  outboundForeignKeyCount: z.number().int().nonnegative().optional(),
+  inboundForeignKeyCount: z.number().int().nonnegative().optional(),
+  rlsEnabled: z.boolean().optional(),
+  forceRls: z.boolean().optional(),
+  policyCount: z.number().int().nonnegative().optional(),
+  triggerCount: z.number().int().nonnegative().optional(),
+  freshness: FactFreshnessSchema,
+}) satisfies z.ZodType<ReefAskDatabaseTableSummary>;
+
+export interface ReefAskDatabaseColumnSummary {
+  name: string;
+  dataType?: string;
+  nullable?: boolean;
+  defaultExpression?: string;
+  isPrimaryKey?: boolean;
+  freshness: FactFreshness;
+}
+
+export const ReefAskDatabaseColumnSummarySchema = z.object({
+  name: z.string().min(1),
+  dataType: z.string().min(1).optional(),
+  nullable: z.boolean().optional(),
+  defaultExpression: z.string().min(1).optional(),
+  isPrimaryKey: z.boolean().optional(),
+  freshness: FactFreshnessSchema,
+}) satisfies z.ZodType<ReefAskDatabaseColumnSummary>;
+
+export interface ReefAskDatabaseIndexSummary {
+  name: string;
+  unique?: boolean;
+  primary?: boolean;
+  columns: string[];
+  definition?: string;
+  freshness: FactFreshness;
+}
+
+export const ReefAskDatabaseIndexSummarySchema = z.object({
+  name: z.string().min(1),
+  unique: z.boolean().optional(),
+  primary: z.boolean().optional(),
+  columns: z.array(z.string().min(1)),
+  definition: z.string().min(1).optional(),
+  freshness: FactFreshnessSchema,
+}) satisfies z.ZodType<ReefAskDatabaseIndexSummary>;
+
+export interface ReefAskDatabaseForeignKeySummary {
+  direction?: string;
+  constraintName: string;
+  columns: string[];
+  targetSchema?: string;
+  targetTable?: string;
+  targetColumns: string[];
+  sourceSchema?: string;
+  sourceTable?: string;
+  sourceColumns: string[];
+  onUpdate?: string;
+  onDelete?: string;
+  freshness: FactFreshness;
+}
+
+export const ReefAskDatabaseForeignKeySummarySchema = z.object({
+  direction: z.string().min(1).optional(),
+  constraintName: z.string().min(1),
+  columns: z.array(z.string().min(1)),
+  targetSchema: z.string().min(1).optional(),
+  targetTable: z.string().min(1).optional(),
+  targetColumns: z.array(z.string().min(1)),
+  sourceSchema: z.string().min(1).optional(),
+  sourceTable: z.string().min(1).optional(),
+  sourceColumns: z.array(z.string().min(1)),
+  onUpdate: z.string().min(1).optional(),
+  onDelete: z.string().min(1).optional(),
+  freshness: FactFreshnessSchema,
+}) satisfies z.ZodType<ReefAskDatabaseForeignKeySummary>;
+
+export interface ReefAskDatabaseRlsPolicySummary {
+  name: string;
+  mode?: string;
+  command?: string;
+  roles: string[];
+  usingExpression?: string;
+  withCheckExpression?: string;
+  freshness: FactFreshness;
+}
+
+export const ReefAskDatabaseRlsPolicySummarySchema = z.object({
+  name: z.string().min(1),
+  mode: z.string().min(1).optional(),
+  command: z.string().min(1).optional(),
+  roles: z.array(z.string().min(1)),
+  usingExpression: z.string().min(1).optional(),
+  withCheckExpression: z.string().min(1).optional(),
+  freshness: FactFreshnessSchema,
+}) satisfies z.ZodType<ReefAskDatabaseRlsPolicySummary>;
+
+export interface ReefAskDatabaseTriggerSummary {
+  name: string;
+  enabled?: boolean;
+  enabledMode?: string;
+  timing?: string;
+  events: string[];
+  hasBodyText?: boolean;
+  freshness: FactFreshness;
+}
+
+export const ReefAskDatabaseTriggerSummarySchema = z.object({
+  name: z.string().min(1),
+  enabled: z.boolean().optional(),
+  enabledMode: z.string().min(1).optional(),
+  timing: z.string().min(1).optional(),
+  events: z.array(z.string().min(1)),
+  hasBodyText: z.boolean().optional(),
+  freshness: FactFreshnessSchema,
+}) satisfies z.ZodType<ReefAskDatabaseTriggerSummary>;
+
+export interface ReefAskDatabaseUsageSummary {
+  filePath: string;
+  line?: number;
+  usageKind?: string;
+  excerpt?: string;
+  freshness: FactFreshness;
+}
+
+export const ReefAskDatabaseUsageSummarySchema = z.object({
+  filePath: z.string().min(1),
+  line: z.number().int().positive().optional(),
+  usageKind: z.string().min(1).optional(),
+  excerpt: z.string().min(1).optional(),
+  freshness: FactFreshnessSchema,
+}) satisfies z.ZodType<ReefAskDatabaseUsageSummary>;
+
+export interface ReefAskDatabaseObjectSummary {
+  schemaName?: string;
+  objectName: string;
+  factCount: number;
+  staleCount: number;
+  table?: ReefAskDatabaseTableSummary;
+  columns: ReefAskDatabaseColumnSummary[];
+  indexes: ReefAskDatabaseIndexSummary[];
+  foreignKeys: ReefAskDatabaseForeignKeySummary[];
+  rlsPolicies: ReefAskDatabaseRlsPolicySummary[];
+  triggers: ReefAskDatabaseTriggerSummary[];
+  usages: ReefAskDatabaseUsageSummary[];
+  truncated: boolean;
+}
+
+export const ReefAskDatabaseObjectSummarySchema = z.object({
+  schemaName: z.string().min(1).optional(),
+  objectName: z.string().min(1),
+  factCount: z.number().int().nonnegative(),
+  staleCount: z.number().int().nonnegative(),
+  table: ReefAskDatabaseTableSummarySchema.optional(),
+  columns: z.array(ReefAskDatabaseColumnSummarySchema),
+  indexes: z.array(ReefAskDatabaseIndexSummarySchema),
+  foreignKeys: z.array(ReefAskDatabaseForeignKeySummarySchema),
+  rlsPolicies: z.array(ReefAskDatabaseRlsPolicySummarySchema),
+  triggers: z.array(ReefAskDatabaseTriggerSummarySchema),
+  usages: z.array(ReefAskDatabaseUsageSummarySchema),
+  truncated: z.boolean(),
+}) satisfies z.ZodType<ReefAskDatabaseObjectSummary>;
+
+export const ReefAskDiagnosticGateSchema = z.enum([
+  "clear",
+  "review_required",
+  "needs_refresh",
+  "blocked",
+  "unknown",
+]);
+export type ReefAskDiagnosticGate = z.infer<typeof ReefAskDiagnosticGateSchema>;
+
+export interface ReefAskDiagnosticSourceSummary {
+  source: string;
+  status: VerificationSourceState["status"];
+  reason: string;
+  lastRunStatus?: ReefDiagnosticRunStatus;
+  lastRunFinishedAt?: string;
+  findingCount?: number;
+  persistedFindingCount?: number;
+  checkedFileCount?: number;
+}
+
+export const ReefAskDiagnosticSourceSummarySchema = z.object({
+  source: z.string().min(1),
+  status: z.enum(["fresh", "stale", "unknown", "failed", "unavailable"]),
+  reason: z.string().min(1),
+  lastRunStatus: ReefDiagnosticRunStatusSchema.optional(),
+  lastRunFinishedAt: z.string().min(1).optional(),
+  findingCount: z.number().int().nonnegative().optional(),
+  persistedFindingCount: z.number().int().nonnegative().optional(),
+  checkedFileCount: z.number().int().nonnegative().optional(),
+}) satisfies z.ZodType<ReefAskDiagnosticSourceSummary>;
+
+export interface ReefAskDiagnosticRunSummary {
+  source: string;
+  status: ReefDiagnosticRunStatus;
+  finishedAt: string;
+  findingCount: number;
+  persistedFindingCount: number;
+  checkedFileCount?: number;
+}
+
+export const ReefAskDiagnosticRunSummarySchema = z.object({
+  source: z.string().min(1),
+  status: ReefDiagnosticRunStatusSchema,
+  finishedAt: z.string().min(1),
+  findingCount: z.number().int().nonnegative(),
+  persistedFindingCount: z.number().int().nonnegative(),
+  checkedFileCount: z.number().int().nonnegative().optional(),
+}) satisfies z.ZodType<ReefAskDiagnosticRunSummary>;
+
+export interface ReefAskDiagnosticChangedFileSummary {
+  filePath: string;
+  lastModifiedAt: string;
+  staleForSources: string[];
+}
+
+export const ReefAskDiagnosticChangedFileSummarySchema = z.object({
+  filePath: z.string().min(1),
+  lastModifiedAt: z.string().min(1),
+  staleForSources: z.array(z.string().min(1)),
+}) satisfies z.ZodType<ReefAskDiagnosticChangedFileSummary>;
+
+export interface ReefAskDiagnosticOpenLoopSummary {
+  kind: ReefOpenLoopKind;
+  severity: ReefSeverity;
+  source: string;
+  title: string;
+  filePath?: string;
+  reason: string;
+}
+
+export const ReefAskDiagnosticOpenLoopSummarySchema = z.object({
+  kind: ReefOpenLoopKindSchema,
+  severity: ReefSeveritySchema,
+  source: z.string().min(1),
+  title: z.string().min(1),
+  filePath: z.string().min(1).optional(),
+  reason: z.string().min(1),
+}) satisfies z.ZodType<ReefAskDiagnosticOpenLoopSummary>;
+
+export interface ReefAskDiagnosticSummary {
+  gate: ReefAskDiagnosticGate;
+  canClaimVerified: boolean;
+  verificationStatus: VerificationStateToolOutput["status"] | "skipped";
+  sourceCounts: Record<VerificationSourceState["status"], number>;
+  openLoopCounts: {
+    total: number;
+    errors: number;
+    warnings: number;
+    infos: number;
+  };
+  changedFileCount: number;
+  blockerCount: number;
+  sources: ReefAskDiagnosticSourceSummary[];
+  recentRuns: ReefAskDiagnosticRunSummary[];
+  changedFiles: ReefAskDiagnosticChangedFileSummary[];
+  openLoops: ReefAskDiagnosticOpenLoopSummary[];
+  suggestedActions: string[];
+  truncated: boolean;
+}
+
+export const ReefAskDiagnosticSummarySchema = z.object({
+  gate: ReefAskDiagnosticGateSchema,
+  canClaimVerified: z.boolean(),
+  verificationStatus: z.enum(["fresh", "stale", "unknown", "failed", "skipped"]),
+  sourceCounts: z.object({
+    fresh: z.number().int().nonnegative(),
+    stale: z.number().int().nonnegative(),
+    unknown: z.number().int().nonnegative(),
+    failed: z.number().int().nonnegative(),
+    unavailable: z.number().int().nonnegative(),
+  }),
+  openLoopCounts: z.object({
+    total: z.number().int().nonnegative(),
+    errors: z.number().int().nonnegative(),
+    warnings: z.number().int().nonnegative(),
+    infos: z.number().int().nonnegative(),
+  }),
+  changedFileCount: z.number().int().nonnegative(),
+  blockerCount: z.number().int().nonnegative(),
+  sources: z.array(ReefAskDiagnosticSourceSummarySchema),
+  recentRuns: z.array(ReefAskDiagnosticRunSummarySchema),
+  changedFiles: z.array(ReefAskDiagnosticChangedFileSummarySchema),
+  openLoops: z.array(ReefAskDiagnosticOpenLoopSummarySchema),
+  suggestedActions: z.array(z.string().min(1)),
+  truncated: z.boolean(),
+}) satisfies z.ZodType<ReefAskDiagnosticSummary>;
+
+export interface ReefAskFindingSummaryItem {
+  fingerprint: string;
+  source: string;
+  ruleId?: string;
+  severity: ReefSeverity;
+  status: ProjectFindingStatus;
+  filePath?: string;
+  line?: number;
+  message: string;
+  freshness: FactFreshness;
+}
+
+export const ReefAskFindingSummaryItemSchema = z.object({
+  fingerprint: z.string().min(1),
+  source: z.string().min(1),
+  ruleId: z.string().min(1).optional(),
+  severity: ReefSeveritySchema,
+  status: ProjectFindingStatusSchema,
+  filePath: z.string().min(1).optional(),
+  line: z.number().int().positive().optional(),
+  message: z.string().min(1),
+  freshness: FactFreshnessSchema,
+}) satisfies z.ZodType<ReefAskFindingSummaryItem>;
+
+export interface ReefAskFindingsSummary {
+  total: number;
+  bySeverity: Record<ReefSeverity, number>;
+  bySource: Record<string, number>;
+  staleCount: number;
+  items: ReefAskFindingSummaryItem[];
+  truncated: boolean;
+}
+
+export const ReefAskFindingsSummarySchema = z.object({
+  total: z.number().int().nonnegative(),
+  bySeverity: z.object({
+    info: z.number().int().nonnegative(),
+    warning: z.number().int().nonnegative(),
+    error: z.number().int().nonnegative(),
+  }),
+  bySource: z.record(z.string().min(1), z.number().int().nonnegative()),
+  staleCount: z.number().int().nonnegative(),
+  items: z.array(ReefAskFindingSummaryItemSchema),
+  truncated: z.boolean(),
+}) satisfies z.ZodType<ReefAskFindingsSummary>;
+
+export interface ReefAskLiteralMatchFileSummary {
+  filePath: string;
+  matchCount: number;
+  firstLine?: number;
+}
+
+export const ReefAskLiteralMatchFileSummarySchema = z.object({
+  filePath: z.string().min(1),
+  matchCount: z.number().int().nonnegative(),
+  firstLine: z.number().int().positive().optional(),
+}) satisfies z.ZodType<ReefAskLiteralMatchFileSummary>;
+
+export interface ReefAskLiteralMatchesSummary {
+  query: string;
+  totalMatches: number;
+  fileCount: number;
+  files: ReefAskLiteralMatchFileSummary[];
+  truncated: boolean;
+}
+
+export const ReefAskLiteralMatchesSummarySchema = z.object({
+  query: z.string().min(1),
+  totalMatches: z.number().int().nonnegative(),
+  fileCount: z.number().int().nonnegative(),
+  files: z.array(ReefAskLiteralMatchFileSummarySchema),
+  truncated: z.boolean(),
+}) satisfies z.ZodType<ReefAskLiteralMatchesSummary>;
+
+export interface ReefAskWhereUsedDefinitionSummary {
+  filePath: string;
+  name: string;
+  kind: string;
+  lineStart?: number;
+}
+
+export const ReefAskWhereUsedDefinitionSummarySchema = z.object({
+  filePath: z.string().min(1),
+  name: z.string().min(1),
+  kind: z.string().min(1),
+  lineStart: z.number().int().positive().optional(),
+}) satisfies z.ZodType<ReefAskWhereUsedDefinitionSummary>;
+
+export interface ReefAskWhereUsedUsageSummary {
+  filePath: string;
+  usageKind: ReefStructuralUsage["usageKind"];
+  targetPath?: string;
+  line?: number;
+  reason: string;
+}
+
+export const ReefAskWhereUsedUsageSummarySchema = z.object({
+  filePath: z.string().min(1),
+  usageKind: z.enum(["import", "dependent", "route_owner", "definition", "text_reference"]),
+  targetPath: z.string().min(1).optional(),
+  line: z.number().int().positive().optional(),
+  reason: z.string().min(1),
+}) satisfies z.ZodType<ReefAskWhereUsedUsageSummary>;
+
+export interface ReefAskWhereUsedSummary {
+  query: string;
+  targetKind?: ReefStructuralTargetKind;
+  definitionCount: number;
+  usageCount: number;
+  relatedFindingCount: number;
+  byUsageKind: Record<ReefStructuralUsage["usageKind"], number>;
+  definitions: ReefAskWhereUsedDefinitionSummary[];
+  usages: ReefAskWhereUsedUsageSummary[];
+  truncated: boolean;
+  fallbackRecommendation?: string;
+}
+
+export const ReefAskWhereUsedSummarySchema = z.object({
+  query: z.string().min(1),
+  targetKind: ReefStructuralTargetKindSchema.optional(),
+  definitionCount: z.number().int().nonnegative(),
+  usageCount: z.number().int().nonnegative(),
+  relatedFindingCount: z.number().int().nonnegative(),
+  byUsageKind: z.object({
+    import: z.number().int().nonnegative(),
+    dependent: z.number().int().nonnegative(),
+    route_owner: z.number().int().nonnegative(),
+    definition: z.number().int().nonnegative(),
+    text_reference: z.number().int().nonnegative(),
+  }),
+  definitions: z.array(ReefAskWhereUsedDefinitionSummarySchema),
+  usages: z.array(ReefAskWhereUsedUsageSummarySchema),
+  truncated: z.boolean(),
+  fallbackRecommendation: z.string().min(1).optional(),
+}) satisfies z.ZodType<ReefAskWhereUsedSummary>;
+
+export interface ReefAskNextQuery {
+  reason: string;
+  question: string;
+}
+
+export const ReefAskNextQuerySchema = z.object({
+  reason: z.string().min(1),
+  question: z.string().min(1),
+}) satisfies z.ZodType<ReefAskNextQuery>;
+
+export interface ReefAskDecisionTraceEntry {
+  lane: string;
+  status: ReefAskEngineStepStatus;
+  reason: string;
+  evidenceCount: number;
+  fallback?: string;
+}
+
+export const ReefAskDecisionTraceEntrySchema = z.object({
+  lane: z.string().min(1),
+  status: ReefAskEngineStepStatusSchema,
+  reason: z.string().min(1),
+  evidenceCount: z.number().int().nonnegative(),
+  fallback: z.string().min(1).optional(),
+}) satisfies z.ZodType<ReefAskDecisionTraceEntry>;
+
+export interface ReefAskDecisionTrace {
+  entries: ReefAskDecisionTraceEntry[];
+  calculations: ReefAskPlannedCalculation[];
+  lowConfidenceFallbacks: ReefAskNextQuery[];
+}
+
+export const ReefAskDecisionTraceSchema = z.object({
+  entries: z.array(ReefAskDecisionTraceEntrySchema),
+  calculations: z.array(ReefAskPlannedCalculationSchema),
+  lowConfidenceFallbacks: z.array(ReefAskNextQuerySchema),
+}) satisfies z.ZodType<ReefAskDecisionTrace>;
+
+export const ReefAskAnswerSchema = z.object({
+  summary: z.string().min(1),
+  confidence: ReefAskConfidenceSchema,
+  confidenceReasons: z.array(z.string().min(1)),
+  inventorySummary: ReefAskInventorySummarySchema.optional(),
+  databaseObjectSummary: ReefAskDatabaseObjectSummarySchema.optional(),
+  diagnosticSummary: ReefAskDiagnosticSummarySchema.optional(),
+  findingsSummary: ReefAskFindingsSummarySchema.optional(),
+  literalMatchesSummary: ReefAskLiteralMatchesSummarySchema.optional(),
+  whereUsedSummary: ReefAskWhereUsedSummarySchema.optional(),
+  decisionTrace: ReefAskDecisionTraceSchema,
+  nextQueries: z.array(ReefAskNextQuerySchema),
+  suggestedNextActions: z.array(z.string().min(1)),
+}) satisfies z.ZodType<ReefAskAnswer>;
+
+export interface ReefAskEvidence {
+  mode: ReefAskEvidenceMode;
+  sections: Record<string, {
+    returned: number;
+    total: number;
+    truncated: boolean;
+  }>;
+  primaryContext: ContextPacketReadableCandidate[];
+  relatedContext: ContextPacketReadableCandidate[];
+  symbols: ContextPacketSymbol[];
+  routes: ContextPacketRoute[];
+  databaseObjects: ContextPacketDatabaseObject[];
+  findings: ProjectFinding[];
+  risks: ContextPacketRisk[];
+  instructions: ContextPacketInstruction[];
+  openLoops: ReefOpenLoop[];
+  facts: ProjectFact[];
+  graph: ReefEvidenceGraph;
+  tableNeighborhood?: TableNeighborhoodToolOutput;
+  rpcNeighborhood?: RpcNeighborhoodToolOutput;
+  routeContext?: RouteContextToolOutput;
+  whereUsed?: {
+    query: string;
+    targetKind?: ReefStructuralTargetKind;
+    definitions: ReefStructuralDefinition[];
+    usages: ReefStructuralUsage[];
+    relatedFindings: ProjectFinding[];
+    coverage: ReefWhereUsedCoverage;
+    fallbackRecommendation?: string;
+    warnings: string[];
+  };
+  liveTextSearch?: {
+    query: string;
+    matches: LiveTextSearchMatch[];
+    filesMatched: string[];
+    truncated: boolean;
+    warnings: string[];
+  };
+  verification: {
+    status: "fresh" | "stale" | "unknown" | "failed";
+    sources: VerificationSourceState[];
+    changedFiles: VerificationChangedFile[];
+    suggestedActions: string[];
+  };
+}
+
+export const ReefAskEvidenceSchema = z.object({
+  mode: ReefAskEvidenceModeSchema,
+  sections: z.record(z.string().min(1), z.object({
+    returned: z.number().int().nonnegative(),
+    total: z.number().int().nonnegative(),
+    truncated: z.boolean(),
+  })),
+  primaryContext: z.array(ContextPacketReadableCandidateSchema),
+  relatedContext: z.array(ContextPacketReadableCandidateSchema),
+  symbols: z.array(ContextPacketSymbolSchema),
+  routes: z.array(ContextPacketRouteSchema),
+  databaseObjects: z.array(ContextPacketDatabaseObjectSchema),
+  findings: z.array(ProjectFindingSchema),
+  risks: z.array(ContextPacketRiskSchema),
+  instructions: z.array(ContextPacketInstructionSchema),
+  openLoops: z.array(ReefOpenLoopSchema),
+  facts: z.array(ProjectFactSchema),
+  graph: ReefEvidenceGraphSchema,
+  tableNeighborhood: TableNeighborhoodToolOutputSchema.optional(),
+  rpcNeighborhood: RpcNeighborhoodToolOutputSchema.optional(),
+  routeContext: RouteContextToolOutputSchema.optional(),
+  whereUsed: z.object({
+    query: z.string().min(1),
+    targetKind: ReefStructuralTargetKindSchema.optional(),
+    definitions: z.array(ReefStructuralDefinitionSchema),
+    usages: z.array(ReefStructuralUsageSchema),
+    relatedFindings: z.array(ProjectFindingSchema),
+    coverage: ReefWhereUsedCoverageSchema,
+    fallbackRecommendation: z.string().min(1).optional(),
+    warnings: z.array(z.string().min(1)),
+  }).optional(),
+  liveTextSearch: z.object({
+    query: z.string().min(1),
+    matches: z.array(LiveTextSearchMatchSchema),
+    filesMatched: z.array(z.string().min(1)),
+    truncated: z.boolean(),
+    warnings: z.array(z.string()),
+  }).optional(),
+  verification: z.object({
+    status: z.enum(["fresh", "stale", "unknown", "failed"]),
+    sources: z.array(VerificationSourceStateSchema),
+    changedFiles: z.array(VerificationChangedFileSchema),
+    suggestedActions: z.array(z.string().min(1)),
+  }),
+}) satisfies z.ZodType<ReefAskEvidence>;
+
+export interface ReefAskFreshness {
+  code: string;
+  database: string;
+  diagnostics: "fresh" | "stale" | "unknown" | "failed" | "skipped";
+}
+
+export const ReefAskFreshnessSchema = z.object({
+  code: z.string().min(1),
+  database: z.string().min(1),
+  diagnostics: z.enum(["fresh", "stale", "unknown", "failed", "skipped"]),
+}) satisfies z.ZodType<ReefAskFreshness>;
+
+export interface ReefAskToolOutput {
+  toolName: "reef_ask";
+  projectId: string;
+  projectRoot: string;
+  question: string;
+  answer: ReefAskAnswer;
+  queryPlan: ReefAskQueryPlan;
+  evidence: ReefAskEvidence;
+  freshness: ReefAskFreshness;
+  reefExecution: ReefToolExecution;
+  limits: {
+    budgetTokens: number;
+    maxPrimaryContext: number;
+    maxRelatedContext: number;
+    maxOpenLoops: number;
+    evidenceMode: ReefAskEvidenceMode;
+    maxEvidenceItemsPerSection: number;
+  };
+  warnings: string[];
+}
+
+export const ReefAskToolOutputSchema = z.object({
+  toolName: z.literal("reef_ask"),
+  projectId: z.string().min(1),
+  projectRoot: z.string().min(1),
+  question: z.string().min(1),
+  answer: ReefAskAnswerSchema,
+  queryPlan: ReefAskQueryPlanSchema,
+  evidence: ReefAskEvidenceSchema,
+  freshness: ReefAskFreshnessSchema,
+  reefExecution: ReefToolExecutionSchema,
+  limits: z.object({
+    budgetTokens: z.number().int().min(1),
+    maxPrimaryContext: z.number().int().min(1),
+    maxRelatedContext: z.number().int().min(1),
+    maxOpenLoops: z.number().int().min(1),
+    evidenceMode: ReefAskEvidenceModeSchema,
+    maxEvidenceItemsPerSection: z.number().int().min(1),
+  }),
+  warnings: z.array(z.string().min(1)),
+}) satisfies z.ZodType<ReefAskToolOutput>;

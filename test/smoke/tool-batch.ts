@@ -8,6 +8,11 @@ import { createHotIndexCache } from "../../packages/tools/src/hot-index/index.ts
 import { invokeTool } from "../../packages/tools/src/registry.ts";
 import { indexProject } from "../../services/indexer/src/index.ts";
 
+function record(value: unknown): Record<string, unknown> {
+  assert.equal(value != null && typeof value === "object" && !Array.isArray(value), true);
+  return value as Record<string, unknown>;
+}
+
 async function main(): Promise<void> {
   const tmp = mkdtempSync(path.join(os.tmpdir(), "mako-tool-batch-"));
   const stateHome = path.join(tmp, "state");
@@ -124,6 +129,57 @@ async function main(): Promise<void> {
     assert.equal(liveNoMatchResult?.ok, true);
     assert.deepEqual(liveNoMatchResult?.resultSummary?.matches, { count: 0 });
     assert.deepEqual(liveNoMatchResult?.resultSummary?.filesMatched, { count: 0 });
+
+    const reefAskBatch = await invokeTool(
+      "tool_batch",
+      {
+        projectId: indexed.project.projectId,
+        verbosity: "compact",
+        ops: [
+          {
+            label: "reef",
+            tool: "reef_ask",
+            args: {
+              question: 'Find exact string "UserSession"',
+              includeOpenLoops: false,
+              includeVerification: false,
+              includeInstructions: false,
+              includeRisks: false,
+              maxEvidenceItemsPerSection: 1,
+            },
+          },
+        ],
+      },
+      {
+        projectStoreCache,
+        hotIndexCache,
+        requestContext: { requestId: "req_tool_batch_reef_ask_smoke" },
+      },
+    ) as ToolBatchToolOutput;
+
+    const reefResult = reefAskBatch.results.find((result) => result.label === "reef");
+    assert.equal(reefAskBatch.summary.succeededOps, 1);
+    assert.equal(reefResult?.ok, true);
+    assert.equal(reefResult?.result, undefined);
+    assert.ok(reefResult?.resultSummary, "compact reef_ask batch op should return a tailored summary");
+    const reefSummary = record(reefResult?.resultSummary);
+    assert.equal(reefSummary.toolName, "reef_ask");
+    assert.equal(reefSummary.question, 'Find exact string "UserSession"');
+    const reefAnswer = record(reefSummary.answer);
+    assert.equal(typeof reefAnswer.summary, "string");
+    assert.equal(reefAnswer.keys, undefined);
+    assert.equal(typeof reefAnswer.confidence, "string");
+    const decisionTrace = record(reefAnswer.decisionTrace);
+    assert.equal(Array.isArray(decisionTrace.entries), true);
+    const queryPlan = record(reefSummary.queryPlan);
+    assert.equal(Array.isArray(queryPlan.engineSteps), true);
+    const evidence = record(reefSummary.evidence);
+    assert.equal(evidence.mode, "compact");
+    assert.equal(evidence.primaryContext, undefined);
+    const sections = record(evidence.sections);
+    const liveTextSection = record(sections["liveTextSearch.matches"]);
+    assert.equal(liveTextSection.returned, 1);
+    assert.equal(liveTextSection.truncated, true);
 
     const mutationInput = ToolBatchInputSchema.safeParse({
       projectId: indexed.project.projectId,

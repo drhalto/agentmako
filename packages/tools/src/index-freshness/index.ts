@@ -59,6 +59,10 @@ export interface ReefLiveLineCountDecision extends ReefFileEvidenceDecision {
   lineCount?: number;
 }
 
+function isLiveFilesystemEvidence(block: EvidenceBlock): boolean {
+  return block.metadata?.evidenceMode === "live_filesystem";
+}
+
 function detailForFile(
   projectRoot: string,
   filePath: string,
@@ -225,6 +229,7 @@ export function enrichEvidenceFreshness(input: EnrichEvidenceFreshnessInput): En
   const detailsByPath = new Map<string, IndexFreshnessDetail>();
 
   for (const block of input.evidence) {
+    if (isLiveFilesystemEvidence(block)) continue;
     if (!block.filePath || detailsByPath.has(block.filePath)) continue;
     detailsByPath.set(
       block.filePath,
@@ -233,6 +238,7 @@ export function enrichEvidenceFreshness(input: EnrichEvidenceFreshnessInput): En
   }
 
   const evidence = input.evidence.map((block) => {
+    if (isLiveFilesystemEvidence(block)) return block;
     if (!block.filePath) return block;
     const freshness = detailsByPath.get(block.filePath);
     if (!freshness) return block;

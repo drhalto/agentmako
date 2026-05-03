@@ -69,6 +69,7 @@ export const MAKO_TOOL_NAMES = [
   "project_index_refresh",
   "context_packet",
   "tool_batch",
+  "reef_ask",
   "finding_ack",
   "finding_ack_batch",
   "finding_acks_report",
@@ -80,7 +81,9 @@ export const MAKO_TOOL_NAMES = [
   "working_tree_overlay",
   "reef_overlay_diff",
   "reef_diff_impact",
+  "reef_impact",
   "reef_instructions",
+  "reef_learning_review",
   "list_reef_rules",
   "rule_pack_validate",
   "extract_rule_template",
@@ -88,6 +91,7 @@ export const MAKO_TOOL_NAMES = [
   "reef_scout",
   "reef_inspect",
   "reef_where_used",
+  "reef_verify",
   "project_open_loops",
   "verification_state",
   "project_conventions",
@@ -95,6 +99,7 @@ export const MAKO_TOOL_NAMES = [
   "evidence_confidence",
   "evidence_conflicts",
   "reef_known_issues",
+  "reef_status",
   "reef_agent_status",
 ] as const;
 

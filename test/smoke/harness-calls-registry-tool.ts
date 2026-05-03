@@ -21,6 +21,7 @@ import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { TOOL_DEFINITIONS } from "../../packages/tools/src/registry.ts";
+import { COMPACT_MODEL_FACING_REGISTRY_TOOLS } from "../../packages/tools/src/tool-exposure.ts";
 import {
   SessionEventBus,
   ToolDispatch,
@@ -65,16 +66,16 @@ async function main(): Promise<void> {
       },
     });
 
-    // Registry tools that are NOT already handled by action/memory/sub-agent
-    // dispatch should appear in the bag when they are model-facing and usable.
-    // DB tools stay hidden without a bound session project; `ask` is now
-    // planner-deferred rather than exposed directly to the harness chat bag.
+    // Only the compact Reef-first registry surface is bridged into the harness
+    // chat bag. Specialist/debug tools stay discoverable through tool_search.
+    // DB tools stay hidden without a bound session project.
     const reservedNames = new Set<string>([
       ...ACTION_TOOLS.map((t) => t.name),
       ...MEMORY_TOOLS.map((t) => t.name),
       ...SEMANTIC_TOOLS.map((t) => t.name),
       ...SUB_AGENT_TOOLS.map((t) => t.name),
     ]);
+    const compactRegistryTools = new Set<string>(COMPACT_MODEL_FACING_REGISTRY_TOOLS);
 
     for (const def of TOOL_DEFINITIONS) {
       const flat = def.name.replace(/\./g, "_").slice(0, 64);
@@ -89,27 +90,53 @@ async function main(): Promise<void> {
         );
         continue;
       }
-      if (def.name === "ask") {
+      if (!compactRegistryTools.has(def.name)) {
         assert.equal(
           dispatch.tools[flat],
           undefined,
-          "expected ask to stay out of the direct harness tool bag",
+          `expected specialist registry tool "${flat}" to stay deferred from the direct harness tool bag`,
         );
         continue;
       }
       assert.ok(dispatch.tools[flat], `expected bridged tool "${flat}" to be present in dispatch.tools`);
     }
 
-    // Spot-check a known registry tool. `symbols_of` is read-only and has no
-    // specialized dispatch, so it must be bridged.
+    // Spot-check the compact surface and one deferred specialist.
     assert.ok(
+      dispatch.tools["reef_ask"],
+      "reef_ask must be bridged as the primary compact registry tool",
+    );
+    assert.equal(
       dispatch.tools["symbols_of"],
-      "symbols_of (registry tool) must be bridged",
+      undefined,
+      "symbols_of must be deferred behind tool_search in harness chat",
     );
     assert.ok(
       dispatch.tools["tool_search"],
       "tool_search must be available so the model can discover deferred/blocked tools",
     );
+    const symbolSearch = (await (
+      dispatch.tools.tool_search!.execute as (args: {
+        query: string;
+        limit?: number;
+      }) => Promise<{
+        results: Array<{
+          name: string;
+          availability: string;
+          reason: string | null;
+        }>;
+      }>
+    )({ query: "symbols_of", limit: 5 })) as {
+      results: Array<{
+        name: string;
+        availability: string;
+        reason: string | null;
+      }>;
+    };
+    const deferredSymbols = symbolSearch.results.find((item) => item.name === "symbols_of");
+    assert.ok(deferredSymbols, "tool_search should still surface deferred specialist tools");
+    assert.equal(deferredSymbols.availability, "deferred");
+    assert.match(deferredSymbols.reason ?? "", /specialist tool deferred/i);
 
     // --- Reserved-name guard: action tools still present but NOT replaced ---
     // file_write is an action tool. It must still be in the tool bag, and it

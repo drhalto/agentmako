@@ -1,6 +1,8 @@
 /**
- * Tool registry bridge — wraps every tool in `@mako-ai/tools`'s `TOOL_DEFINITIONS`
- * as a Vercel AI SDK `Tool` so the model can call any registered tool mid-turn.
+ * Tool registry bridge — wraps the immediate subset of `@mako-ai/tools`'
+ * registry as Vercel AI SDK tools. The broader registry remains discoverable
+ * through `tool_search`, but only the compact Reef-first surface is placed in
+ * the model's direct harness tool bag.
  *
  * Responsibilities per call:
  *   1. Generate a `callId` (uuid), matching the existing dispatch pattern.

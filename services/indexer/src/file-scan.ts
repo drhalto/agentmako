@@ -20,6 +20,7 @@ import { isIndexableProjectPath, MAX_INDEXED_FILE_SIZE_BYTES } from "./project-i
 import { collectSchemaUsages, extractSchemaObjectsFromSql } from "./schema-scan.js";
 import {
   buildNamedRouteDefinitionIndex,
+  collectCodeInteractionsFromAst,
   collectExportedSymbolsFromAst,
   collectImportEdgesFromAst,
   collectRoutesFromAst,
@@ -118,6 +119,7 @@ export async function scanProject(rootPath: string, profile: ProjectProfile): Pr
       chunks: result.stats.chunks,
       symbols: result.stats.symbols,
       importEdges: result.stats.importEdges,
+      codeInteractions: result.stats.codeInteractions,
       routes: result.stats.routes,
       schemaObjects: result.stats.schemaObjects,
       schemaUsages: result.stats.schemaUsages,
@@ -297,6 +299,13 @@ async function scanScannableFiles(args: {
       knownRelativePaths,
       profile.pathAliases,
     );
+    const interactions = collectCodeInteractionsFromAst(
+      rootPath,
+      content,
+      relativePath,
+      knownRelativePaths,
+      profile.pathAliases,
+    );
     const routes = routesByFile.get(relativePath) ?? [];
 
     indexedFiles.push({
@@ -310,6 +319,7 @@ async function scanScannableFiles(args: {
       chunks,
       symbols,
       imports,
+      interactions,
       routes,
     });
   }
@@ -321,6 +331,7 @@ async function scanScannableFiles(args: {
     chunks: indexedFiles.reduce((sum, file) => sum + file.chunks.length, 0),
     symbols: indexedFiles.reduce((sum, file) => sum + file.symbols.length, 0),
     importEdges: indexedFiles.reduce((sum, file) => sum + file.imports.length, 0),
+    codeInteractions: indexedFiles.reduce((sum, file) => sum + (file.interactions?.length ?? 0), 0),
     routes: indexedFiles.reduce((sum, file) => sum + file.routes.length, 0),
     schemaObjects: schemaObjectsIndexed,
     schemaUsages: schemaUsages.length,

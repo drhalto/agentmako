@@ -4,6 +4,7 @@ import { fileURLToPath } from "node:url";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
 import { MAKO_TOOL_NAMES } from "../../packages/contracts/src/tool-registry.js";
+import { COMPACT_MODEL_FACING_REGISTRY_TOOLS } from "../../packages/tools/src/tool-exposure.js";
 
 interface ToolDescriptor {
   name: string;
@@ -15,7 +16,10 @@ interface ToolDescriptor {
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = path.resolve(HERE, "..", "..");
 const CLI_ENTRY = path.join(REPO_ROOT, "apps", "cli", "src", "index.ts");
-const ALWAYS_LOAD_TOOLS = new Set(["tool_search", "mako_help", "ask", "repo_map", "context_packet", "reef_scout", "table_neighborhood"]);
+const ALWAYS_LOAD_TOOLS = new Set([
+  "tool_search",
+  ...COMPACT_MODEL_FACING_REGISTRY_TOOLS,
+]);
 
 function childEnv(): Record<string, string> {
   const env: Record<string, string> = {};
@@ -74,7 +78,7 @@ async function main(): Promise<void> {
     assert.equal(
       meta["anthropic/alwaysLoad"] === true,
       ALWAYS_LOAD_TOOLS.has(name),
-      `${name} alwaysLoad matches Phase 1 allowlist`,
+      `${name} alwaysLoad matches compact surface allowlist`,
     );
     assert.equal(outputSchemaHasHints(tool), true, `${name} output schema includes _hints`);
   }

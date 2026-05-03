@@ -13,6 +13,7 @@ import type {
   CrossSearchToolInput,
   CrossSearchToolOutput,
   EvidenceBlock,
+  LiveTextSearchMatch,
 } from "@mako-ai/contracts";
 import {
   CrossSearchToolInputSchema,
@@ -25,6 +26,7 @@ import type {
   ResolvedSchemaObjectRecord,
   SchemaBodyHit,
 } from "@mako-ai/store";
+import { createId } from "@mako-ai/store";
 import {
   blocksFromChunkHits,
   blocksFromFileMatches,
@@ -35,11 +37,16 @@ import {
 } from "./_shared/blocks.js";
 import { defineComposer } from "./_shared/define.js";
 import { makePacket } from "./_shared/packet.js";
+import { runRipgrepSearch } from "../live-text-search/index.js";
 
 const QUERY_KIND: ComposerQueryKind = "cross_search";
 const DEFAULT_COMPACT_LIMIT = 8;
 const DEFAULT_FULL_LIMIT = 15;
+const DEFAULT_LIVE_EXACT_LIMIT = 25;
 const SOURCE_FILE_RE = /\.(?:ts|tsx|js|jsx|mjs|cjs|sql)$/i;
+const DB_QUALIFIED_IDENTIFIER_RE = /^[a-z_][a-z0-9_$]*\.[a-z_][a-z0-9_$]*$/i;
+const ROUTE_PATTERN_RE = /^\/[A-Za-z0-9_./:{}[\]-]+$/;
+const EXACT_CODE_LITERAL_RE = /(?:[()[\]{}'"`;]|=>|\?\.)/;
 
 function isRelevantSourceFile(filePath: string): boolean {
   return SOURCE_FILE_RE.test(filePath);
@@ -264,10 +271,62 @@ function summarize(term: string, counts: Record<string, number>): string {
   return parts.join(" ");
 }
 
+function shouldUseLiveExactSearch(term: string): boolean {
+  const trimmed = term.trim();
+  if (trimmed.length < 3 || trimmed.length > 512) return false;
+  if (DB_QUALIFIED_IDENTIFIER_RE.test(trimmed) || ROUTE_PATTERN_RE.test(trimmed)) {
+    return false;
+  }
+
+  return EXACT_CODE_LITERAL_RE.test(trimmed);
+}
+
+function blocksFromLiveTextMatches(matches: LiveTextSearchMatch[], term: string): EvidenceBlock[] {
+  return matches.map((match) => ({
+    blockId: createId("ev"),
+    kind: "file",
+    title: `live text hit ${match.filePath}:${match.line}`,
+    sourceRef: `${match.filePath}:${match.line}`,
+    filePath: match.filePath,
+    line: match.line,
+    content: match.text,
+    metadata: {
+      kind: "cross_search_live_text_hit",
+      evidenceMode: "live_filesystem",
+      query: term,
+      column: match.column,
+      submatchCount: match.submatches.length,
+    },
+  }));
+}
+
+function summarizeLiveExactSearch(args: {
+  term: string;
+  matchCount: number;
+  fileCount: number;
+  limit: number;
+  truncated: boolean;
+  warnings: readonly string[];
+}): string {
+  const parts = [
+    `Exact literal search routed to a bounded live_text_search preview for '${args.term}'.`,
+    `${args.matchCount} live match${args.matchCount === 1 ? "" : "es"} in ${args.fileCount} file${args.fileCount === 1 ? "" : "s"}.`,
+  ];
+  if (args.truncated) {
+    parts.push(`Results were truncated at ${args.limit}; use live_text_search with maxMatches/maxFiles and pathGlob for a full inventory.`);
+  } else {
+    parts.push("Use live_text_search directly when you need a full inventory, regex, or custom glob scope.");
+  }
+  if (args.warnings.length > 0) {
+    parts.push(`Warnings: ${args.warnings.join(" ")}`);
+  }
+  return parts.join(" ");
+}
+
 export const crossSearchTool = defineComposer({
   name: "cross_search",
   description:
-    "Search a term across code chunks, schema objects, RPC/trigger bodies, routes, and stored memories in one call. Returns grouped indexed evidence with freshness details per source. Snapshot-strict; use live_text_search when you need a live disk fallback for recently edited or unindexed files.",
+    "Search a term across code chunks, schema objects, RPC/trigger bodies, routes, and stored memories in one call. Exact code literals route to a bounded live_text_search preview. Use live_text_search directly for full inventories, regex, or custom glob scope.",
   inputSchema: CrossSearchToolInputSchema,
   outputSchema: CrossSearchToolOutputSchema,
   run: async (
@@ -277,6 +336,42 @@ export const crossSearchTool = defineComposer({
     const term = input.term;
     const verbosity = input.verbosity ?? "compact";
     const limit = input.limit ?? (verbosity === "full" ? DEFAULT_FULL_LIMIT : DEFAULT_COMPACT_LIMIT);
+
+    if (shouldUseLiveExactSearch(term)) {
+      const liveLimit = input.limit ?? DEFAULT_LIVE_EXACT_LIMIT;
+      const liveResult = await runRipgrepSearch(ctx.projectRoot, {
+        projectId: ctx.projectId,
+        query: term,
+        fixedStrings: true,
+        maxMatches: liveLimit,
+        maxFiles: liveLimit,
+      });
+      const evidence = blocksFromLiveTextMatches(liveResult.matches, term);
+      const summary = summarizeLiveExactSearch({
+        term,
+        matchCount: liveResult.matches.length,
+        fileCount: liveResult.filesMatched.length,
+        limit: liveLimit,
+        truncated: liveResult.truncated,
+        warnings: liveResult.warnings,
+      });
+      const result = makePacket(ctx, {
+        queryKind: QUERY_KIND,
+        queryText: `cross_search(${term})`,
+        evidence,
+        summary,
+        missingInformation: liveResult.truncated
+          ? ["live_text_search result was truncated by cross_search preview limit."]
+          : [],
+      });
+
+      return {
+        toolName: "cross_search",
+        projectId: ctx.projectId,
+        result,
+      };
+    }
+
     const searchTerms = expandSearchTerms(term);
     const schemaTerms = schemaSearchTerms(term);
     const requireExactSchemaTerm = /\s/.test(term.trim());

@@ -1,7 +1,7 @@
 import path from "node:path";
 import { getTsconfig } from "get-tsconfig";
 import type { ProjectProfile } from "@mako-ai/contracts";
-import type { IndexedFileRecord, RouteRecord, SymbolRecord } from "@mako-ai/store";
+import type { CodeInteractionRecord, IndexedFileRecord, RouteRecord, SymbolRecord } from "@mako-ai/store";
 import { toRelativePath } from "@mako-ai/store";
 import ts from "typescript";
 
@@ -43,6 +43,15 @@ interface LocalRouteCandidate {
   method?: string;
   handlerName?: string;
   definition?: NamedRouteDefinition;
+}
+
+interface ImportedLocalBinding {
+  localName: string;
+  importedName?: string;
+  specifier: string;
+  targetPath: string;
+  isNamespace?: boolean;
+  isDefault?: boolean;
 }
 
 function pushUnique(values: string[], value: string): void {
@@ -333,6 +342,316 @@ export function collectImportEdgesFromAst(
   }
 
   return imports;
+}
+
+export function collectCodeInteractionsFromAst(
+  rootPath: string,
+  content: string,
+  sourceRelativePath: string,
+  knownRelativePaths: Set<string>,
+  pathAliases: Record<string, string>,
+): CodeInteractionRecord[] {
+  const sourceFile = parseSourceFile(sourceRelativePath, content);
+  const importsByLocalName = collectImportedLocalBindings(
+    rootPath,
+    sourceFile,
+    sourceRelativePath,
+    knownRelativePaths,
+    pathAliases,
+  );
+  if (importsByLocalName.size === 0) {
+    return [];
+  }
+
+  const interactions = new Map<string, CodeInteractionRecord>();
+  const pushInteraction = (record: CodeInteractionRecord): void => {
+    const key = [
+      record.kind,
+      record.sourcePath,
+      record.sourceSymbolName ?? "",
+      record.targetPath ?? "",
+      record.targetName,
+      record.importSpecifier ?? "",
+      record.line ?? 0,
+    ].join("\0");
+    interactions.set(key, record);
+  };
+
+  const visit = (node: ts.Node, ancestors: readonly ts.Node[]): void => {
+    if (ts.isCallExpression(node)) {
+      const interaction = interactionFromCallExpression(
+        sourceFile,
+        sourceRelativePath,
+        node,
+        importsByLocalName,
+        knownRelativePaths,
+        ancestors,
+      );
+      if (interaction) {
+        pushInteraction(interaction);
+      }
+    } else if (ts.isJsxOpeningElement(node) || ts.isJsxSelfClosingElement(node)) {
+      const interaction = interactionFromJsxTag(
+        sourceFile,
+        sourceRelativePath,
+        node.tagName,
+        importsByLocalName,
+        knownRelativePaths,
+        ancestors,
+      );
+      if (interaction) {
+        pushInteraction(interaction);
+      }
+    }
+
+    const nextAncestors = [...ancestors, node];
+    ts.forEachChild(node, (child) => visit(child, nextAncestors));
+  };
+
+  visit(sourceFile, []);
+  return [...interactions.values()].sort(compareCodeInteractionRecords);
+}
+
+function collectImportedLocalBindings(
+  rootPath: string,
+  sourceFile: ts.SourceFile,
+  sourceRelativePath: string,
+  knownRelativePaths: Set<string>,
+  pathAliases: Record<string, string>,
+): Map<string, ImportedLocalBinding> {
+  const bindings = new Map<string, ImportedLocalBinding>();
+  for (const statement of sourceFile.statements) {
+    if (!ts.isImportDeclaration(statement)) {
+      continue;
+    }
+    const specifier = stringLiteralValue(statement.moduleSpecifier);
+    const importClause = statement.importClause;
+    if (specifier == null || importClause == null || importClause.isTypeOnly) {
+      continue;
+    }
+    const targetPath = resolveRelativeImportTarget(
+      rootPath,
+      sourceRelativePath,
+      specifier,
+      knownRelativePaths,
+      pathAliases,
+    );
+
+    if (importClause.name) {
+      bindings.set(importClause.name.text, {
+        localName: importClause.name.text,
+        importedName: "default",
+        specifier,
+        targetPath,
+        isDefault: true,
+      });
+    }
+
+    const namedBindings = importClause.namedBindings;
+    if (namedBindings == null) {
+      continue;
+    }
+    if (ts.isNamespaceImport(namedBindings)) {
+      bindings.set(namedBindings.name.text, {
+        localName: namedBindings.name.text,
+        specifier,
+        targetPath,
+        isNamespace: true,
+      });
+      continue;
+    }
+    for (const element of namedBindings.elements) {
+      if (element.isTypeOnly) {
+        continue;
+      }
+      const localName = element.name.text;
+      bindings.set(localName, {
+        localName,
+        importedName: element.propertyName?.text ?? localName,
+        specifier,
+        targetPath,
+      });
+    }
+  }
+  return bindings;
+}
+
+function interactionFromCallExpression(
+  sourceFile: ts.SourceFile,
+  sourceRelativePath: string,
+  node: ts.CallExpression,
+  importsByLocalName: ReadonlyMap<string, ImportedLocalBinding>,
+  knownRelativePaths: Set<string>,
+  ancestors: readonly ts.Node[],
+): CodeInteractionRecord | undefined {
+  const expression = unwrapExpression(node.expression);
+  if (ts.isIdentifier(expression)) {
+    const binding = importsByLocalName.get(expression.text);
+    if (!binding || binding.isNamespace) {
+      return undefined;
+    }
+    return makeCodeInteractionRecord({
+      kind: "call",
+      sourceRelativePath,
+      ancestors,
+      binding,
+      targetName: importedBindingTargetName(binding),
+      knownRelativePaths,
+      confidence: 0.82,
+      line: lineStart(sourceFile, node),
+    });
+  }
+
+  if (ts.isPropertyAccessExpression(expression)) {
+    const rootIdentifier = rootIdentifierOfExpression(expression);
+    const binding = rootIdentifier ? importsByLocalName.get(rootIdentifier) : undefined;
+    if (!binding) {
+      return undefined;
+    }
+    return makeCodeInteractionRecord({
+      kind: "call",
+      sourceRelativePath,
+      ancestors,
+      binding,
+      targetName: expression.getText(sourceFile),
+      knownRelativePaths,
+      confidence: 0.76,
+      line: lineStart(sourceFile, node),
+    });
+  }
+
+  return undefined;
+}
+
+function interactionFromJsxTag(
+  sourceFile: ts.SourceFile,
+  sourceRelativePath: string,
+  tagName: ts.JsxTagNameExpression,
+  importsByLocalName: ReadonlyMap<string, ImportedLocalBinding>,
+  knownRelativePaths: Set<string>,
+  ancestors: readonly ts.Node[],
+): CodeInteractionRecord | undefined {
+  if (ts.isIdentifier(tagName)) {
+    if (!startsWithUppercase(tagName.text)) {
+      return undefined;
+    }
+    const binding = importsByLocalName.get(tagName.text);
+    if (!binding || binding.isNamespace) {
+      return undefined;
+    }
+    return makeCodeInteractionRecord({
+      kind: "render",
+      sourceRelativePath,
+      ancestors,
+      binding,
+      targetName: importedBindingTargetName(binding),
+      knownRelativePaths,
+      confidence: 0.86,
+      line: lineStart(sourceFile, tagName),
+    });
+  }
+
+  if (ts.isPropertyAccessExpression(tagName)) {
+    const rootIdentifier = rootIdentifierOfExpression(tagName);
+    const binding = rootIdentifier ? importsByLocalName.get(rootIdentifier) : undefined;
+    if (!binding) {
+      return undefined;
+    }
+    return makeCodeInteractionRecord({
+      kind: "render",
+      sourceRelativePath,
+      ancestors,
+      binding,
+      targetName: tagName.getText(sourceFile),
+      knownRelativePaths,
+      confidence: 0.8,
+      line: lineStart(sourceFile, tagName),
+    });
+  }
+
+  return undefined;
+}
+
+function makeCodeInteractionRecord(args: {
+  kind: CodeInteractionRecord["kind"];
+  sourceRelativePath: string;
+  ancestors: readonly ts.Node[];
+  binding: ImportedLocalBinding;
+  targetName: string;
+  knownRelativePaths: Set<string>;
+  confidence: number;
+  line: number;
+}): CodeInteractionRecord {
+  return {
+    kind: args.kind,
+    sourcePath: args.sourceRelativePath,
+    ...(sourceSymbolNameFromAncestors(args.ancestors) ? { sourceSymbolName: sourceSymbolNameFromAncestors(args.ancestors) } : {}),
+    targetName: args.targetName,
+    ...(knownInternalTargetPath(args.binding.targetPath, args.knownRelativePaths)
+      ? { targetPath: knownInternalTargetPath(args.binding.targetPath, args.knownRelativePaths) }
+      : {}),
+    importSpecifier: args.binding.specifier,
+    line: args.line,
+    confidence: args.confidence,
+  };
+}
+
+function importedBindingTargetName(binding: ImportedLocalBinding): string {
+  return binding.importedName && binding.importedName !== "default"
+    ? binding.importedName
+    : binding.localName;
+}
+
+function knownInternalTargetPath(
+  targetPath: string,
+  knownRelativePaths: Set<string>,
+): string | undefined {
+  return knownRelativePaths.has(targetPath) ? targetPath : undefined;
+}
+
+function rootIdentifierOfExpression(expression: ts.Expression): string | undefined {
+  const current = unwrapExpression(expression);
+  if (ts.isIdentifier(current)) {
+    return current.text;
+  }
+  if (ts.isPropertyAccessExpression(current)) {
+    return rootIdentifierOfExpression(current.expression);
+  }
+  return undefined;
+}
+
+function sourceSymbolNameFromAncestors(ancestors: readonly ts.Node[]): string | undefined {
+  for (let i = ancestors.length - 1; i >= 0; i -= 1) {
+    const ancestor = ancestors[i]!;
+    if (ts.isFunctionDeclaration(ancestor) && ancestor.name) {
+      return ancestor.name.text;
+    }
+    if (ts.isMethodDeclaration(ancestor)) {
+      return propertyNameText(ancestor.name);
+    }
+    if (ts.isClassDeclaration(ancestor) && ancestor.name) {
+      return ancestor.name.text;
+    }
+    if (ts.isVariableDeclaration(ancestor) && ts.isIdentifier(ancestor.name)) {
+      return ancestor.name.text;
+    }
+  }
+  return undefined;
+}
+
+function startsWithUppercase(value: string): boolean {
+  return /^[A-Z]/.test(value);
+}
+
+function compareCodeInteractionRecords(
+  left: CodeInteractionRecord,
+  right: CodeInteractionRecord,
+): number {
+  return left.sourcePath.localeCompare(right.sourcePath) ||
+    (left.line ?? 0) - (right.line ?? 0) ||
+    left.kind.localeCompare(right.kind) ||
+    (left.targetPath ?? "").localeCompare(right.targetPath ?? "") ||
+    left.targetName.localeCompare(right.targetName);
 }
 
 function pushDeclarationSymbol(

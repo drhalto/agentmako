@@ -43,9 +43,13 @@ ToolSearch or the live tool definition loaded by Claude Code.
 - Read `_hints` on every Mako tool result before deciding the next call. They
   are generated from the actual returned result and may override the generic
   workflow expectation.
+- Default to `reef_ask` for project questions. It combines codebase, database,
+  findings, diagnostics, instructions, freshness, and quoted literal checks.
 - Use `mako_help` when you need a task-specific Mako workflow recipe instead
-  of reading docs or guessing whether to start with `context_packet`,
-  `cross_search`, `file_preflight`, `lint_files`, or database tools.
+  of reading docs or guessing which specialist tool to load.
+- Use `context_packet`, `cross_search`, `file_preflight`, DB tools, and graph
+  tools as specialist follow-ups after `reef_ask`, `mako_help`, or
+  `tool_search` points at a concrete need.
 - Prefer Mako over built-in grep when the question is about relationships,
   not literal text.
 - Built-in text search is fine for exact strings inside known files.

@@ -386,6 +386,175 @@ export const FactProvenanceSchema = z.object({
   metadata: JsonObjectSchema.optional(),
 }) satisfies z.ZodType<FactProvenance>;
 
+export const REEF_GRAPH_NODE_KINDS = [
+  "file",
+  "symbol",
+  "import",
+  "export",
+  "route",
+  "component",
+  "server_action",
+  "table",
+  "column",
+  "index",
+  "foreign_key",
+  "rls_policy",
+  "rpc",
+  "trigger",
+  "diagnostic",
+  "finding",
+  "rule",
+  "convention",
+  "instruction",
+  "session",
+  "patch",
+  "test",
+  "command",
+  "database_object",
+] as const;
+export type ReefGraphNodeKind = (typeof REEF_GRAPH_NODE_KINDS)[number];
+export const ReefGraphNodeKindSchema = z.enum(REEF_GRAPH_NODE_KINDS);
+
+export const REEF_GRAPH_EDGE_KINDS = [
+  "defines",
+  "imports",
+  "exports",
+  "calls",
+  "renders",
+  "handles_route",
+  "reads_table",
+  "writes_table",
+  "calls_rpc",
+  "references_column",
+  "protected_by_policy",
+  "violates_rule",
+  "verified_by",
+  "depends_on",
+  "resolved_by_patch",
+  "similar_to",
+  "duplicates_pattern",
+  "acknowledged_as",
+  "learned_from",
+  "contains",
+  "mentions",
+] as const;
+export type ReefGraphEdgeKind = (typeof REEF_GRAPH_EDGE_KINDS)[number];
+export const ReefGraphEdgeKindSchema = z.enum(REEF_GRAPH_EDGE_KINDS);
+
+export interface ReefGraphNode {
+  id: string;
+  kind: ReefGraphNodeKind;
+  label: string;
+  source: string;
+  overlay?: ProjectOverlay;
+  revision?: number;
+  confidence: number;
+  freshness: FactFreshness;
+  provenance: FactProvenance;
+  data?: JsonObject;
+}
+
+export const ReefGraphNodeSchema = z.object({
+  id: z.string().min(1),
+  kind: ReefGraphNodeKindSchema,
+  label: z.string().min(1),
+  source: z.string().min(1),
+  overlay: ProjectOverlaySchema.optional(),
+  revision: z.number().int().nonnegative().optional(),
+  confidence: z.number().min(0).max(1),
+  freshness: FactFreshnessSchema,
+  provenance: FactProvenanceSchema,
+  data: JsonObjectSchema.optional(),
+}) satisfies z.ZodType<ReefGraphNode>;
+
+export interface ReefGraphEdge {
+  id: string;
+  kind: ReefGraphEdgeKind;
+  from: string;
+  to: string;
+  source: string;
+  overlay?: ProjectOverlay;
+  revision?: number;
+  confidence: number;
+  freshness: FactFreshness;
+  provenance: FactProvenance;
+  label?: string;
+  data?: JsonObject;
+}
+
+export const ReefGraphEdgeSchema = z.object({
+  id: z.string().min(1),
+  kind: ReefGraphEdgeKindSchema,
+  from: z.string().min(1),
+  to: z.string().min(1),
+  source: z.string().min(1),
+  overlay: ProjectOverlaySchema.optional(),
+  revision: z.number().int().nonnegative().optional(),
+  confidence: z.number().min(0).max(1),
+  freshness: FactFreshnessSchema,
+  provenance: FactProvenanceSchema,
+  label: z.string().min(1).optional(),
+  data: JsonObjectSchema.optional(),
+}) satisfies z.ZodType<ReefGraphEdge>;
+
+export interface ReefEvidenceGraphCoverage {
+  nodeKinds: Record<string, number>;
+  edgeKinds: Record<string, number>;
+  sourceCounts: Record<string, number>;
+}
+
+export const ReefEvidenceGraphCoverageSchema = z.object({
+  nodeKinds: z.record(z.string().min(1), z.number().int().nonnegative()),
+  edgeKinds: z.record(z.string().min(1), z.number().int().nonnegative()),
+  sourceCounts: z.record(z.string().min(1), z.number().int().nonnegative()),
+}) satisfies z.ZodType<ReefEvidenceGraphCoverage>;
+
+export interface ReefEvidenceGraphTruncation {
+  nodes: boolean;
+  edges: boolean;
+  returnedNodes: number;
+  totalNodes: number;
+  droppedNodes: number;
+  returnedEdges: number;
+  totalEdges: number;
+  droppedEdges: number;
+  nodeLimit?: number;
+  edgeLimit?: number;
+}
+
+export const ReefEvidenceGraphTruncationSchema = z.object({
+  nodes: z.boolean(),
+  edges: z.boolean(),
+  returnedNodes: z.number().int().nonnegative(),
+  totalNodes: z.number().int().nonnegative(),
+  droppedNodes: z.number().int().nonnegative(),
+  returnedEdges: z.number().int().nonnegative(),
+  totalEdges: z.number().int().nonnegative(),
+  droppedEdges: z.number().int().nonnegative(),
+  nodeLimit: z.number().int().positive().optional(),
+  edgeLimit: z.number().int().positive().optional(),
+}) satisfies z.ZodType<ReefEvidenceGraphTruncation>;
+
+export interface ReefEvidenceGraph {
+  generatedAt: Timestamp;
+  revision?: number;
+  nodes: ReefGraphNode[];
+  edges: ReefGraphEdge[];
+  coverage: ReefEvidenceGraphCoverage;
+  truncated: ReefEvidenceGraphTruncation;
+  warnings: string[];
+}
+
+export const ReefEvidenceGraphSchema = z.object({
+  generatedAt: TimestampSchema,
+  revision: z.number().int().nonnegative().optional(),
+  nodes: z.array(ReefGraphNodeSchema),
+  edges: z.array(ReefGraphEdgeSchema),
+  coverage: ReefEvidenceGraphCoverageSchema,
+  truncated: ReefEvidenceGraphTruncationSchema,
+  warnings: z.array(z.string().min(1)),
+}) satisfies z.ZodType<ReefEvidenceGraph>;
+
 export interface ProjectFact {
   projectId: string;
   kind: string;

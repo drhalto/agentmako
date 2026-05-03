@@ -1,21 +1,16 @@
-export const MAKO_SERVER_INSTRUCTIONS = `mako is a project-intelligence MCP server. Use it for structural, cross-surface, or evidence-backed repo questions.
+export const MAKO_SERVER_INSTRUCTIONS = `mako is project-intelligence for structural, cross-surface, and evidence-backed repo questions.
 
-Prefer mako over grep when the question is about relationships, not literal text. Built-in text search is fine for exact strings inside a known file.
+Default to \`reef_ask\`: it combines codebase, database, findings, diagnostics, instructions, freshness, and quoted literal checks without making the agent orchestrate broad tool chains.
 
-Starting points:
-- \`mako_help\` - task-specific workflow recipe with ordered tool steps and prefilled suggested args
-- \`tool_search\` - find the right mako tool when intent is clear but the tool name is not
-- \`context_packet\` - first-mile scout for vague coding tasks; ranked files, symbols, routes, schema, freshness, and follow-ups
-- \`ask\` - one-shot answer loop for a single engineering question
-- \`repo_map\` - first-turn project orientation, entry points, and central files
-- \`cross_search\` - unified search across code, schema, types, and routes
-- \`tool_batch\` - run independent read-only Mako lookups under one project context
-- \`project_index_status\` - check whether indexed code evidence still matches disk
-- \`project_index_refresh\` - refresh stale, unknown, or unindexed code evidence
-- \`db_reef_refresh\` - refresh Reef's indexed database facts
-- \`db_review_comment\` / \`db_review_comments\` - write/read append-only DB review notes
-- \`working_tree_overlay\` - snapshot live changed-file facts when context_packet recommends it
-- \`reef_diff_impact\` - changed-file callers, caller findings, and convention risks
-- \`project_facts\` / \`file_facts\` - inspect Reef facts directly
+Compact starting surface:
+- \`reef_ask\` - primary Reef query over code, DB, findings, diagnostics, and literal checks
+- \`reef_status\` - maintained issues, changed files, stale diagnostics, schema, and watcher state
+- \`reef_verify\` - completion gate for diagnostics freshness and open loops
+- \`reef_impact\` - changed-file impact, invalidated findings, and convention risks
+- \`mako_help\` - ordered workflow recipe with prefilled args
+- \`live_text_search\` - current-disk regex/glob/raw inventory fallback
+- \`lint_files\` - bounded diagnostics and rule-pack findings
+- \`tool_batch\` - batch independent read-only follow-ups
+- \`tool_search\` - load specialized tools only when the task clearly needs one
 
-Trust state is not filesystem freshness: stable means an answer matches the last comparable answer, not that indexed files are current. Artifact tools such as \`review_bundle_artifact\` and \`verification_bundle_artifact\` are pre-ship summaries, not exploratory search tools. Mako outputs carry evidence refs so claims can be traced back to code, schema, or stored facts.`;
+Use specialized route, graph, DB, finding, context expansion, refresh, and ack tools through tool search after the compact surface points at a concrete need. Trust state is not filesystem freshness: stable means an answer matches the last comparable answer, not that indexed files are current. Outputs carry evidence refs back to code, schema, or stored facts.`;

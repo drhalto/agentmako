@@ -1,4 +1,6 @@
 import type {
+  JsonObject,
+  JsonValue,
   ProjectFinding,
   ReefStructuralDefinition,
   ReefStructuralUsage,
@@ -8,11 +10,28 @@ import type {
 } from "@mako-ai/contracts";
 import type { FileImportLink, FileSummaryRecord, ProjectStore, ResolvedRouteRecord, SymbolRecord } from "@mako-ai/store";
 import { withProjectContext, type ToolServiceOptions } from "../runtime.js";
+import { runCachedReefCalculation } from "./calculation-cache.js";
+import { REEF_WHERE_USED_NODE, REEF_WHERE_USED_QUERY_KIND } from "./calculation-nodes.js";
 import {
   applyReefToolFreshnessPolicy,
   buildReefToolExecution,
   defaultReefToolFreshnessPolicy,
 } from "./tool-execution.js";
+
+export interface ReefWhereUsedStructuralCalculationInput {
+  projectStore: Pick<ProjectStore, "getFileContent" | "listAllImportEdges" | "listDependentsForFile" | "listFiles" | "listRoutes" | "listSymbolsForFile">;
+  query: string;
+  targetKind?: ReefWhereUsedToolInput["targetKind"];
+  limit: number;
+}
+
+export interface ReefWhereUsedStructuralCalculationOutput {
+  definitions: ReefStructuralDefinition[];
+  usages: ReefStructuralUsage[];
+  coverage: ReefWhereUsedCoverage;
+  warnings: string[];
+  fallbackRecommendation?: string;
+}
 
 export async function reefWhereUsedTool(
   input: ReefWhereUsedToolInput,
@@ -23,40 +42,37 @@ export async function reefWhereUsedTool(
     const query = input.query.trim();
     const limit = input.limit ?? 50;
     const freshnessPolicy = defaultReefToolFreshnessPolicy(input.freshnessPolicy);
-    const files = projectStore.listFiles();
-    const definitions: ReefStructuralDefinition[] = [];
-
-    for (const file of files) {
-      if (matchesFile(file, query, input.targetKind)) {
-        definitions.push(fileDefinition(file));
-      }
+    const sourceRevision = projectStore.loadReefAnalysisState(
+      project.projectId,
+      project.canonicalPath,
+    )?.materializedRevision;
+    const calculationInput: JsonObject = {
+      query,
+      limit,
+    };
+    if (input.targetKind) {
+      calculationInput.targetKind = input.targetKind;
     }
-
-    for (const file of files) {
-      for (const symbol of projectStore.listSymbolsForFile(file.path)) {
-        if (matchesSymbol(symbol, query, input.targetKind)) {
-          definitions.push(symbolDefinition(file.path, symbol));
-        }
-      }
-    }
-
-    for (const route of projectStore.listRoutes()) {
-      if (matchesRoute(route, query, input.targetKind)) {
-        definitions.push(routeDefinition(route));
-      }
-    }
-
+    const structural = runCachedReefCalculation({
+      projectStore,
+      projectId: project.projectId,
+      root: project.canonicalPath,
+      node: REEF_WHERE_USED_NODE,
+      queryKind: REEF_WHERE_USED_QUERY_KIND,
+      sourceRevision,
+      input: calculationInput,
+      compute: () => calculateReefWhereUsedStructural({
+        projectStore,
+        query,
+        targetKind: input.targetKind,
+        limit,
+      }),
+      toJson: whereUsedStructuralToJson,
+      fromJson: whereUsedStructuralFromJson,
+    });
+    const definitions = structural.value.definitions;
+    const candidateUsages = structural.value.usages;
     const definitionPaths = new Set(definitions.map((definition) => definition.filePath));
-    const targetRequiresIdentifierCheck = input.targetKind === "symbol" || input.targetKind === "component";
-    const maintainedUsages = dedupeUsages([
-      ...definitionUsages(definitions),
-      ...(targetRequiresIdentifierCheck ? [] : importUsages(projectStore.listAllImportEdges(), query, definitionPaths)),
-      ...dependentUsages(projectStore, definitionPaths, targetRequiresIdentifierCheck ? query : undefined),
-    ]);
-    const textUsages = targetRequiresIdentifierCheck
-      ? textReferenceUsages(projectStore, files, query, new Set(maintainedUsages.map((usage) => usage.filePath)))
-      : [];
-    const candidateUsages = dedupeUsages([...maintainedUsages, ...textUsages]);
     const relatedFindingCandidates = findRelatedFindings({
       projectStore,
       projectId: project.projectId,
@@ -83,10 +99,13 @@ export async function reefWhereUsedTool(
       staleEvidenceLabeled: relatedFindingFilter.staleEvidenceLabeled,
       returnedCount: limitedDefinitions.length + usages.length + relatedFindings.length,
     });
-    const warnings: string[] = [...relatedFindingFilter.warnings];
-    if (targetRequiresIdentifierCheck && definitions.length > 0) {
-      warnings.push("Symbol/component direct usages combine maintained import edges with indexed identifier text; related findings may include non-call consumers such as bypass or alignment diagnostics.");
-    }
+    const warnings: string[] = [
+      ...relatedFindingFilter.warnings,
+      ...structural.value.warnings,
+      ...(structural.cache.enabled
+        ? [`where-used structural calculation cache ${structural.cache.hit ? "hit" : "miss"} for ${structural.cache.path}.`]
+        : []),
+    ];
     if (reefExecution.snapshot.state !== "fresh" && freshnessPolicy !== "allow_stale_labeled") {
       const droppedCount = definitions.length + candidateUsages.length + relatedFindings.length;
       limitedDefinitions = [];
@@ -99,7 +118,9 @@ export async function reefWhereUsedTool(
       warnings.push(`Returned maintained structural results with Reef snapshot state ${reefExecution.snapshot.state} under freshnessPolicy=allow_stale_labeled.`);
     }
     usages = stampUsageRevision(usages, reefExecution.snapshot.revision);
-    const coverage = buildCoverage(query, targetRequiresIdentifierCheck);
+    const fallbackRecommendation = limitedDefinitions.length + usages.length + relatedFindings.length === 0
+      ? structural.value.fallbackRecommendation ?? "No maintained Reef structural match was found; use live_text_search or ast_find_pattern as an explicit fallback."
+      : undefined;
 
     return {
       toolName: "reef_where_used",
@@ -110,15 +131,88 @@ export async function reefWhereUsedTool(
       definitions: limitedDefinitions,
       usages,
       relatedFindings,
-      coverage,
+      coverage: structural.value.coverage,
       totalReturned: limitedDefinitions.length + usages.length + relatedFindings.length,
       reefExecution,
-      ...(usages.length === 0 && limitedDefinitions.length === 0 && relatedFindings.length === 0
-        ? { fallbackRecommendation: "No maintained Reef structural match was found; use live_text_search or ast_find_pattern as an explicit fallback." }
-        : {}),
+      ...(fallbackRecommendation ? { fallbackRecommendation } : {}),
       warnings,
     };
   });
+}
+
+export function calculateReefWhereUsedStructural(
+  input: ReefWhereUsedStructuralCalculationInput,
+): ReefWhereUsedStructuralCalculationOutput {
+  const files = input.projectStore.listFiles();
+  const definitions: ReefStructuralDefinition[] = [];
+
+  for (const file of files) {
+    if (matchesFile(file, input.query, input.targetKind)) {
+      definitions.push(fileDefinition(file));
+    }
+  }
+
+  for (const file of files) {
+    for (const symbol of input.projectStore.listSymbolsForFile(file.path)) {
+      if (matchesSymbol(symbol, input.query, input.targetKind)) {
+        definitions.push(symbolDefinition(file.path, symbol));
+      }
+    }
+  }
+
+  for (const route of input.projectStore.listRoutes()) {
+    if (matchesRoute(route, input.query, input.targetKind)) {
+      definitions.push(routeDefinition(route));
+    }
+  }
+
+  const definitionPaths = new Set(definitions.map((definition) => definition.filePath));
+  const targetRequiresIdentifierCheck = input.targetKind === "symbol" || input.targetKind === "component";
+  const maintainedUsages = dedupeUsages([
+    ...definitionUsages(definitions),
+    ...(targetRequiresIdentifierCheck ? [] : importUsages(input.projectStore.listAllImportEdges(), input.query, definitionPaths)),
+    ...dependentUsages(input.projectStore, definitionPaths, targetRequiresIdentifierCheck ? input.query : undefined),
+  ]);
+  const textUsages = targetRequiresIdentifierCheck
+    ? textReferenceUsages(input.projectStore, files, input.query, new Set(maintainedUsages.map((usage) => usage.filePath)))
+    : [];
+  const usages = dedupeUsages([...maintainedUsages, ...textUsages]).slice(0, input.limit);
+  const coverage = buildCoverage(input.query, targetRequiresIdentifierCheck);
+  const warnings = targetRequiresIdentifierCheck && definitions.length > 0
+    ? ["Symbol/component direct usages combine maintained import edges with indexed identifier text; related findings may include non-call consumers such as bypass or alignment diagnostics."]
+    : [];
+  return {
+    definitions: definitions.slice(0, input.limit),
+    usages,
+    coverage,
+    warnings,
+    ...(usages.length === 0 && definitions.length === 0
+      ? { fallbackRecommendation: "No maintained Reef structural match was found; use live_text_search or ast_find_pattern as an explicit fallback." }
+      : {}),
+  };
+}
+
+function whereUsedStructuralToJson(value: ReefWhereUsedStructuralCalculationOutput): JsonValue {
+  return value as unknown as JsonValue;
+}
+
+function whereUsedStructuralFromJson(value: JsonValue): ReefWhereUsedStructuralCalculationOutput | undefined {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    return undefined;
+  }
+  const record = value as Partial<ReefWhereUsedStructuralCalculationOutput>;
+  if (!Array.isArray(record.definitions) || !Array.isArray(record.usages) || !record.coverage || !Array.isArray(record.warnings)) {
+    return undefined;
+  }
+  return {
+    definitions: record.definitions as ReefStructuralDefinition[],
+    usages: record.usages as ReefStructuralUsage[],
+    coverage: record.coverage as ReefWhereUsedCoverage,
+    warnings: record.warnings as string[],
+    ...(typeof record.fallbackRecommendation === "string"
+      ? { fallbackRecommendation: record.fallbackRecommendation }
+      : {}),
+  };
 }
 
 function matchesSymbol(

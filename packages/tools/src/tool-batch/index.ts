@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import type {
   JsonObject,
+  JsonValue,
   ToolBatchInput,
   ToolBatchResult,
   ToolBatchToolOutput,
@@ -14,7 +15,179 @@ function asJsonObject(value: unknown): JsonObject | undefined {
   return undefined;
 }
 
+function jsonRecord(value: unknown): Record<string, unknown> | undefined {
+  return value && typeof value === "object" && !Array.isArray(value)
+    ? value as Record<string, unknown>
+    : undefined;
+}
+
+function jsonArray(value: unknown): unknown[] {
+  return Array.isArray(value) ? value : [];
+}
+
+function jsonValues(value: unknown): JsonValue[] {
+  return Array.isArray(value) ? value as JsonValue[] : [];
+}
+
+function stringValue(value: unknown): string | undefined {
+  return typeof value === "string" ? value : undefined;
+}
+
+function numberValue(value: unknown): number | undefined {
+  return typeof value === "number" && Number.isFinite(value) ? value : undefined;
+}
+
+function booleanValue(value: unknown): boolean | undefined {
+  return typeof value === "boolean" ? value : undefined;
+}
+
+function countSummary(value: unknown): JsonObject {
+  return { count: jsonArray(value).length };
+}
+
+function compactReefAskSummary(value: JsonObject): JsonObject | undefined {
+  if (value.toolName !== "reef_ask") {
+    return undefined;
+  }
+
+  const answer = jsonRecord(value.answer);
+  const queryPlan = jsonRecord(value.queryPlan);
+  const evidence = jsonRecord(value.evidence);
+  const freshness = jsonRecord(value.freshness);
+  const limits = jsonRecord(value.limits);
+  const decisionTrace = jsonRecord(answer?.decisionTrace);
+  const diagnosticSummary = jsonRecord(answer?.diagnosticSummary);
+  const inventorySummary = jsonRecord(answer?.inventorySummary);
+  const databaseObjectSummary = jsonRecord(answer?.databaseObjectSummary);
+  const findingsSummary = jsonRecord(answer?.findingsSummary);
+  const literalMatchesSummary = jsonRecord(answer?.literalMatchesSummary);
+  const whereUsedSummary = jsonRecord(answer?.whereUsedSummary);
+
+  const summary: JsonObject = {
+    toolName: "reef_ask",
+    question: stringValue(value.question) ?? "",
+    answer: {
+      summary: stringValue(answer?.summary) ?? "",
+      confidence: stringValue(answer?.confidence) ?? "low",
+      confidenceReasons: jsonArray(answer?.confidenceReasons).filter((item): item is string => typeof item === "string"),
+      ...(diagnosticSummary
+        ? {
+            diagnostic: {
+              gate: stringValue(diagnosticSummary.gate) ?? "unknown",
+              canClaimVerified: booleanValue(diagnosticSummary.canClaimVerified) ?? false,
+              verificationStatus: stringValue(diagnosticSummary.verificationStatus) ?? "unknown",
+              blockerCount: numberValue(diagnosticSummary.blockerCount) ?? 0,
+              changedFileCount: numberValue(diagnosticSummary.changedFileCount) ?? 0,
+              openLoopCounts: asJsonObject(diagnosticSummary.openLoopCounts) ?? {},
+              sourceCounts: asJsonObject(diagnosticSummary.sourceCounts) ?? {},
+            },
+          }
+        : {}),
+      ...(inventorySummary
+        ? {
+            inventory: {
+              total: numberValue(inventorySummary.total) ?? 0,
+              byKind: asJsonObject(inventorySummary.byKind) ?? {},
+              staleCount: numberValue(inventorySummary.staleCount) ?? 0,
+              truncated: booleanValue(inventorySummary.truncated) ?? false,
+            },
+          }
+        : {}),
+      ...(databaseObjectSummary
+        ? {
+            databaseObject: {
+              schemaName: stringValue(databaseObjectSummary.schemaName) ?? "",
+              objectName: stringValue(databaseObjectSummary.objectName) ?? "",
+              factCount: numberValue(databaseObjectSummary.factCount) ?? 0,
+              staleCount: numberValue(databaseObjectSummary.staleCount) ?? 0,
+              columns: countSummary(databaseObjectSummary.columns),
+              indexes: countSummary(databaseObjectSummary.indexes),
+              foreignKeys: countSummary(databaseObjectSummary.foreignKeys),
+              rlsPolicies: countSummary(databaseObjectSummary.rlsPolicies),
+              triggers: countSummary(databaseObjectSummary.triggers),
+              usages: countSummary(databaseObjectSummary.usages),
+              truncated: booleanValue(databaseObjectSummary.truncated) ?? false,
+            },
+          }
+        : {}),
+      ...(findingsSummary
+        ? {
+            findings: {
+              total: numberValue(findingsSummary.total) ?? 0,
+              bySeverity: asJsonObject(findingsSummary.bySeverity) ?? {},
+              bySource: asJsonObject(findingsSummary.bySource) ?? {},
+              staleCount: numberValue(findingsSummary.staleCount) ?? 0,
+              truncated: booleanValue(findingsSummary.truncated) ?? false,
+            },
+          }
+        : {}),
+      ...(literalMatchesSummary
+        ? {
+            literalMatches: {
+              query: stringValue(literalMatchesSummary.query) ?? "",
+              totalMatches: numberValue(literalMatchesSummary.totalMatches) ?? 0,
+              fileCount: numberValue(literalMatchesSummary.fileCount) ?? 0,
+              files: countSummary(literalMatchesSummary.files),
+              truncated: booleanValue(literalMatchesSummary.truncated) ?? false,
+            },
+          }
+        : {}),
+      ...(whereUsedSummary
+        ? {
+            whereUsed: {
+              query: stringValue(whereUsedSummary.query) ?? "",
+              targetKind: stringValue(whereUsedSummary.targetKind) ?? "",
+              definitionCount: numberValue(whereUsedSummary.definitionCount) ?? 0,
+              usageCount: numberValue(whereUsedSummary.usageCount) ?? 0,
+              relatedFindingCount: numberValue(whereUsedSummary.relatedFindingCount) ?? 0,
+              byUsageKind: asJsonObject(whereUsedSummary.byUsageKind) ?? {},
+              truncated: booleanValue(whereUsedSummary.truncated) ?? false,
+            },
+          }
+        : {}),
+      decisionTrace: {
+        entries: jsonArray(decisionTrace?.entries)
+          .map(jsonRecord)
+          .filter((entry): entry is Record<string, unknown> => Boolean(entry))
+          .map((entry) => ({
+            lane: stringValue(entry.lane) ?? "",
+            status: stringValue(entry.status) ?? "",
+            evidenceCount: numberValue(entry.evidenceCount) ?? 0,
+            ...(stringValue(entry.fallback) ? { fallback: stringValue(entry.fallback) } : {}),
+          })),
+        lowConfidenceFallbacks: jsonValues(decisionTrace?.lowConfidenceFallbacks),
+      },
+      nextQueries: jsonValues(answer?.nextQueries),
+      suggestedNextActions: jsonValues(answer?.suggestedNextActions),
+    },
+    queryPlan: {
+      mode: stringValue(queryPlan?.mode) ?? "",
+      intent: stringValue(queryPlan?.intent) ?? "",
+      evidenceLanes: jsonValues(queryPlan?.evidenceLanes),
+      engineSteps: jsonArray(queryPlan?.engineSteps)
+        .map(jsonRecord)
+        .filter((step): step is Record<string, unknown> => Boolean(step))
+        .map((step) => ({
+          name: stringValue(step.name) ?? "",
+          status: stringValue(step.status) ?? "",
+          returnedCount: numberValue(step.returnedCount) ?? 0,
+        })),
+    },
+    freshness: (freshness as JsonObject | undefined) ?? {},
+    evidence: {
+      mode: stringValue(evidence?.mode) ?? "",
+      sections: (jsonRecord(evidence?.sections) as JsonObject | undefined) ?? {},
+    },
+    limits: (limits as JsonObject | undefined) ?? {},
+    warnings: jsonValues(value.warnings),
+  };
+  return summary;
+}
+
 function summarizeJsonObject(value: JsonObject): JsonObject {
+  const reefAskSummary = compactReefAskSummary(value);
+  if (reefAskSummary) return reefAskSummary;
+
   const summary: JsonObject = {};
   for (const [key, entry] of Object.entries(value)) {
     if (entry == null || typeof entry === "string" || typeof entry === "number" || typeof entry === "boolean") {

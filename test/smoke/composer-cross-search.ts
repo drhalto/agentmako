@@ -31,6 +31,10 @@ async function main(): Promise<void> {
     path.join(projectRoot, "package.json"),
     JSON.stringify({ name: "cross-search-smoke", version: "0.0.0" }),
   );
+  writeFileSync(
+    path.join(projectRoot, "src", "rpc-client.ts"),
+    "export async function touchUsers(supabase: { rpc: (name: string) => unknown }) {\n  return supabase.rpc('touch_users');\n}\n",
+  );
 
   const projectId = randomUUID();
 
@@ -210,6 +214,56 @@ async function main(): Promise<void> {
     assert.ok(
       evidence.some((b) => b.kind === "document" && b.content.includes("Users table")),
       "expected a memory block",
+    );
+
+    const exactOutput = (await invokeTool("cross_search", {
+      projectId,
+      term: "supabase.rpc(",
+    })) as {
+      toolName: string;
+      result: {
+        answer?: string;
+        evidenceStatus?: string;
+        supportLevel?: string;
+        packet: {
+          stalenessFlags: string[];
+          indexFreshness?: { state: string; unindexedCount: number };
+          evidence: Array<{
+            kind: string;
+            filePath?: string;
+            content: string;
+            stale?: boolean;
+            freshness?: unknown;
+            metadata?: Record<string, unknown>;
+          }>;
+        };
+      };
+    };
+    assert.equal(exactOutput.toolName, "cross_search");
+    assert.match(
+      exactOutput.result.answer ?? "",
+      /bounded live_text_search preview/,
+      "exact code literals should route to live_text_search",
+    );
+    assert.equal(exactOutput.result.evidenceStatus, "complete");
+    assert.equal(exactOutput.result.supportLevel, "native");
+    assert.equal(
+      exactOutput.result.packet.stalenessFlags.some((flag) => flag.startsWith("index-unindexed")),
+      false,
+      "live filesystem evidence should not be labeled as stale indexed evidence",
+    );
+    assert.equal(exactOutput.result.packet.indexFreshness?.unindexedCount, 0);
+    assert.ok(
+      exactOutput.result.packet.evidence.some((b) =>
+        b.kind === "file" &&
+        b.filePath === "src/rpc-client.ts" &&
+        b.content.includes("supabase.rpc(") &&
+        b.metadata?.kind === "cross_search_live_text_hit" &&
+        b.metadata?.indexFreshnessState == null &&
+        b.stale !== true &&
+        b.freshness == null
+      ),
+      "expected exact literal evidence from live filesystem search",
     );
 
     console.log("composer-cross-search: PASS");

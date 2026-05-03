@@ -6,9 +6,13 @@ import {
   MAKO_SERVER_INSTRUCTIONS,
   selectAgentClient,
 } from "../../packages/tools/src/agent-clients/index.js";
+import { COMPACT_MODEL_FACING_REGISTRY_TOOLS } from "../../packages/tools/src/tool-exposure.js";
 import { MAKO_TOOL_NAMES } from "../../packages/contracts/src/tool-registry.js";
 
-const ALWAYS_LOAD_TOOLS = new Set(["tool_search", "mako_help", "ask", "repo_map", "context_packet", "reef_scout", "table_neighborhood"]);
+const ALWAYS_LOAD_TOOLS = new Set([
+  "tool_search",
+  ...COMPACT_MODEL_FACING_REGISTRY_TOOLS,
+]);
 
 function hintWordCount(hint: string): number {
   return hint.trim().split(/\s+/).filter(Boolean).length;
@@ -55,7 +59,7 @@ async function main(): Promise<void> {
     assert.equal(
       hint.alwaysLoad === true,
       ALWAYS_LOAD_TOOLS.has(name),
-      `${name} alwaysLoad selection matches the Phase 1 allowlist`,
+      `${name} alwaysLoad selection matches the compact model-facing surface`,
     );
 
     const meta = ClaudeCodeClient.toolMeta({ name });

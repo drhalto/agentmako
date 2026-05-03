@@ -53,7 +53,10 @@ async function indexAttachedProject(
 
       try {
         const { snapshot } = await scanProject(attached.resolvedRootPath, attached.profile);
-        stats = projectStore.replaceIndexSnapshot(snapshot);
+        stats = {
+          ...projectStore.replaceIndexSnapshot(snapshot),
+          codeInteractions: snapshot.files.reduce((sum, file) => sum + (file.interactions?.length ?? 0), 0),
+        };
         semanticUnitCount = projectStore.replaceSemanticUnits(
           buildSemanticUnits({
             projectId: attached.project.projectId,
@@ -174,6 +177,7 @@ async function indexAttachedProject(
           chunksIndexed: stats.chunks,
           symbolsIndexed: stats.symbols,
           importsIndexed: stats.importEdges,
+          codeInteractionsIndexed: stats.codeInteractions ?? 0,
           routesIndexed: stats.routes,
           schemaObjectsIndexed: stats.schemaObjects,
           schemaUsagesIndexed: stats.schemaUsages,

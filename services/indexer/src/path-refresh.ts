@@ -324,6 +324,7 @@ export async function refreshProjectPaths(
           chunksIndexed: stats.chunks,
           symbolsIndexed: stats.symbols,
           importsIndexed: stats.importEdges,
+          ...(stats.codeInteractions !== undefined ? { codeInteractionsIndexed: stats.codeInteractions } : {}),
           routesIndexed: stats.routes,
           schemaObjectsIndexed: stats.schemaObjects,
           schemaUsagesIndexed: stats.schemaUsages,

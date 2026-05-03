@@ -58,11 +58,14 @@ export {
 
 export {
   fetchRpc,
+  fetchRpcs,
   type PgRpcArgMode,
   type PgRpcArgument,
+  type PgRpcListEntry,
   type PgRpcResult,
   type PgRpcVolatility,
   type FetchRpcOptions,
+  type FetchRpcsOptions,
 } from "./rpc.js";
 
 export {

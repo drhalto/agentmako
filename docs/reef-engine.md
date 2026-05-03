@@ -92,15 +92,28 @@ agentmako --json tool call . live_text_search "{\"query\":\"useSession\",\"fixed
 
 ## Agent-Facing Tools
 
-The most direct Reef tools are:
+The primary Reef tool is:
 
-- `reef_scout`: ranked facts, findings, and likely next reads for a task
+- `reef_ask`: one evidence-backed query over codebase, database, durable
+  findings, diagnostics, instructions, freshness, and quoted literal checks
+
+The most direct specialist Reef tools are:
+
+- `reef_status`: maintained health summary for known issues, changed files
+  needing verification, stale diagnostic sources, schema freshness, watcher
+  degradation, and queue state
+- `reef_verify`: completion gate combining diagnostic coverage, changed files,
+  recent runs, watcher state, and unresolved open loops
+- `reef_impact`: compact changed-file impact packet over downstream import
+  callers, invalidated findings, and convention risks
+- `reef_scout`: lower-level ranked facts, findings, and likely next reads for a
+  task
 - `project_findings`: active project findings across sources
 - `file_findings`: findings for a specific file
 - `file_preflight`: one-call pre-edit gate for a file, combining findings,
   file-scoped diagnostic freshness, recent diagnostic runs, applicable
   conventions, and acknowledgement history
-- `reef_diff_impact`: mid-edit impact packet for changed files, combining
+- `reef_diff_impact`: lower-level mid-edit impact packet for changed files, combining
   downstream import callers, active caller findings that may need re-checking,
   and conventions the diff may violate
 - `project_facts`: raw Reef facts for a project
@@ -111,7 +124,9 @@ The most direct Reef tools are:
   project profile, indexed symbols/routes/files, schema usage, and rules
 
 Reef also strengthens higher-level tools such as `context_packet`,
-`cross_search`, `lint_files`, and `git_precommit_check`.
+`live_text_search`, `lint_files`, and `git_precommit_check`. The model-facing
+surface should default to `reef_ask`; use specialist tools when the answer
+packet points at a concrete expansion.
 
 In long-running MCP sessions, the project watcher keeps Reef live in two
 steps after a file edit: it refreshes the indexed/working-tree facts for the
@@ -130,16 +145,37 @@ diagnostic state, and `file_preflight` includes the same watcher state inside
 `diagnostics`, so agents can distinguish "daemon has not caught up" from
 "daemon ran but this file is still stale."
 
-`reef_scout` uses a light intent classifier before ranking. App-flow questions
-prefer file, route, and finding evidence; RLS/schema questions prefer database
-facts and review comments. This keeps text-similar schema facts from crowding
-out app-layer work unless the request is actually schema-oriented.
+`reef_ask` plans over code, database, diagnostics, findings, usage, literal,
+and status lanes. Its scout/context lanes use light intent classification
+before ranking: app-flow questions prefer file, route, and finding evidence;
+RLS/schema questions prefer database facts and review comments. This keeps
+text-similar schema facts from crowding out app-layer work unless the request
+is actually schema-oriented.
+
+Each `reef_ask` answer also includes `evidence.graph`: a normalized Reef
+evidence graph with typed nodes and edges for the evidence packet. Nodes and
+edges carry source, confidence, freshness, provenance, calculation
+dependencies, overlay, and snapshot revision when available. The graph is
+bounded by the same compact/full evidence mode as the rest of the response,
+and `queryPlan.graphSummary` reports returned/total node and edge counts plus
+node kind, edge kind, and source coverage without requiring agents to read the
+full graph payload.
+For planner-selected files and database objects, Reef enriches that graph from
+the project index with imports, exports, symbol definitions, route ownership,
+persisted imported call/render interaction artifacts, app-code schema usage
+edges, focused project conventions, and rule-derived convention candidates.
+Those interaction artifacts are content-addressed Reef artifacts, so the
+calculation engine owns path-scoped invalidation and backdating instead of
+recomputing the edge slice ad hoc per query. Reef also adds recent operational
+evidence from diagnostic runs and tool-run recall, including command, test,
+session, patch, touched-file, and resolved-finding edges when that activity is
+relevant to the selected files.
 
 Examples:
 
 ```bash
-agentmako --json tool call . reef_scout "{\"query\":\"why is dashboard onboarding auth failing?\"}"
-agentmako --json tool call . reef_scout "{\"query\":\"which RLS policy protects public.user_profiles?\"}"
+agentmako --json tool call . reef_ask "{\"question\":\"why is dashboard onboarding auth failing?\"}"
+agentmako --json tool call . reef_ask "{\"question\":\"which RLS policy protects public.user_profiles?\"}"
 ```
 
 Use `project_conventions` when the agent needs project-specific habits before
@@ -160,13 +196,14 @@ diagnostic freshness, conventions, recent runs, and ack history:
 agentmako --json tool call . file_preflight "{\"filePath\":\"lib/auth/dal.ts\"}"
 ```
 
-Use `reef_diff_impact` after files have changed or before review when the
-agent needs to understand blast radius from the current diff. It reads existing
+Use `reef_impact` after files have changed or before review when the agent
+needs to understand blast radius from the current diff. It reads existing
 working-tree overlay facts and import graph state; it does not mutate Reef or
-run `working_tree_overlay` itself:
+run `working_tree_overlay` itself. `reef_diff_impact` remains the lower-level
+compatibility name for the same calculation:
 
 ```bash
-agentmako --json tool call . reef_diff_impact "{\"filePaths\":[\"src/util.ts\"],\"depth\":2}"
+agentmako --json tool call . reef_impact "{\"filePaths\":[\"src/util.ts\"],\"depth\":2}"
 ```
 
 Findings can be produced by full diagnostic passes, such as `lint_files`, or by
@@ -211,14 +248,16 @@ rules:
 
 ## Common Use
 
-Start with a scout query:
+Start with a Reef query:
 
 ```bash
-agentmako --json tool call . reef_scout "{\"query\":\"why is the auth callback route broken?\"}"
+agentmako --json tool call . reef_ask "{\"question\":\"why is the auth callback route broken?\"}"
 ```
 
 Then read the primary files it returns, use normal search or references for
-verification, and run focused checks after edits.
+verification, and run focused checks after edits. Use `context_packet`,
+`reef_scout`, or other specialist tools only when the `reef_ask` result needs
+raw expansion.
 
 For staged review:
 
