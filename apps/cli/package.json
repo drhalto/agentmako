@@ -46,17 +46,17 @@
     "prepublishOnly": "corepack pnpm --filter @mako-ai/web run build && npm run build:types && npm run build && node scripts/verify-bundle.mjs"
   },
   "dependencies": {
-    "@ast-grep/napi": "^0.39.5",
+    "@ast-grep/napi": "^0.42.1",
     "@inquirer/password": "^5.0.12",
     "@modelcontextprotocol/sdk": "^1.17.4",
-    "@napi-rs/keyring": "^1.1.5",
+    "@napi-rs/keyring": "^1.3.0",
     "@vscode/ripgrep": "^1.17.1",
     "eventsource-parser": "^3.0.8",
     "pg": "^8.20.0",
     "pgsql-parser": "^17.9.15",
     "tree-sitter-typescript": "^0.23.2",
-    "typescript": "^5.8.3",
-    "web-tree-sitter": "^0.25.8"
+    "typescript": "^6.0.3",
+    "web-tree-sitter": "^0.26.8"
   },
   "devDependencies": {
     "@mako-ai/api": "workspace:*",
