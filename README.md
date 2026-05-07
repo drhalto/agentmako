@@ -1,3 +1,5 @@
+[![MseeP.ai Security Assessment Badge](https://mseep.net/pr/drhalto-agentmako-badge.png)](https://mseep.ai/app/drhalto-agentmako)
+
 <p align="center">
   <img src="apps/web/public/agentmako.png" alt="agentmako logo" width="180" />
 </p>
