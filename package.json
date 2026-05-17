@@ -52,10 +52,10 @@
   },
   "devDependencies": {
     "@modelcontextprotocol/sdk": "^1.29.0",
-    "@playwright/test": "^1.49.1",
-    "@types/node": "^22.15.30",
-    "supabase": "^2.89.1",
-    "tsx": "^4.20.3",
+    "@playwright/test": "^1.60.0",
+    "@types/node": "^25.8.0",
+    "supabase": "^2.98.2",
+    "tsx": "^4.22.1",
     "typescript": "^5.8.3",
     "zod": "^3.25.76"
   },
