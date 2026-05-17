@@ -15,14 +15,14 @@
     "@mako-ai/extension-postgres": "workspace:*",
     "@mako-ai/logger": "workspace:*",
     "@mako-ai/store": "workspace:*",
-    "@napi-rs/keyring": "^1.1.5",
+    "@napi-rs/keyring": "^1.3.0",
     "get-tsconfig": "^4.14.0",
     "gray-matter": "^4.0.3",
     "p-limit": "^7.3.0",
     "pgsql-parser": "^17.9.15",
     "remark": "^15.0.1",
     "tree-sitter-typescript": "^0.23.2",
-    "typescript": "^5.9.3",
-    "web-tree-sitter": "^0.25.8"
+    "typescript": "^6.0.3",
+    "web-tree-sitter": "^0.26.8"
   }
 }
