@@ -14,12 +14,14 @@ import {
   calculateActiveFindingStatus,
   calculateDiagnosticCoverage,
   calculateDuplicateCandidates,
+  calculateReefFeatureFlow,
   calculateReefImpactStructural,
   calculateReefWhereUsedStructural,
   createReefQueryCalculationRegistry,
   REEF_ACTIVE_FINDING_STATUS_QUERY_KIND,
   REEF_DIAGNOSTIC_COVERAGE_QUERY_KIND,
   REEF_DUPLICATE_CANDIDATES_QUERY_KIND,
+  REEF_FEATURE_FLOW_QUERY_KIND,
   REEF_IMPACT_QUERY_KIND,
   REEF_QUERY_CALCULATION_NODES,
   REEF_ROUTE_CONTEXT_QUERY_KIND,
@@ -143,6 +145,82 @@ async function main(): Promise<void> {
     assert.equal(duplicates.candidates.length, 1);
     assert.deepEqual(duplicates.candidates[0]?.files, ["src/auth.ts", "src/consumer.ts"]);
 
+    const featureFlow = calculateReefFeatureFlow({
+      projectStore: seeded.store,
+      projectId: seeded.projectId,
+      fileSeeds: ["src/auth.ts"],
+      routeSeeds: ["GET /api/user"],
+      databaseObjectSeeds: ["public.users"],
+      symbolSeeds: ["loadUser"],
+      textSeeds: ["users"],
+      importDepth: 1,
+      limit: 20,
+    });
+    assert.ok(featureFlow.files.some((file) => file.filePath === "src/auth.ts" && file.role === "backend"));
+    assert.ok(featureFlow.files.some((file) => file.filePath === "src/consumer.ts"));
+    assert.ok(featureFlow.routes.some((featureRoute) => featureRoute.pattern === "/api/user"));
+    assert.ok(featureFlow.databaseObjects.some((object) => object.kind === "table" && object.objectName === "users"));
+    assert.ok(featureFlow.databaseObjects.some((object) => object.kind === "trigger" && object.tableName === "users"));
+    assert.ok(featureFlow.databaseObjects.some((object) => object.kind === "scheduled_job" && object.objectName === "refresh_users"));
+    assert.ok(featureFlow.findings.some((finding) => finding.ruleId === "reuse.helper_bypass"));
+    assert.ok(featureFlow.links.some((link) => link.kind === "handles_route"));
+    assert.ok(featureFlow.links.some((link) => link.kind === "reads_table"));
+
+    const caseInsensitiveSymbolFlow = calculateReefFeatureFlow({
+      projectStore: seeded.store,
+      projectId: seeded.projectId,
+      fileSeeds: [],
+      routeSeeds: [],
+      databaseObjectSeeds: [],
+      symbolSeeds: ["loaduser"],
+      textSeeds: [],
+      importDepth: 1,
+      limit: 20,
+    });
+    assert.ok(
+      caseInsensitiveSymbolFlow.files.some((file) => file.filePath === "src/auth.ts"),
+      "feature-flow symbol seeds should match indexed symbols case-insensitively",
+    );
+    assert.equal(
+      caseInsensitiveSymbolFlow.warnings.some((warning) => warning.includes("symbol seed did not match")),
+      false,
+      "case-insensitive symbol matches should not report a missing symbol seed",
+    );
+
+    const missingFeatureFlow = calculateReefFeatureFlow({
+      projectStore: seeded.store,
+      projectId: seeded.projectId,
+      fileSeeds: [],
+      routeSeeds: ["GET /api/missing"],
+      databaseObjectSeeds: ["public.missing_table"],
+      symbolSeeds: ["missingSymbol"],
+      textSeeds: [],
+      importDepth: 1,
+      limit: 20,
+    });
+    assert.ok(
+      missingFeatureFlow.warnings.some((warning) =>
+        warning.includes("route seed did not match") && warning.includes("GET /api/missing")
+      ),
+      "feature-flow should warn when an explicit route seed is unresolved",
+    );
+    assert.ok(
+      missingFeatureFlow.warnings.some((warning) =>
+        warning.includes("symbol seed did not match") && warning.includes("missingSymbol")
+      ),
+      "feature-flow should warn when an explicit symbol seed is unresolved",
+    );
+    assert.ok(
+      missingFeatureFlow.warnings.some((warning) =>
+        warning.includes("database object seed did not match") && warning.includes("public.missing_table")
+      ),
+      "feature-flow should warn when an explicit database object seed is unresolved",
+    );
+    assert.ok(
+      missingFeatureFlow.warnings.some((warning) => warning.includes("found no indexed file anchors")),
+      "unresolved explicit anchors should still report that feature-flow found no file surface",
+    );
+
     let computeCount = 0;
     const first = runCachedReefCalculation<CachedPayload>({
       projectStore: seeded.store,
@@ -214,7 +292,7 @@ function assertQueryCalculationRegistry(): void {
     ReefCalculationNodeSchema.parse(node);
   }
   const registry = createReefQueryCalculationRegistry();
-  assert.equal(registry.list().length, 8);
+  assert.equal(registry.list().length, 9);
   for (const queryKind of [
     REEF_WHERE_USED_QUERY_KIND,
     REEF_IMPACT_QUERY_KIND,
@@ -224,6 +302,7 @@ function assertQueryCalculationRegistry(): void {
     REEF_DIAGNOSTIC_COVERAGE_QUERY_KIND,
     REEF_ACTIVE_FINDING_STATUS_QUERY_KIND,
     REEF_DUPLICATE_CANDIDATES_QUERY_KIND,
+    REEF_FEATURE_FLOW_QUERY_KIND,
   ]) {
     assert.ok(
       registry.findProducer({ kind: "query", queryKind }),
@@ -396,7 +475,38 @@ function seedOperationalEvidence(store: ProjectStore, projectId: string, project
     provenance: { source: "reef-query-calculations-smoke", capturedAt: now },
     data: { lastModifiedAt: now },
   };
-  store.upsertReefFacts([overlayFact]);
+  const scheduledJobSubject = { kind: "schema_object" as const, schemaName: "cron", objectName: "refresh_users" };
+  const scheduledJobSubjectFingerprint = store.computeReefSubjectFingerprint(scheduledJobSubject);
+  const scheduledJobData = {
+    schemaName: "cron",
+    jobName: "refresh_users",
+    schedule: "*/5 * * * *",
+    command: "select public.refresh_users() from public.users",
+    database: "postgres",
+    username: "postgres",
+    active: true,
+  };
+  const scheduledJobFact: ProjectFact = {
+    projectId,
+    kind: "db_scheduled_job",
+    subject: scheduledJobSubject,
+    subjectFingerprint: scheduledJobSubjectFingerprint,
+    overlay: "indexed",
+    source: "db_reef_refresh",
+    confidence: 1,
+    fingerprint: store.computeReefFactFingerprint({
+      projectId,
+      kind: "db_scheduled_job",
+      subjectFingerprint: scheduledJobSubjectFingerprint,
+      overlay: "indexed",
+      source: "db_reef_refresh",
+      data: scheduledJobData,
+    }),
+    freshness: { state: "fresh", checkedAt: now, reason: "fixture scheduled job" },
+    provenance: { source: "reef-query-calculations-smoke", capturedAt: now },
+    data: scheduledJobData,
+  };
+  store.upsertReefFacts([overlayFact, scheduledJobFact]);
 
   const findings: ProjectFinding[] = ["src/auth.ts", "src/consumer.ts"].map((filePath) => {
     const findingSubject = { kind: "diagnostic" as const, path: filePath, code: "reuse.helper_bypass" };
@@ -471,6 +581,14 @@ function createSchemaSnapshot(): SchemaSnapshot {
                 withCheckExpression: null,
               }],
             },
+            triggers: [{
+              name: "users_updated_at",
+              enabled: true,
+              enabledMode: "O",
+              timing: "BEFORE",
+              events: ["UPDATE"],
+              bodyText: "EXECUTE FUNCTION public.touch_updated_at()",
+            }],
             sources: [],
           }],
           views: [],

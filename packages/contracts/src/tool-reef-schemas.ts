@@ -2431,6 +2431,7 @@ export interface ReefAskAnswer {
   summary: string;
   confidence: ReefAskConfidence;
   confidenceReasons: string[];
+  featureFlowSummary?: ReefAskFeatureFlowSummary;
   inventorySummary?: ReefAskInventorySummary;
   databaseObjectSummary?: ReefAskDatabaseObjectSummary;
   diagnosticSummary?: ReefAskDiagnosticSummary;
@@ -2441,6 +2442,199 @@ export interface ReefAskAnswer {
   nextQueries: ReefAskNextQuery[];
   suggestedNextActions: string[];
 }
+
+export const ReefAskFeatureFlowFileRoleSchema = z.enum([
+  "frontend",
+  "route",
+  "backend",
+  "database_touch",
+  "test",
+  "shared",
+  "unknown",
+]);
+export type ReefAskFeatureFlowFileRole = z.infer<typeof ReefAskFeatureFlowFileRoleSchema>;
+
+export interface ReefAskFeatureFlowFileSummary {
+  filePath: string;
+  role: ReefAskFeatureFlowFileRole;
+  score: number;
+  reasons: string[];
+  routeCount: number;
+  outboundImportCount: number;
+  inboundImportCount: number;
+  schemaUsageCount: number;
+  findingCount: number;
+}
+
+export const ReefAskFeatureFlowFileSummarySchema = z.object({
+  filePath: z.string().min(1),
+  role: ReefAskFeatureFlowFileRoleSchema,
+  score: z.number(),
+  reasons: z.array(z.string().min(1)),
+  routeCount: z.number().int().nonnegative(),
+  outboundImportCount: z.number().int().nonnegative(),
+  inboundImportCount: z.number().int().nonnegative(),
+  schemaUsageCount: z.number().int().nonnegative(),
+  findingCount: z.number().int().nonnegative(),
+}) satisfies z.ZodType<ReefAskFeatureFlowFileSummary>;
+
+export interface ReefAskFeatureFlowRouteSummary {
+  routeKey: string;
+  filePath: string;
+  pattern: string;
+  method?: string;
+  isApi?: boolean;
+  reason: string;
+}
+
+export const ReefAskFeatureFlowRouteSummarySchema = z.object({
+  routeKey: z.string().min(1),
+  filePath: z.string().min(1),
+  pattern: z.string().min(1),
+  method: z.string().min(1).optional(),
+  isApi: z.boolean().optional(),
+  reason: z.string().min(1),
+}) satisfies z.ZodType<ReefAskFeatureFlowRouteSummary>;
+
+export const ReefAskFeatureFlowDatabaseObjectKindSchema = z.enum([
+  "table",
+  "column",
+  "rpc",
+  "view",
+  "enum",
+  "index",
+  "foreign_key",
+  "rls_policy",
+  "trigger",
+  "usage",
+  "rpc_table_ref",
+  "scheduled_job",
+  "database_object",
+]);
+export type ReefAskFeatureFlowDatabaseObjectKind = z.infer<typeof ReefAskFeatureFlowDatabaseObjectKindSchema>;
+
+export interface ReefAskFeatureFlowDatabaseObjectSummary {
+  kind: ReefAskFeatureFlowDatabaseObjectKind;
+  schemaName?: string;
+  objectName: string;
+  tableName?: string;
+  fileCount: number;
+  reasons: string[];
+  freshness?: FactFreshness;
+}
+
+export const ReefAskFeatureFlowDatabaseObjectSummarySchema = z.object({
+  kind: ReefAskFeatureFlowDatabaseObjectKindSchema,
+  schemaName: z.string().min(1).optional(),
+  objectName: z.string().min(1),
+  tableName: z.string().min(1).optional(),
+  fileCount: z.number().int().nonnegative(),
+  reasons: z.array(z.string().min(1)),
+  freshness: FactFreshnessSchema.optional(),
+}) satisfies z.ZodType<ReefAskFeatureFlowDatabaseObjectSummary>;
+
+export const ReefAskFeatureFlowLinkKindSchema = z.enum([
+  "imports",
+  "imported_by",
+  "handles_route",
+  "reads_table",
+  "writes_table",
+  "calls_rpc",
+  "references_database_object",
+  "protected_by_policy",
+  "has_trigger",
+  "has_finding",
+  "rpc_touches_table",
+]);
+export type ReefAskFeatureFlowLinkKind = z.infer<typeof ReefAskFeatureFlowLinkKindSchema>;
+
+export interface ReefAskFeatureFlowLinkSummary {
+  from: string;
+  to: string;
+  kind: ReefAskFeatureFlowLinkKind;
+  reason: string;
+  confidence: number;
+}
+
+export const ReefAskFeatureFlowLinkSummarySchema = z.object({
+  from: z.string().min(1),
+  to: z.string().min(1),
+  kind: ReefAskFeatureFlowLinkKindSchema,
+  reason: z.string().min(1),
+  confidence: z.number().min(0).max(1),
+}) satisfies z.ZodType<ReefAskFeatureFlowLinkSummary>;
+
+export interface ReefAskFeatureFlowFindingSummary {
+  fingerprint: string;
+  source: string;
+  ruleId?: string;
+  severity: ReefSeverity;
+  filePath?: string;
+  line?: number;
+  message: string;
+  freshness: FactFreshness;
+}
+
+export const ReefAskFeatureFlowFindingSummarySchema = z.object({
+  fingerprint: z.string().min(1),
+  source: z.string().min(1),
+  ruleId: z.string().min(1).optional(),
+  severity: ReefSeveritySchema,
+  filePath: z.string().min(1).optional(),
+  line: z.number().int().positive().optional(),
+  message: z.string().min(1),
+  freshness: FactFreshnessSchema,
+}) satisfies z.ZodType<ReefAskFeatureFlowFindingSummary>;
+
+export interface ReefAskFeatureFlowCoverage {
+  importDepth: number;
+  seedKinds: string[];
+  databaseEvidenceKinds: string[];
+  findingCount: number;
+  staleDatabaseObjectCount: number;
+}
+
+export const ReefAskFeatureFlowCoverageSchema = z.object({
+  importDepth: z.number().int().nonnegative(),
+  seedKinds: z.array(z.string().min(1)),
+  databaseEvidenceKinds: z.array(z.string().min(1)),
+  findingCount: z.number().int().nonnegative(),
+  staleDatabaseObjectCount: z.number().int().nonnegative(),
+}) satisfies z.ZodType<ReefAskFeatureFlowCoverage>;
+
+export interface ReefAskFeatureFlowSummary {
+  seedCount: number;
+  fileCount: number;
+  routeCount: number;
+  databaseObjectCount: number;
+  findingCount: number;
+  linkCount: number;
+  files: ReefAskFeatureFlowFileSummary[];
+  routes: ReefAskFeatureFlowRouteSummary[];
+  databaseObjects: ReefAskFeatureFlowDatabaseObjectSummary[];
+  findings: ReefAskFeatureFlowFindingSummary[];
+  links: ReefAskFeatureFlowLinkSummary[];
+  coverage: ReefAskFeatureFlowCoverage;
+  truncated: boolean;
+  warnings: string[];
+}
+
+export const ReefAskFeatureFlowSummarySchema = z.object({
+  seedCount: z.number().int().nonnegative(),
+  fileCount: z.number().int().nonnegative(),
+  routeCount: z.number().int().nonnegative(),
+  databaseObjectCount: z.number().int().nonnegative(),
+  findingCount: z.number().int().nonnegative(),
+  linkCount: z.number().int().nonnegative(),
+  files: z.array(ReefAskFeatureFlowFileSummarySchema),
+  routes: z.array(ReefAskFeatureFlowRouteSummarySchema),
+  databaseObjects: z.array(ReefAskFeatureFlowDatabaseObjectSummarySchema),
+  findings: z.array(ReefAskFeatureFlowFindingSummarySchema),
+  links: z.array(ReefAskFeatureFlowLinkSummarySchema),
+  coverage: ReefAskFeatureFlowCoverageSchema,
+  truncated: z.boolean(),
+  warnings: z.array(z.string().min(1)),
+}) satisfies z.ZodType<ReefAskFeatureFlowSummary>;
 
 export interface ReefAskInventoryItem {
   kind: string;
@@ -2955,6 +3149,7 @@ export const ReefAskAnswerSchema = z.object({
   summary: z.string().min(1),
   confidence: ReefAskConfidenceSchema,
   confidenceReasons: z.array(z.string().min(1)),
+  featureFlowSummary: ReefAskFeatureFlowSummarySchema.optional(),
   inventorySummary: ReefAskInventorySummarySchema.optional(),
   databaseObjectSummary: ReefAskDatabaseObjectSummarySchema.optional(),
   diagnosticSummary: ReefAskDiagnosticSummarySchema.optional(),
@@ -2984,6 +3179,7 @@ export interface ReefAskEvidence {
   openLoops: ReefOpenLoop[];
   facts: ProjectFact[];
   graph: ReefEvidenceGraph;
+  featureFlow?: ReefAskFeatureFlowSummary;
   tableNeighborhood?: TableNeighborhoodToolOutput;
   rpcNeighborhood?: RpcNeighborhoodToolOutput;
   routeContext?: RouteContextToolOutput;
@@ -3030,6 +3226,7 @@ export const ReefAskEvidenceSchema = z.object({
   openLoops: z.array(ReefOpenLoopSchema),
   facts: z.array(ProjectFactSchema),
   graph: ReefEvidenceGraphSchema,
+  featureFlow: ReefAskFeatureFlowSummarySchema.optional(),
   tableNeighborhood: TableNeighborhoodToolOutputSchema.optional(),
   rpcNeighborhood: RpcNeighborhoodToolOutputSchema.optional(),
   routeContext: RouteContextToolOutputSchema.optional(),

@@ -7,6 +7,21 @@ it reaches 1.0.
 
 ## [Unreleased]
 
+## [0.4.0] - 2026-06-27
+
+### Added
+
+- **Flow** dashboard page — a neural-network visualization of tool activity.
+  Tools form a central nucleus and the files they touch cluster into colored
+  folder lobes, with signals travelling the connections (cyan pulses read,
+  amber pulses write). Seeds from `recall_tool_runs` history and overlays live
+  `tool.call`/`tool.result` events from the harness session stream.
+
+### Changed
+
+- Aligned the release version across the root package, the `agentmako` CLI, and
+  the Claude Code / Codex / Gemini plugin manifests to `0.4.0`.
+
 ## [0.3.2] - 2026-04-30
 
 ### Fixed

@@ -12,10 +12,10 @@ export type ContextPacketCandidateSeed = Omit<
   schemaName?: string;
   method?: string;
   baseScore?: number;
+  rankScoreOverride?: number;
 };
 
 export interface ContextPacketProviderResult {
   provider: string;
   candidates: ContextPacketCandidateSeed[];
 }
-

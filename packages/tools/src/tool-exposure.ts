@@ -52,6 +52,7 @@ export interface RankedToolCatalogEntry {
   name: string;
   description: string;
   category?: string;
+  searchHint?: string;
 }
 
 export interface ToolSearchCatalogEntry extends RankedToolCatalogEntry {
@@ -95,13 +96,15 @@ function scoreCatalogEntry(
   const trimmed = query.trim().toLowerCase();
   if (trimmed.length === 0) return 0;
 
-  const haystack = `${entry.name} ${entry.category ?? ""} ${entry.description}`.toLowerCase();
+  const primaryHaystack = `${entry.name} ${entry.category ?? ""} ${entry.description}`.toLowerCase();
+  const hintHaystack = (entry.searchHint ?? "").toLowerCase();
   const tokens = trimmed.split(/\s+/).filter(Boolean);
   let score = 0;
 
   if (entry.name.toLowerCase() === trimmed) score += 120;
   if (entry.name.toLowerCase().startsWith(trimmed)) score += 70;
-  if (haystack.includes(trimmed)) score += 35;
+  if (primaryHaystack.includes(trimmed)) score += 35;
+  if (hintHaystack.includes(trimmed)) score += 28;
 
   for (const token of tokens) {
     if (entry.name.toLowerCase() === token) {
@@ -112,8 +115,11 @@ function scoreCatalogEntry(
       score += 18;
       continue;
     }
-    if (haystack.includes(token)) {
+    if (primaryHaystack.includes(token)) {
       score += 8;
+    }
+    if (hintHaystack.includes(token)) {
+      score += 10;
     }
   }
 
@@ -149,6 +155,7 @@ export function buildRegistryToolSearchCatalog(
   return plan.items.map((item) => ({
     name: item.summary.name,
     description: item.summary.description,
+    searchHint: item.summary.searchHint,
     category: item.summary.category,
     family: "registry",
     availability: item.exposure,

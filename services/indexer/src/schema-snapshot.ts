@@ -7,6 +7,7 @@ import type {
   SchemaFreshnessStatus,
   SchemaIR,
   SchemaRpc,
+  SchemaScheduledJob,
   SchemaSnapshot,
   SchemaSnapshotSource,
   SchemaSnapshotSummary,
@@ -102,6 +103,10 @@ function rpcMatches(existing: SchemaRpc, incoming: SchemaRpc): boolean {
   }
 
   return true;
+}
+
+function scheduledJobMatches(existing: SchemaScheduledJob, incoming: SchemaScheduledJob): boolean {
+  return existing.name === incoming.name;
 }
 
 export function mergeIRInto(target: SchemaIR, addition: SchemaIR): void {
@@ -308,6 +313,29 @@ export function mergeIRInto(target: SchemaIR, addition: SchemaIR): void {
       }
     }
 
+    if (additionNs.scheduledJobs && additionNs.scheduledJobs.length > 0) {
+      const scheduledJobs = targetNs.scheduledJobs
+        ? targetNs.scheduledJobs.map((job) => ({ ...job, sources: [...job.sources] }))
+        : [];
+      for (const incoming of additionNs.scheduledJobs) {
+        const existing = scheduledJobs.find((job) => scheduledJobMatches(job, incoming));
+        if (existing) {
+          existing.schedule = incoming.schedule;
+          existing.command = incoming.command;
+          existing.sources = dedupeSources([...existing.sources, ...incoming.sources]);
+          if (incoming.database) existing.database = incoming.database;
+          if (incoming.username) existing.username = incoming.username;
+          if (incoming.active !== undefined) existing.active = incoming.active;
+        } else {
+          scheduledJobs.push({
+            ...incoming,
+            sources: [...incoming.sources],
+          });
+        }
+      }
+      targetNs.scheduledJobs = scheduledJobs;
+    }
+
     target.schemas[schemaName] = targetNs;
   }
 }
@@ -400,6 +428,16 @@ export function sortIR(ir: SchemaIR): SchemaIR {
           ...(rpc.argTypes ? { argTypes: [...rpc.argTypes] } : {}),
           sources: sortSources(rpc.sources),
         })),
+      ...(namespace.scheduledJobs
+        ? {
+            scheduledJobs: [...namespace.scheduledJobs]
+              .sort((left, right) => left.name.localeCompare(right.name))
+              .map((job) => ({
+                ...job,
+                sources: sortSources(job.sources),
+              })),
+          }
+        : {}),
     };
   }
   return sorted;

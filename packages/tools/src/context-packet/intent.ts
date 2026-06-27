@@ -97,7 +97,7 @@ function extractSymbols(request: string, input: ContextPacketToolInput): string[
   const symbols = new Set<string>(input.focusSymbols ?? []);
   for (const match of request.matchAll(IDENTIFIER)) {
     const value = match[0];
-    if (/^[A-Z]/.test(value) || /[a-z][A-Z]/.test(value) || value.startsWith("use")) {
+    if (/^[A-Z]/.test(value) || /[a-z][A-Z]/.test(value) || /^use[A-Z0-9_]/.test(value)) {
       symbols.add(value);
     }
   }

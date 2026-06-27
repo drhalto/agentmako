@@ -138,6 +138,66 @@ async function main(): Promise<void> {
     assert.equal(deferredSymbols.availability, "deferred");
     assert.match(deferredSymbols.reason ?? "", /specialist tool deferred/i);
 
+    const repoKnowledgeSearch = (await (
+      dispatch.tools.tool_search!.execute as (args: {
+        query: string;
+        limit?: number;
+      }) => Promise<{
+        results: Array<{
+          name: string;
+          availability: string;
+          reason: string | null;
+          description: string;
+          category: string | null;
+        }>;
+      }>
+    )({ query: "ranked repo knowledge graph anchors evidence quality", limit: 8 })) as {
+      results: Array<{
+        name: string;
+        availability: string;
+        reason: string | null;
+        description: string;
+        category: string | null;
+      }>;
+    };
+    const repoKnowledgeNames = repoKnowledgeSearch.results.map((item) => item.name);
+    assert.ok(
+      repoKnowledgeNames.includes("context_packet"),
+      "tool_search should surface context_packet for ranked repo-knowledge graph/evidence queries",
+    );
+    assert.ok(
+      repoKnowledgeNames.includes("repo_map"),
+      "tool_search should surface repo_map for graph anchor and repo orientation queries",
+    );
+    const contextPacketResult = repoKnowledgeSearch.results.find((item) => item.name === "context_packet");
+    assert.equal(contextPacketResult?.availability, "deferred");
+    assert.equal(contextPacketResult?.category, "context");
+
+    const compactBatchSearch = (await (
+      dispatch.tools.tool_search!.execute as (args: {
+        query: string;
+        limit?: number;
+      }) => Promise<{
+        results: Array<{
+          name: string;
+          availability: string;
+          reason: string | null;
+        }>;
+      }>
+    )({ query: "compact summaries ranked graph evidence round trips", limit: 5 })) as {
+      results: Array<{
+        name: string;
+        availability: string;
+        reason: string | null;
+      }>;
+    };
+    assert.equal(
+      compactBatchSearch.results[0]?.name,
+      "tool_batch",
+      "tool_search should rank tool_batch first for compact summary batching queries",
+    );
+    assert.equal(compactBatchSearch.results[0]?.availability, "immediate");
+
     // --- Reserved-name guard: action tools still present but NOT replaced ---
     // file_write is an action tool. It must still be in the tool bag, and it
     // must NOT be the bridged version (if it were, the permission flow would

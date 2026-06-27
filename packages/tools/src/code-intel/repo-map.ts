@@ -6,6 +6,7 @@ import type {
 } from "@mako-ai/contracts";
 import type { ProjectStore, SymbolRecord } from "@mako-ai/store";
 import { withProjectContext, type ToolServiceOptions } from "../runtime.js";
+import { rankImportGraphFiles } from "./import-graph-ranking.js";
 import { matchesPathGlob } from "./path-globs.js";
 
 /**
@@ -13,17 +14,13 @@ import { matchesPathGlob } from "./path-globs.js";
  *
  * Algorithm:
  *
- * 1. Score each indexed file by import-graph centrality:
- *    `score = fanIn * 2 + fanOut + 0.1`
- *    Rationale: inbound edges weight 2x (a file many others depend on is
- *    central — the dominant signal in aider's PageRank output too),
- *    outbound adds a mild bonus so integration hubs edge past pure leaves
- *    with equal inbound. The `+ 0.1` keeps isolated files above zero so
- *    they still land in the map and so `focusFiles` boosting works
- *    multiplicatively. Real PageRank stays deferred — this approximation
- *    preserves "inbound dominates" without iteration cost.
+ * 1. Score each indexed file by import-graph PageRank. Import edges point
+ *    from importer to imported dependency, so heavily reused dependencies
+ *    rise naturally. When focus anchors are present, PageRank is personalized
+ *    around their resolved files with bidirectional traversal so the map shows
+ *    local dependencies and dependents before unrelated global hubs.
  *
- * 2. Apply `focusFiles` boost (multiplier) so caller-named files land at the
+ * 2. Apply focus boost so caller-named or resolved anchor files land at the
  *    top without dominating the raw centrality ordering for unrelated files.
  *
  * 3. Per file, rank symbols: exported > non-exported, then by kind priority
@@ -121,42 +118,181 @@ function buildSymbolEntry(
 
 interface ScoredFile {
   filePath: string;
+  graphRank: number;
+  graphRankScore: number;
+  graphRankMode: "global" | "personalized";
+  graphRankDirection: "outbound" | "inbound" | "bidirectional";
+  focusRelation?: "self" | "dependency" | "dependent" | "bidirectional";
+  focusDistance?: number;
+  dependencyDistance?: number;
+  dependentDistance?: number;
   inboundCount: number;
   outboundCount: number;
   score: number;
 }
 
+interface ScoredFilesResult {
+  files: ScoredFile[];
+  warnings: string[];
+}
+
 function scoreFiles(
   projectStore: ProjectStore,
   focusFiles: Set<string>,
-): ScoredFile[] {
-  const allFiles = projectStore.listFiles();
-  const inbound = new Map<string, number>(allFiles.map((file) => [file.path, 0]));
-  const outbound = new Map<string, number>(allFiles.map((file) => [file.path, 0]));
+): ScoredFilesResult {
+  const ranks = rankImportGraphFiles(projectStore, {
+    seedPaths: [...focusFiles],
+    personalizationDirection: "bidirectional",
+  });
+  const personalized = focusFiles.size > 0;
+  const reachableRanks = personalized
+    ? ranks.filter((entry) => entry.pageRank > 0)
+    : ranks;
+  const omittedZeroRankCount = ranks.length - reachableRanks.length;
+  const warnings = personalized && omittedZeroRankCount > 0
+    ? [`personalized repo_map omitted ${omittedZeroRankCount} file(s) outside the focused import graph.`]
+    : [];
 
-  const seenEdgeKeys = new Set<string>();
-  for (const edge of projectStore.listAllImportEdges()) {
-    if (!edge.targetExists) continue;
-    const key = `${edge.sourcePath}->${edge.targetPath}`;
-    if (seenEdgeKeys.has(key)) continue;
-    seenEdgeKeys.add(key);
-    outbound.set(edge.sourcePath, (outbound.get(edge.sourcePath) ?? 0) + 1);
-    inbound.set(edge.targetPath, (inbound.get(edge.targetPath) ?? 0) + 1);
+  return {
+    files: reachableRanks.map((entry) => ({
+      filePath: entry.filePath,
+      graphRank: entry.pageRank,
+      graphRankScore: entry.score,
+      graphRankMode: entry.mode,
+      graphRankDirection: entry.rankDirection,
+      ...(entry.focusRelation ? { focusRelation: entry.focusRelation } : {}),
+      ...(entry.focusDistance != null ? { focusDistance: entry.focusDistance } : {}),
+      ...(entry.dependencyDistance != null ? { dependencyDistance: entry.dependencyDistance } : {}),
+      ...(entry.dependentDistance != null ? { dependentDistance: entry.dependentDistance } : {}),
+      inboundCount: entry.inboundCount,
+      outboundCount: entry.outboundCount,
+      score: focusFiles.has(entry.filePath) ? entry.score + FOCUS_BOOST : entry.score,
+    })),
+    warnings,
+  };
+}
+
+function uniqueStrings(values: Iterable<string>): string[] {
+  return [...new Set([...values])];
+}
+
+function addFocusFile(focusFiles: Set<string>, filePath: string | undefined): void {
+  if (!filePath?.trim()) return;
+  focusFiles.add(filePath);
+}
+
+function normalizeFocusFileQuery(value: string): string {
+  return value
+    .trim()
+    .replace(/\\/g, "/")
+    .replace(/\/+/g, "/")
+    .replace(/^\.\//, "");
+}
+
+function uniqueFileMatch(matches: readonly { path: string }[]): string | undefined {
+  if (matches.length !== 1) return undefined;
+  return matches[0]?.path;
+}
+
+function resolveFocusFile(projectStore: ProjectStore, requestedPath: string): string | undefined {
+  const direct = projectStore.findFile(requestedPath);
+  if (direct) return direct.path;
+
+  const normalized = normalizeFocusFileQuery(requestedPath);
+  const normalizedMatch = projectStore.findFile(normalized);
+  if (normalizedMatch) return normalizedMatch.path;
+
+  const normalizedLower = normalized.toLowerCase();
+  const files = projectStore.listFiles();
+  const exactCaseInsensitive = uniqueFileMatch(files.filter((file) =>
+    normalizeFocusFileQuery(file.path).toLowerCase() === normalizedLower
+  ));
+  if (exactCaseInsensitive) return exactCaseInsensitive;
+
+  const suffixMatch = uniqueFileMatch(files.filter((file) => {
+    const filePath = normalizeFocusFileQuery(file.path);
+    return normalized.endsWith(`/${filePath}`) ||
+      normalizedLower.endsWith(`/${filePath.toLowerCase()}`);
+  }));
+  return suffixMatch;
+}
+
+function symbolFocusHits(projectStore: ProjectStore, term: string, limit: number): string[] {
+  const filePaths = new Set<string>();
+  for (const hit of projectStore.searchCodeChunks(term, { limit, symbolOnly: true })) {
+    addFocusFile(filePaths, hit.filePath);
+    if (filePaths.size >= limit) return [...filePaths];
   }
 
-  return allFiles.map((file) => {
-    const fanIn = inbound.get(file.path) ?? 0;
-    const fanOut = outbound.get(file.path) ?? 0;
-    // fanIn * 2 + fanOut + 0.1 — see module-level comment.
-    const base = fanIn * 2 + fanOut + 0.1;
-    const score = focusFiles.has(file.path) ? base + FOCUS_BOOST : base;
-    return {
-      filePath: file.path,
-      inboundCount: fanIn,
-      outboundCount: fanOut,
-      score,
-    };
-  });
+  const normalizedTerm = term.toLowerCase();
+  for (const file of projectStore.listFiles()) {
+    for (const symbol of projectStore.listSymbolsForFile(file.path)) {
+      if (symbol.name.toLowerCase() !== normalizedTerm && symbol.exportName?.toLowerCase() !== normalizedTerm) {
+        continue;
+      }
+      addFocusFile(filePaths, file.path);
+      if (filePaths.size >= limit) return [...filePaths];
+    }
+  }
+
+  return [...filePaths];
+}
+
+function resolveFocusAnchors(
+  projectStore: ProjectStore,
+  input: RepoMapToolInput,
+): { focusFiles: Set<string>; warnings: string[] } {
+  const focusFiles = new Set<string>();
+  const warnings: string[] = [];
+  const seen = new Set<string>();
+
+  for (const requestedPath of input.focusFiles ?? []) {
+    if (seen.has(requestedPath)) continue;
+    seen.add(requestedPath);
+    const resolved = resolveFocusFile(projectStore, requestedPath);
+    if (!resolved) {
+      warnings.push(`focus file is not indexed: ${requestedPath}`);
+      continue;
+    }
+    addFocusFile(focusFiles, resolved);
+  }
+
+  for (const routeTerm of input.focusRoutes ?? []) {
+    const routes = projectStore.searchRoutes(routeTerm, 5);
+    if (routes.length === 0) {
+      warnings.push(`focus route did not resolve to an indexed route handler: ${routeTerm}`);
+      continue;
+    }
+    for (const route of routes) {
+      addFocusFile(focusFiles, route.filePath);
+    }
+  }
+
+  for (const symbolTerm of input.focusSymbols ?? []) {
+    const filePaths = symbolFocusHits(projectStore, symbolTerm, 8);
+    if (filePaths.length === 0) {
+      warnings.push(`focus symbol did not resolve to an indexed symbol: ${symbolTerm}`);
+      continue;
+    }
+    for (const filePath of filePaths) {
+      addFocusFile(focusFiles, filePath);
+    }
+  }
+
+  for (const objectTerm of input.focusDatabaseObjects ?? []) {
+    let usageMatched = false;
+    for (const object of projectStore.searchSchemaObjects(objectTerm, 5)) {
+      for (const usage of projectStore.listSchemaUsages(object.objectId).slice(0, 8)) {
+        usageMatched = true;
+        addFocusFile(focusFiles, usage.filePath);
+      }
+    }
+    if (!usageMatched) {
+      warnings.push(`focus database object did not resolve to indexed schema usage: ${objectTerm}`);
+    }
+  }
+
+  return { focusFiles, warnings: uniqueStrings(warnings) };
 }
 
 function renderFileBlock(file: RepoMapFileEntry): string {
@@ -186,15 +322,18 @@ export async function repoMapTool(
     const tokenBudget = input.tokenBudget ?? DEFAULT_TOKEN_BUDGET;
     const maxFiles = input.maxFiles ?? DEFAULT_MAX_FILES;
     const maxSymbolsPerFile = input.maxSymbolsPerFile ?? DEFAULT_MAX_SYMBOLS_PER_FILE;
-    const focusFiles = new Set(input.focusFiles ?? []);
+    const resolvedFocus = resolveFocusAnchors(projectStore, input);
+    const focusFiles = resolvedFocus.focusFiles;
     const glob = input.pathGlob;
-    const warnings: string[] = [];
+    const warnings: string[] = [...resolvedFocus.warnings];
 
     const allFiles = projectStore.listFiles();
     const totalFilesIndexed = allFiles.length;
 
     const scored = scoreFiles(projectStore, focusFiles);
+    warnings.push(...scored.warnings);
     const eligible = scored
+      .files
       .filter((entry) => (glob ? matchesPathGlob(entry.filePath, glob) : true))
       .sort((left, right) => {
         if (right.score !== left.score) return right.score - left.score;
@@ -239,6 +378,14 @@ export async function repoMapTool(
 
       const fileEntry: RepoMapFileEntry = {
         filePath: entry.filePath,
+        graphRank: Number(entry.graphRank.toFixed(8)),
+        graphRankScore: Number(entry.graphRankScore.toFixed(4)),
+        graphRankMode: entry.graphRankMode,
+        graphRankDirection: entry.graphRankDirection,
+        ...(entry.focusRelation ? { focusRelation: entry.focusRelation } : {}),
+        ...(entry.focusDistance != null ? { focusDistance: entry.focusDistance } : {}),
+        ...(entry.dependencyDistance != null ? { dependencyDistance: entry.dependencyDistance } : {}),
+        ...(entry.dependentDistance != null ? { dependentDistance: entry.dependentDistance } : {}),
         score: Number(entry.score.toFixed(4)),
         inboundCount: entry.inboundCount,
         outboundCount: entry.outboundCount,
@@ -277,7 +424,7 @@ export async function repoMapTool(
 
     if (truncatedByBudget) {
       warnings.push(
-        `truncated: token budget (${tokenBudget}) exceeded. Raise tokenBudget or narrow pathGlob / focusFiles.`,
+        `truncated: token budget (${tokenBudget}) exceeded. Raise tokenBudget or narrow pathGlob / focus anchors.`,
       );
     }
     if (truncatedByMaxFiles) {

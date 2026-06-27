@@ -146,11 +146,22 @@ export interface SchemaRpc {
   sources: SchemaSourceRef[];
 }
 
+export interface SchemaScheduledJob {
+  name: string;
+  schedule: string;
+  command: string;
+  database?: string;
+  username?: string;
+  active?: boolean;
+  sources: SchemaSourceRef[];
+}
+
 export interface SchemaNamespace {
   tables: SchemaTable[];
   views: SchemaView[];
   enums: SchemaEnum[];
   rpcs: SchemaRpc[];
+  scheduledJobs?: SchemaScheduledJob[];
 }
 
 export interface SchemaIR {
@@ -340,11 +351,22 @@ export const SchemaRpcSchema: z.ZodType<SchemaRpc> = z.object({
   sources: z.array(SchemaSourceRefSchema),
 });
 
+export const SchemaScheduledJobSchema: z.ZodType<SchemaScheduledJob> = z.object({
+  name: z.string().trim().min(1),
+  schedule: z.string().trim().min(1),
+  command: z.string().trim().min(1),
+  database: z.string().trim().min(1).optional(),
+  username: z.string().trim().min(1).optional(),
+  active: z.boolean().optional(),
+  sources: z.array(SchemaSourceRefSchema),
+});
+
 export const SchemaNamespaceSchema: z.ZodType<SchemaNamespace> = z.object({
   tables: z.array(SchemaTableSchema),
   views: z.array(SchemaViewSchema),
   enums: z.array(SchemaEnumSchema),
   rpcs: z.array(SchemaRpcSchema),
+  scheduledJobs: z.array(SchemaScheduledJobSchema).optional(),
 });
 
 export const SchemaIRSchema: z.ZodType<SchemaIR> = z.object({

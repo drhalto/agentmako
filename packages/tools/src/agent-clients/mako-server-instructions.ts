@@ -13,4 +13,6 @@ Compact starting surface:
 - \`tool_batch\` - batch independent read-only follow-ups
 - \`tool_search\` - load specialized tools only when the task clearly needs one
 
-Use specialized route, graph, DB, finding, context expansion, refresh, and ack tools through tool search after the compact surface points at a concrete need. Trust state is not filesystem freshness: stable means an answer matches the last comparable answer, not that indexed files are current. Outputs carry evidence refs back to code, schema, or stored facts.`;
+Use \`context_packet\` for messy areas needing ranked raw context, risks, freshness, expandable tools, or graph expansion. Pass \`focusFiles\`, \`changedFiles\`, \`focusRoutes\`, \`focusSymbols\`, and \`focusDatabaseObjects\`; follow suggested \`repo_map\` args for import-graph PageRank around dependencies and dependents.
+
+Use specialized route, graph, DB, finding, context expansion, refresh, and ack tools through \`tool_search\` after the compact surface points at a concrete need. Use \`tool_batch\` compact summaries for independent follow-ups so top ranked files, graph metadata, risks, and suggested expansions survive without full payloads. Trust state is not filesystem freshness: stable means an answer matches the last comparable answer, not that indexed files are current. Outputs carry evidence refs back to code, schema, or stored facts.`;

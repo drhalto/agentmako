@@ -7,6 +7,7 @@ import type {
   SchemaNamespace,
   SchemaRpc,
   SchemaRlsPolicy,
+  SchemaScheduledJob,
   SchemaSourceRef,
   SchemaTable,
   SchemaTrigger,
@@ -136,6 +137,89 @@ function parseIdentifierList(value: string): string[] {
     });
 }
 
+function lineFromOffset(text: string, offset: number): number {
+  return text.slice(0, offset).split(/\r?\n/u).length;
+}
+
+function extractParenthesizedAt(sql: string, openIndex: number): string | null {
+  if (sql[openIndex] !== "(") return null;
+  let depth = 0;
+  let current = "";
+  let inSingleQuote = false;
+  let inDoubleQuote = false;
+  for (let index = openIndex; index < sql.length; index += 1) {
+    const char = sql[index]!;
+    if (char === "'" && !inDoubleQuote) {
+      inSingleQuote = !inSingleQuote;
+      if (depth > 0) current += char;
+      continue;
+    }
+    if (char === '"' && !inSingleQuote) {
+      inDoubleQuote = !inDoubleQuote;
+      if (depth > 0) current += char;
+      continue;
+    }
+    if (!inSingleQuote && !inDoubleQuote) {
+      if (char === "(") {
+        depth += 1;
+        if (depth > 1) current += char;
+        continue;
+      }
+      if (char === ")") {
+        depth -= 1;
+        if (depth === 0) return current.trim();
+        current += char;
+        continue;
+      }
+    }
+    if (depth > 0) current += char;
+  }
+  return null;
+}
+
+function unquoteSqlString(value: string): string | null {
+  const trimmed = value.trim();
+  if (!trimmed.startsWith("'") || !trimmed.endsWith("'")) return null;
+  return trimmed.slice(1, -1).replace(/''/g, "'");
+}
+
+function parseCronScheduleStatement(
+  sql: string,
+): { name: string; schedule: string; command: string; database?: string; username?: string; active?: boolean } | null {
+  const match = sql.match(/\bcron\s*\.\s*(?<fn>schedule(?:_in_database)?)\s*\(/i);
+  if (!match?.groups) return null;
+  const openIndex = sql.indexOf("(", match.index ?? 0);
+  const argsText = extractParenthesizedAt(sql, openIndex);
+  if (!argsText) return null;
+  const args = splitTopLevelSqlList(argsText).map(unquoteSqlString);
+  if (args.some((arg) => arg == null)) return null;
+  const values = args as string[];
+  if (match.groups.fn.toLowerCase() === "schedule_in_database") {
+    const [name, schedule, command, database, username, activeText] = values;
+    if (!name || !schedule || !command) return null;
+    return {
+      name,
+      schedule,
+      command,
+      ...(database ? { database } : {}),
+      ...(username ? { username } : {}),
+      ...(activeText != null ? { active: !/^false$/i.test(activeText) } : {}),
+    };
+  }
+  if (values.length >= 3) {
+    const [name, schedule, command] = values;
+    if (!name || !schedule || !command) return null;
+    return { name, schedule, command };
+  }
+  const [schedule, command] = values;
+  if (!schedule || !command) return null;
+  return {
+    name: `${schedule} ${command.slice(0, 48)}`,
+    schedule,
+    command,
+  };
+}
+
 function extractParenthesizedClause(
   sql: string,
   clausePattern: RegExp,
@@ -209,6 +293,33 @@ function addTrigger(table: SchemaTable, trigger: SchemaTrigger): void {
     return;
   }
   table.triggers.push(trigger);
+}
+
+function addScheduledJob(namespace: SchemaNamespace, job: SchemaScheduledJob): void {
+  if (!namespace.scheduledJobs) namespace.scheduledJobs = [];
+  const existing = namespace.scheduledJobs.find((candidate) => candidate.name === job.name);
+  if (existing) {
+    existing.schedule = job.schedule;
+    existing.command = job.command;
+    existing.sources = dedupeSourceRefs([...existing.sources, ...job.sources]);
+    if (job.database) existing.database = job.database;
+    if (job.username) existing.username = job.username;
+    if (job.active !== undefined) existing.active = job.active;
+    return;
+  }
+  namespace.scheduledJobs.push(job);
+}
+
+function dedupeSourceRefs(sources: SchemaSourceRef[]): SchemaSourceRef[] {
+  const seen = new Set<string>();
+  const out: SchemaSourceRef[] = [];
+  for (const source of sources) {
+    const key = `${source.kind}\0${source.path}\0${source.line ?? ""}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    out.push(source);
+  }
+  return out;
 }
 
 function sameRpcSignature(
@@ -351,6 +462,19 @@ export async function parseSqlSchemaSource(entry: SchemaInventoryEntry): Promise
     /^\s*CREATE\s+POLICY\s+(?<name>"[^"]+"|[A-Za-z_][A-Za-z0-9_$]*)\s+ON\s+(?:(?<schema>"[^"]+"|[A-Za-z_][A-Za-z0-9_$]*)\s*\.\s*)?(?<table>"[^"]+"|[A-Za-z_][A-Za-z0-9_$]*)(?<tail>[\s\S]*)$/i;
 
   for (const stmt of splitStatements(entry.content)) {
+    const scheduledJob = parseCronScheduleStatement(stmt.text);
+    if (scheduledJob) {
+      addScheduledJob(ensureNamespace(ir, "cron"), {
+        ...scheduledJob,
+        sources: [{
+          kind: entry.kind,
+          path: entry.relativePath,
+          line: lineFromOffset(entry.content, stmt.offset),
+        }],
+      });
+      continue;
+    }
+
     const indexMatch = CREATE_INDEX.exec(stmt.text);
     if (indexMatch?.groups) {
       const tableSchema = stripIdentifierQuoting(indexMatch.groups.tableSchema ?? "public");

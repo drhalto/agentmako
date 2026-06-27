@@ -5,6 +5,7 @@ import type {
 import type { ContextPacketExpandableToolName } from "./expandable-tools-catalog.js";
 
 export const CONTEXT_PACKET_PROVIDER_NAMES = [
+  "live_text_provider",
   "file_provider",
   "route_provider",
   "schema_provider",
@@ -78,6 +79,7 @@ export const CONTEXT_PACKET_MODE_POLICIES: Record<ContextPacketMode, ContextPack
   implement: {
     mode: "implement",
     enabledProviders: [
+      "live_text_provider",
       "file_provider",
       "route_provider",
       "schema_provider",

@@ -11,6 +11,7 @@ export const REEF_ROUTE_CONTEXT_QUERY_KIND = "route_context";
 export const REEF_DIAGNOSTIC_COVERAGE_QUERY_KIND = "diagnostic_coverage";
 export const REEF_ACTIVE_FINDING_STATUS_QUERY_KIND = "active_finding_status";
 export const REEF_DUPLICATE_CANDIDATES_QUERY_KIND = "duplicate_candidates";
+export const REEF_FEATURE_FLOW_QUERY_KIND = "feature_flow";
 
 export const REEF_WHERE_USED_NODE: ReefCalculationNode = {
   id: "reef.query.where_used",
@@ -148,6 +149,32 @@ export const REEF_DUPLICATE_CANDIDATES_NODE: ReefCalculationNode = {
   backdating: { strategy: "output_fingerprint" },
 };
 
+export const REEF_FEATURE_FLOW_NODE: ReefCalculationNode = {
+  id: "reef.query.feature_flow",
+  kind: "derived_query",
+  version: "1.0.0",
+  description: "Calculates a bounded action surface across focused files, routes, imports, schema usages, database facts, triggers, policies, RPC/table refs, and durable findings.",
+  outputs: [{ kind: "query", queryKind: REEF_FEATURE_FLOW_QUERY_KIND }],
+  dependsOn: [
+    { kind: "artifact_kind", artifactKind: "ast_symbols", extractorVersion: "mako-ts-js-structure@1" },
+    { kind: "artifact_kind", artifactKind: "import_edges", extractorVersion: "mako-ts-js-structure@1" },
+    { kind: "artifact_kind", artifactKind: "routes", extractorVersion: "mako-ts-js-structure@1" },
+    { kind: "artifact_kind", artifactKind: "code_interactions", extractorVersion: "mako-ts-js-structure@1" },
+    { kind: "schema_snapshot" },
+    { kind: "fact_kind", factKind: "db_usage" },
+    { kind: "fact_kind", factKind: "db_table" },
+    { kind: "fact_kind", factKind: "db_rpc" },
+    { kind: "fact_kind", factKind: "db_rls_policy" },
+    { kind: "fact_kind", factKind: "db_trigger" },
+    { kind: "fact_kind", factKind: "db_scheduled_job" },
+    { kind: "diagnostic_source", source: "project_findings" },
+  ],
+  refreshScope: "project_scoped",
+  fallback: "mark_stale",
+  durability: "low",
+  backdating: { strategy: "output_fingerprint", equalityKeys: ["files", "routes", "databaseObjects", "findings", "links"] },
+};
+
 export const REEF_QUERY_CALCULATION_NODES = [
   REEF_WHERE_USED_NODE,
   REEF_IMPACT_NODE,
@@ -157,6 +184,7 @@ export const REEF_QUERY_CALCULATION_NODES = [
   REEF_DIAGNOSTIC_COVERAGE_NODE,
   REEF_ACTIVE_FINDING_STATUS_NODE,
   REEF_DUPLICATE_CANDIDATES_NODE,
+  REEF_FEATURE_FLOW_NODE,
 ] as const;
 
 export function createReefQueryCalculationRegistry(): ReefCalculationRegistry {

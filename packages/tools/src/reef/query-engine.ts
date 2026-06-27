@@ -1,5 +1,6 @@
 import type {
   ContextPacketToolInput,
+  JsonObject,
   LiveTextSearchToolOutput,
   NeighborhoodSection,
   ProjectFact,
@@ -13,6 +14,7 @@ import type {
   ReefAskDecisionTrace,
   ReefAskDiagnosticSummary,
   ReefAskEvidenceMode,
+  ReefAskFeatureFlowSummary,
   ReefAskFindingsSummary,
   ReefAskGraphSummary,
   ReefAskInventorySummary,
@@ -43,6 +45,8 @@ import {
   REEF_DIAGNOSTIC_COVERAGE_QUERY_KIND,
   REEF_DUPLICATE_CANDIDATES_NODE,
   REEF_DUPLICATE_CANDIDATES_QUERY_KIND,
+  REEF_FEATURE_FLOW_NODE,
+  REEF_FEATURE_FLOW_QUERY_KIND,
   REEF_IMPACT_NODE,
   REEF_IMPACT_QUERY_KIND,
   REEF_ROUTE_CONTEXT_NODE,
@@ -54,11 +58,17 @@ import {
   REEF_WHERE_USED_NODE,
   REEF_WHERE_USED_QUERY_KIND,
 } from "./calculation-nodes.js";
+import { runCachedReefCalculation } from "./calculation-cache.js";
 import {
   collectFocusedConventionGraphEvidence,
   type ReefConventionGraphEvidence,
 } from "./convention-graph-evidence.js";
 import { buildReefEvidenceGraph } from "./evidence-graph.js";
+import {
+  calculateReefFeatureFlow,
+  reefFeatureFlowFromJson,
+  reefFeatureFlowToJson,
+} from "./feature-flow.js";
 import {
   collectFocusedIndexedGraphEvidence,
   type ReefIndexedGraphEvidence,
@@ -104,6 +114,9 @@ const ANSWER_DIAGNOSTIC_LOOP_LIMIT = 10;
 const NEIGHBORHOOD_QUERY_MAX_PER_SECTION = 20;
 const ACTIVE_FINDING_STATUS_LIMIT = 500;
 const DUPLICATE_CANDIDATE_LIMIT = 20;
+const FEATURE_FLOW_LIMIT = 24;
+const FEATURE_FLOW_IMPORT_DEPTH = 1;
+const FEATURE_FLOW_TEXT_SEED_LIMIT = 10;
 const DATABASE_OBJECT_FACT_KINDS = [
   "db_table",
   "db_column",
@@ -111,6 +124,7 @@ const DATABASE_OBJECT_FACT_KINDS = [
   "db_foreign_key",
   "db_rls_policy",
   "db_trigger",
+  "db_scheduled_job",
   "db_usage",
 ] as const;
 
@@ -177,6 +191,16 @@ export interface ReefQueryEnginePlan {
     reason: string;
     limit: number;
   };
+  featureFlow?: {
+    reason: string;
+    fileSeeds: string[];
+    routeSeeds: string[];
+    databaseObjectSeeds: string[];
+    symbolSeeds: string[];
+    textSeeds: string[];
+    importDepth: number;
+    limit: number;
+  };
   duplicateCandidates?: {
     reason: string;
     limit: number;
@@ -210,6 +234,8 @@ export interface ReefQueryEvidenceBundle {
   projectFindingsWarnings?: string[];
   whereUsed?: ReefWhereUsedToolOutput;
   whereUsedWarnings?: string[];
+  featureFlow?: ReefAskFeatureFlowSummary;
+  featureFlowWarnings?: string[];
   activeFindingStatus?: ReefActiveFindingStatusOutput;
   duplicateCandidates?: ReefDuplicateCandidatesOutput;
   statusCalculationWarnings?: string[];
@@ -248,6 +274,11 @@ interface NeighborhoodEvidenceResult {
 interface WhereUsedEvidenceResult {
   whereUsed?: ReefWhereUsedToolOutput;
   whereUsedWarnings?: string[];
+}
+
+interface FeatureFlowEvidenceResult {
+  featureFlow?: ReefAskFeatureFlowSummary;
+  featureFlowWarnings?: string[];
 }
 
 interface FindingCalculationEvidenceResult {
@@ -386,6 +417,8 @@ function evidenceLanes(args: {
   statusCalculationWarnings?: string[];
   whereUsed?: ReefWhereUsedToolOutput;
   whereUsedWarnings?: string[];
+  featureFlow?: ReefAskFeatureFlowSummary;
+  featureFlowWarnings?: string[];
 }): string[] {
   const lanes = new Set<string>(["codebase"]);
   if (
@@ -440,6 +473,7 @@ function evidenceLanes(args: {
     lanes.add("facts");
   }
   if (args.whereUsed || (args.whereUsedWarnings?.length ?? 0) > 0) lanes.add("usage");
+  if (args.featureFlow || (args.featureFlowWarnings?.length ?? 0) > 0) lanes.add("flow");
   return [...lanes];
 }
 
@@ -558,6 +592,13 @@ function inferReefFactQueries(question: string): ReefQueryEnginePlan["reefFactQu
       limit: REEF_FACT_QUERY_LIMIT,
     });
   }
+  if (/\b(crons?|scheduled\s+jobs?|schedules?|pg_cron|jobs?)\b/.test(lower)) {
+    queries.push({
+      kind: "db_scheduled_job",
+      reason: "The question asks for cron or scheduled-job inventory, so Reef can enumerate scheduled DB job facts.",
+      limit: REEF_FACT_QUERY_LIMIT,
+    });
+  }
 
   return queries;
 }
@@ -642,7 +683,7 @@ function inferWhereUsed(input: ReefAskToolInput): ReefQueryEnginePlan["whereUsed
 }
 
 function looksLikeDatabaseObjectQuestion(question: string): boolean {
-  return /\b(database|db|schema|table|rpcs?|functions?|procedures?|columns?|indexes?|foreign\s+keys?|fks?|rls|polic(?:y|ies)|triggers?|relations?|constraints?)\b/i
+  return /\b(database|db|schema|table|rpcs?|functions?|procedures?|columns?|indexes?|foreign\s+keys?|fks?|rls|polic(?:y|ies)|triggers?|crons?|scheduled\s+jobs?|pg_cron|jobs?|relations?|constraints?)\b/i
     .test(question);
 }
 
@@ -667,9 +708,9 @@ function extractDatabaseObjectTarget(question: string): { schemaName?: string; o
   }
 
   const objectAfterCue = question.match(
-    /\b(?:table|relation|schema|rpcs?|functions?|procedures?|columns?|indexes?|foreign\s+keys?|fks?|rls|polic(?:y|ies)|triggers?|on|for)\s+(?<object>[A-Za-z_][A-Za-z0-9_]*)\b/i,
+    /\b(?:table|relation|schema|rpcs?|functions?|procedures?|columns?|indexes?|foreign\s+keys?|fks?|rls|polic(?:y|ies)|triggers?|crons?|scheduled\s+jobs?|jobs?|on|for)\s+(?<object>[A-Za-z_][A-Za-z0-9_]*)\b/i,
   )?.groups?.object;
-  if (objectAfterCue && !/^(?:the|a|an|and|or|this|that|all|every|which|what|in|table|schema|rpcs?|functions?|procedures?|columns?|indexes?|rls|polic(?:y|ies))$/i.test(objectAfterCue)) {
+  if (objectAfterCue && !/^(?:the|a|an|and|or|this|that|all|every|which|what|in|table|schema|rpcs?|functions?|procedures?|columns?|indexes?|rls|polic(?:y|ies)|triggers?|crons?|scheduled|jobs?)$/i.test(objectAfterCue)) {
     return { objectName: objectAfterCue };
   }
 
@@ -754,6 +795,109 @@ function inferDuplicateCandidates(question: string): ReefQueryEnginePlan["duplic
   return {
     reason: "The question asks for duplicate, near-twin, clone, copy-paste, or drift evidence, so Reef can calculate duplicate candidates from durable findings.",
     limit: DUPLICATE_CANDIDATE_LIMIT,
+  };
+}
+
+function looksLikeFeatureFlowQuestion(input: ReefAskToolInput): boolean {
+  if (
+    (input.focusFiles?.length ?? 0) > 0 ||
+    (input.changedFiles?.length ?? 0) > 0 ||
+    (input.focusRoutes?.length ?? 0) > 0 ||
+    (input.focusSymbols?.length ?? 0) > 0 ||
+    (input.focusDatabaseObjects?.length ?? 0) > 0
+  ) {
+    return true;
+  }
+  if (
+    /\b(list|enumerate|inventory|catalog|show|all|every)\b/i.test(input.question) &&
+    !/\b(change|fix|debug|refactor|implement|plan|review|verify|impact|touch(?:es|ing)?|flow)\b/i.test(input.question)
+  ) {
+    return false;
+  }
+  return /\b(edit|change|fix|debug|refactor|implement|plan|review|verify|scope|impact|touch(?:es|ing)?|flow|frontend|front[- ]?end|backend|back[- ]?end|full[- ]?stack|route|api|handler|database|db|table|column|rls|policy|trigger|rpc|schema|lint|typecheck|test)\b/i
+    .test(input.question);
+}
+
+function extractFeatureFlowTextSeeds(question: string): string[] {
+  const quoted = extractQuotedLiteral(question);
+  const words = question.match(/[A-Za-z_][A-Za-z0-9_]{2,}/g) ?? [];
+  const stop = new Set([
+    "about",
+    "after",
+    "all",
+    "and",
+    "any",
+    "are",
+    "backend",
+    "before",
+    "change",
+    "code",
+    "database",
+    "debug",
+    "does",
+    "edit",
+    "files",
+    "find",
+    "flow",
+    "for",
+    "front",
+    "frontend",
+    "help",
+    "how",
+    "implement",
+    "into",
+    "lint",
+    "plan",
+    "project",
+    "refactor",
+    "review",
+    "route",
+    "schema",
+    "table",
+    "test",
+    "that",
+    "the",
+    "this",
+    "touch",
+    "verify",
+    "what",
+    "where",
+    "with",
+  ]);
+  return unique([
+    ...(quoted ? [quoted] : []),
+    ...words
+      .filter((word) => !stop.has(word.toLowerCase()))
+      .filter((word) => word.length >= 3 && word.length <= 80),
+  ]).slice(0, FEATURE_FLOW_TEXT_SEED_LIMIT);
+}
+
+function inferFeatureFlow(
+  input: ReefAskToolInput,
+  databaseObject: ReefQueryEnginePlan["databaseObject"],
+  routeContext: ReefQueryEnginePlan["routeContext"],
+  whereUsed: ReefQueryEnginePlan["whereUsed"],
+): ReefQueryEnginePlan["featureFlow"] {
+  if (!looksLikeFeatureFlowQuestion(input)) return undefined;
+  const databaseObjectSeeds = unique([
+    ...(input.focusDatabaseObjects ?? []),
+    ...(databaseObject
+      ? [databaseObject.schemaName ? `${databaseObject.schemaName}.${databaseObject.objectName}` : databaseObject.objectName]
+      : []),
+  ]);
+  const symbolSeeds = unique([
+    ...(input.focusSymbols ?? []),
+    ...(whereUsed && whereUsed.targetKind !== "file" && whereUsed.targetKind !== "route" ? [whereUsed.query] : []),
+  ]);
+  return {
+    reason: "The question is action-oriented or focused, so Reef can calculate a bounded file-route-database-finding flow before the agent reads files.",
+    fileSeeds: unique([...(input.focusFiles ?? []), ...(input.changedFiles ?? [])]),
+    routeSeeds: unique([...(input.focusRoutes ?? []), ...(routeContext ? [routeContext.route] : [])]),
+    databaseObjectSeeds,
+    symbolSeeds,
+    textSeeds: extractFeatureFlowTextSeeds(input.question),
+    importDepth: FEATURE_FLOW_IMPORT_DEPTH,
+    limit: FEATURE_FLOW_LIMIT,
   };
 }
 
@@ -843,6 +987,10 @@ function factDisplayName(fact: ProjectFact): string {
     case "db_view": {
       const viewName = jsonString(fact.data?.viewName) ?? jsonString(fact.data?.objectName);
       return viewName ? (schemaName ? `${schemaName}.${viewName}` : viewName) : fact.subjectFingerprint;
+    }
+    case "db_scheduled_job": {
+      const jobName = jsonString(fact.data?.jobName) ?? jsonString(fact.data?.objectName);
+      return jobName ? (schemaName ? `${schemaName}.${jobName}` : jobName) : fact.subjectFingerprint;
     }
     case "db_rls_policy": {
       const tableName = jsonString(fact.data?.tableName);
@@ -1259,7 +1407,8 @@ function compileNextQueries(args: {
     args.evidence.context.relatedContext.length === 0 &&
     args.facts.length === 0 &&
     args.findings.length === 0 &&
-    (args.evidence.liveTextSearch?.matches.length ?? 0) === 0;
+    (args.evidence.liveTextSearch?.matches.length ?? 0) === 0 &&
+    (args.evidence.featureFlow?.fileCount ?? 0) === 0;
   if (noEvidence) {
     next.push({
       reason: "No deterministic evidence matched the current question.",
@@ -1276,6 +1425,12 @@ function compileNextQueries(args: {
     next.push({
       reason: "The where-used lane did not find maintained structural usage evidence.",
       question: args.evidence.whereUsed.fallbackRecommendation,
+    });
+  }
+  if (args.evidence.featureFlow && args.evidence.featureFlow.fileCount === 0) {
+    next.push({
+      reason: "The feature-flow lane did not find an indexed action surface.",
+      question: `Anchor the flow with a file, route, symbol, or database object for: ${args.evidence.context.request}`,
     });
   }
   if (args.evidence.databaseObjectQuery && (args.evidence.databaseObjectFacts?.length ?? 0) === 0) {
@@ -1323,6 +1478,7 @@ function buildSummary(args: {
   databaseObjectFacts?: ProjectFact[];
   projectFindings?: ProjectFindingsToolOutput;
   whereUsed?: ReefWhereUsedToolOutput;
+  featureFlow?: ReefAskFeatureFlowSummary;
 }, diagnosticSummary?: ReefAskDiagnosticSummary): string {
   const totalContext = args.context.primaryContext.length + args.context.relatedContext.length;
   const liveTextMatchCount = args.liveTextSearch?.matches.length ?? 0;
@@ -1333,7 +1489,8 @@ function buildSummary(args: {
   const reefFactCount = allFacts.length;
   const durableFindingCount = args.projectFindings?.findings.length ?? 0;
   const whereUsedCount = args.whereUsed?.totalReturned ?? 0;
-  if (totalContext === 0 && liveTextMatchCount === 0 && reefFactCount === 0 && durableFindingCount === 0 && whereUsedCount === 0) {
+  const featureFlowCount = args.featureFlow?.fileCount ?? 0;
+  if (totalContext === 0 && liveTextMatchCount === 0 && reefFactCount === 0 && durableFindingCount === 0 && whereUsedCount === 0 && featureFlowCount === 0) {
     return "Reef did not find deterministic project context for this question. Use the warnings and suggested actions to broaden the query or fall back to exact live search.";
   }
 
@@ -1383,6 +1540,11 @@ function buildSummary(args: {
   if (args.whereUsed) {
     parts.push(
       `Where-used evidence found ${args.whereUsed.definitions.length} definition(s), ${args.whereUsed.usages.length} usage(s), and ${args.whereUsed.relatedFindings.length} related finding(s) for ${JSON.stringify(args.whereUsed.query)}.`,
+    );
+  }
+  if (args.featureFlow) {
+    parts.push(
+      `Feature flow mapped ${args.featureFlow.fileCount} file(s), ${args.featureFlow.routeCount} route(s), ${args.featureFlow.databaseObjectCount} database object(s), and ${args.featureFlow.findingCount} finding(s).`,
     );
   }
   if (reefFactCount > 0) {
@@ -1454,6 +1616,15 @@ export function scoreReefQueryConfidence(evidence: ReefQueryEvidenceBundle): Ree
     }
   }
 
+  if (evidence.featureFlow) {
+    if (evidence.featureFlow.fileCount > 0 || evidence.featureFlow.databaseObjectCount > 0) {
+      score += 2;
+      reasons.push("feature-flow calculation mapped a bounded action surface");
+    } else {
+      reasons.push("feature-flow calculation returned no action-surface anchors");
+    }
+  }
+
   if (evidence.liveTextSearch) {
     if (evidence.liveTextSearch.matches.length > 0) {
       score += 2;
@@ -1509,6 +1680,10 @@ export function scoreReefQueryConfidence(evidence: ReefQueryEvidenceBundle): Ree
     score -= 1;
     reasons.push("where-used warnings are present");
   }
+  if ((evidence.featureFlow?.warnings.length ?? 0) > 0 || (evidence.featureFlowWarnings?.length ?? 0) > 0) {
+    score -= 1;
+    reasons.push("feature-flow warnings are present");
+  }
 
   if (score >= 4) return { confidence: "high", reasons };
   if (score >= 1) return { confidence: "medium", reasons };
@@ -1525,6 +1700,7 @@ function suggestedActions(args: {
   databaseObjectFacts?: ProjectFact[];
   projectFindings?: ProjectFindingsToolOutput;
   whereUsed?: ReefWhereUsedToolOutput;
+  featureFlow?: ReefAskFeatureFlowSummary;
 }): string[] {
   const actions = [
     ...args.context.recommendedHarnessPattern.slice(0, 4),
@@ -1548,6 +1724,9 @@ function suggestedActions(args: {
   }
   if (args.whereUsed?.fallbackRecommendation) {
     actions.push(args.whereUsed.fallbackRecommendation);
+  }
+  if (args.featureFlow && args.featureFlow.fileCount === 0) {
+    actions.push("Pass focusFiles, focusRoutes, focusSymbols, or focusDatabaseObjects to anchor the feature-flow calculation.");
   }
   return unique(actions).slice(0, 10);
 }
@@ -1595,6 +1774,15 @@ function whereUsedEvidenceCount(output: ReefWhereUsedToolOutput | undefined): nu
     (output?.relatedFindings.length ?? 0);
 }
 
+function featureFlowEvidenceCount(output: ReefAskFeatureFlowSummary | undefined): number {
+  if (!output) return 0;
+  return output.files.length +
+    output.routes.length +
+    output.databaseObjects.length +
+    output.findings.length +
+    output.links.length;
+}
+
 function looksLikeImpactQuestion(question: string): boolean {
   return /\b(impact|what\s+breaks|break\s+if|change\s+impact|downstream|affected|dependents?)\b/i.test(question);
 }
@@ -1635,6 +1823,9 @@ function engineSteps(args: {
   whereUsedPlan?: ReefQueryEnginePlan["whereUsed"];
   whereUsed?: ReefWhereUsedToolOutput;
   whereUsedWarnings?: string[];
+  featureFlowPlan?: ReefQueryEnginePlan["featureFlow"];
+  featureFlow?: ReefAskFeatureFlowSummary;
+  featureFlowWarnings?: string[];
 }) {
   return [
     {
@@ -1677,6 +1868,20 @@ function engineSteps(args: {
         : "Skipped because focused operational graph enrichment was unavailable.",
       returnedCount: (args.operationalGraph?.diagnosticRuns.length ?? 0) +
         (args.operationalGraph?.toolRuns.length ?? 0),
+    },
+    {
+      name: "reef_feature_flow",
+      status: args.featureFlowPlan ? "included" as const : "skipped" as const,
+      reason: args.featureFlowPlan
+        ? `${args.featureFlowPlan.reason} Seeds: ${[
+            args.featureFlowPlan.fileSeeds.length > 0 ? `${args.featureFlowPlan.fileSeeds.length} file` : "",
+            args.featureFlowPlan.routeSeeds.length > 0 ? `${args.featureFlowPlan.routeSeeds.length} route` : "",
+            args.featureFlowPlan.databaseObjectSeeds.length > 0 ? `${args.featureFlowPlan.databaseObjectSeeds.length} database` : "",
+            args.featureFlowPlan.symbolSeeds.length > 0 ? `${args.featureFlowPlan.symbolSeeds.length} symbol` : "",
+            args.featureFlowPlan.textSeeds.length > 0 ? `${args.featureFlowPlan.textSeeds.length} text` : "",
+          ].filter(Boolean).join(", ") || "question terms"}.`
+        : "Skipped because the question was not action-oriented or focused enough for a bounded flow calculation.",
+      returnedCount: featureFlowEvidenceCount(args.featureFlow),
     },
     {
       name: "live_text_search",
@@ -1799,6 +2004,9 @@ function engineStepsForPlan(plan: ReefQueryEnginePlan, evidence: ReefQueryEviden
     whereUsedPlan: plan.whereUsed,
     whereUsed: evidence.whereUsed,
     whereUsedWarnings: evidence.whereUsedWarnings,
+    featureFlowPlan: plan.featureFlow,
+    featureFlow: evidence.featureFlow,
+    featureFlowWarnings: evidence.featureFlowWarnings,
   });
 }
 
@@ -1863,6 +2071,12 @@ function fallbackForDecisionLane(args: {
         ? "Ask a usage, caller, reference, dependent, or impact question with a concrete symbol, file, route, or component."
         : args.evidence.whereUsed?.fallbackRecommendation ??
           (args.evidenceCount === 0 ? "Use live_text_search or ast_find_pattern if maintained structural usage evidence is absent." : undefined);
+    case "reef_feature_flow":
+      return args.status === "skipped"
+        ? "Ask an action-oriented question or pass focusFiles, changedFiles, focusRoutes, focusSymbols, or focusDatabaseObjects to calculate the bounded action surface."
+        : args.evidenceCount === 0
+          ? "Pass a concrete file, route, symbol, or database object so Reef can anchor the feature-flow calculation."
+          : undefined;
     case "open_loops":
       return args.status === "skipped"
         ? "Set includeOpenLoops=true when unresolved findings, stale facts, or failed diagnostic state should affect the answer."
@@ -1971,6 +2185,17 @@ function plannedCalculationsForPlan(
         : "",
       skippedReason: "Skipped because the question did not name or focus a specific route.",
       returnedCount: routeContextEvidenceCount(evidence.routeContext),
+    }),
+    plannedCalculation({
+      nodeId: REEF_FEATURE_FLOW_NODE.id,
+      queryKind: REEF_FEATURE_FLOW_QUERY_KIND,
+      lane: "flow",
+      included: Boolean(plan.featureFlow),
+      includedReason: plan.featureFlow
+        ? plan.featureFlow.reason
+        : "",
+      skippedReason: "Skipped because the question was not action-oriented or focused enough for a bounded file-route-database-finding flow calculation.",
+      returnedCount: featureFlowEvidenceCount(evidence.featureFlow),
     }),
     plannedCalculation({
       nodeId: REEF_DIAGNOSTIC_COVERAGE_NODE.id,
@@ -2120,6 +2345,7 @@ function buildReefAskEvidenceOutput(args: {
   rpcNeighborhood?: RpcNeighborhoodToolOutput;
   routeContext?: RouteContextToolOutput;
   whereUsed?: ReefWhereUsedToolOutput;
+  featureFlow?: ReefAskFeatureFlowSummary;
   revision?: number;
 }): ReefCompiledQuery["evidence"] {
   const limit = evidenceCap(args.plan);
@@ -2203,6 +2429,27 @@ function buildReefAskEvidenceOutput(args: {
         coverage: args.whereUsed.coverage,
         ...(args.whereUsed.fallbackRecommendation ? { fallbackRecommendation: args.whereUsed.fallbackRecommendation } : {}),
         warnings: args.whereUsed.warnings,
+      }
+    : undefined;
+  const featureFlow = args.featureFlow
+    ? {
+        ...args.featureFlow,
+        files: capEvidenceArray(sections, "featureFlow.files", args.featureFlow.files, limit),
+        routes: capEvidenceArray(sections, "featureFlow.routes", args.featureFlow.routes, limit),
+        databaseObjects: capEvidenceArray(
+          sections,
+          "featureFlow.databaseObjects",
+          args.featureFlow.databaseObjects,
+          limit,
+        ),
+        findings: capEvidenceArray(sections, "featureFlow.findings", args.featureFlow.findings, limit),
+        links: capEvidenceArray(sections, "featureFlow.links", args.featureFlow.links, limit),
+        truncated: args.featureFlow.truncated ||
+          (sections["featureFlow.files"]?.truncated ?? false) ||
+          (sections["featureFlow.routes"]?.truncated ?? false) ||
+          (sections["featureFlow.databaseObjects"]?.truncated ?? false) ||
+          (sections["featureFlow.findings"]?.truncated ?? false) ||
+          (sections["featureFlow.links"]?.truncated ?? false),
       }
     : undefined;
   const liveTextSearch = args.liveTextSearch
@@ -2297,6 +2544,7 @@ function buildReefAskEvidenceOutput(args: {
     openLoops,
     facts,
     graph,
+    ...(featureFlow ? { featureFlow } : {}),
     ...(tableNeighborhood ? { tableNeighborhood } : {}),
     ...(rpcNeighborhood ? { rpcNeighborhood } : {}),
     ...(routeContext ? { routeContext } : {}),
@@ -2325,6 +2573,7 @@ export function planReefQuery(input: ReefAskToolInput): ReefQueryEnginePlan {
   const rpcNeighborhood = inferRpcNeighborhood(input, databaseObject);
   const routeContext = inferRouteContext(input);
   const duplicateCandidates = inferDuplicateCandidates(input.question);
+  const featureFlow = inferFeatureFlow(input, databaseObject, routeContext, whereUsed);
 
   return {
     mode,
@@ -2363,6 +2612,7 @@ export function planReefQuery(input: ReefAskToolInput): ReefQueryEnginePlan {
     ...(rpcNeighborhood ? { rpcNeighborhood } : {}),
     ...(routeContext ? { routeContext } : {}),
     ...(whereUsed ? { whereUsed } : {}),
+    ...(featureFlow ? { featureFlow } : {}),
     ...(duplicateCandidates ? { duplicateCandidates } : {}),
   };
 }
@@ -2373,6 +2623,7 @@ function errorMessage(error: unknown): string {
 
 function factDatabaseObjectName(fact: ProjectFact): string | undefined {
   return jsonString(fact.data?.tableName) ??
+    jsonString(fact.data?.jobName) ??
     jsonString(fact.data?.objectName) ??
     jsonString(fact.data?.viewName) ??
     (fact.subject.kind === "schema_object" ? fact.subject.objectName.split(".")[0] : undefined);
@@ -2524,6 +2775,61 @@ async function collectFindingCalculationEvidence(
   }).catch((error: unknown) => ({
     statusCalculationWarnings: [
       `finding status calculations failed: ${errorMessage(error)}`,
+    ],
+  }));
+}
+
+async function collectFeatureFlowEvidence(
+  plan: ReefQueryEnginePlan,
+  locatorInput: ProjectLocatorInput,
+  options: ToolServiceOptions,
+): Promise<FeatureFlowEvidenceResult> {
+  const featurePlan = plan.featureFlow;
+  if (!featurePlan) return {};
+  return await withProjectContext(locatorInput, options, ({ project, projectStore }) => {
+    const sourceRevision = projectStore.loadReefAnalysisState(
+      project.projectId,
+      project.canonicalPath,
+    )?.materializedRevision;
+    const calculationInput: JsonObject = {
+      fileSeeds: featurePlan.fileSeeds,
+      routeSeeds: featurePlan.routeSeeds,
+      databaseObjectSeeds: featurePlan.databaseObjectSeeds,
+      symbolSeeds: featurePlan.symbolSeeds,
+      textSeeds: featurePlan.textSeeds,
+      importDepth: featurePlan.importDepth,
+      limit: featurePlan.limit,
+    };
+    const calculation = runCachedReefCalculation({
+      projectStore,
+      projectId: project.projectId,
+      root: project.canonicalPath,
+      node: REEF_FEATURE_FLOW_NODE,
+      queryKind: REEF_FEATURE_FLOW_QUERY_KIND,
+      sourceRevision,
+      input: calculationInput,
+      compute: () => calculateReefFeatureFlow({
+        projectStore,
+        projectId: project.projectId,
+        fileSeeds: featurePlan.fileSeeds,
+        routeSeeds: featurePlan.routeSeeds,
+        databaseObjectSeeds: featurePlan.databaseObjectSeeds,
+        symbolSeeds: featurePlan.symbolSeeds,
+        textSeeds: featurePlan.textSeeds,
+        importDepth: featurePlan.importDepth,
+        limit: featurePlan.limit,
+      }),
+      toJson: reefFeatureFlowToJson,
+      fromJson: reefFeatureFlowFromJson,
+    });
+    return {
+      featureFlow: {
+        ...calculation.value,
+      },
+    };
+  }).catch((error: unknown) => ({
+    featureFlowWarnings: [
+      `feature flow calculation failed: ${errorMessage(error)}`,
     ],
   }));
 }
@@ -2680,6 +2986,9 @@ export async function collectReefQueryEvidence(
     plan.projectFindings || plan.duplicateCandidates
       ? collectFindingCalculationEvidence(plan, projectLocator, options)
       : undefined;
+  const featureFlowPromise: Promise<FeatureFlowEvidenceResult> | undefined = plan.featureFlow
+    ? collectFeatureFlowEvidence(plan, projectLocator, options)
+    : undefined;
 
   const [
     indexedGraphResult,
@@ -2694,6 +3003,7 @@ export async function collectReefQueryEvidence(
     neighborhoodResult,
     whereUsedResult,
     findingCalculationResult,
+    featureFlowResult,
   ] = await Promise.all([
     indexedGraphPromise,
     conventionGraphPromise,
@@ -2707,6 +3017,7 @@ export async function collectReefQueryEvidence(
     neighborhoodPromise,
     whereUsedPromise,
     findingCalculationPromise,
+    featureFlowPromise,
   ]);
 
   return {
@@ -2771,6 +3082,10 @@ export async function collectReefQueryEvidence(
     ...(findingCalculationResult?.statusCalculationWarnings
       ? { statusCalculationWarnings: findingCalculationResult.statusCalculationWarnings }
       : {}),
+    ...(featureFlowResult?.featureFlow ? { featureFlow: featureFlowResult.featureFlow } : {}),
+    ...(featureFlowResult?.featureFlowWarnings
+      ? { featureFlowWarnings: featureFlowResult.featureFlowWarnings }
+      : {}),
   };
 }
 
@@ -2787,6 +3102,7 @@ export function compileReefQueryAnswer(
   const findingsSummary = compileFindingsSummary(findings);
   const literalMatchesSummary = compileLiteralMatchesSummary(evidence.liveTextSearch);
   const whereUsedSummary = compileWhereUsedSummary(evidence.whereUsed);
+  const featureFlowSummary = evidence.featureFlow;
   const nextQueries = compileNextQueries({ evidence, facts, findings });
   const decisionTrace = compileDecisionTrace({
     plan,
@@ -2798,6 +3114,7 @@ export function compileReefQueryAnswer(
     summary: buildSummary(evidence, diagnosticSummary),
     confidence: confidenceResult.confidence,
     confidenceReasons: confidenceResult.reasons,
+    ...(featureFlowSummary ? { featureFlowSummary } : {}),
     ...(inventorySummary ? { inventorySummary } : {}),
     ...(databaseObjectSummary ? { databaseObjectSummary } : {}),
     ...(diagnosticSummary ? { diagnosticSummary } : {}),
@@ -2833,6 +3150,8 @@ function evidenceWarnings(evidence: ReefQueryEvidenceBundle): string[] {
     ...(evidence.projectFindingsWarnings ?? []),
     ...(evidence.whereUsed?.warnings ?? []),
     ...(evidence.whereUsedWarnings ?? []),
+    ...(evidence.featureFlow?.warnings ?? []),
+    ...(evidence.featureFlowWarnings ?? []),
     ...(evidence.duplicateCandidates?.warnings ?? []),
     ...(evidence.statusCalculationWarnings ?? []),
   ];
@@ -2849,6 +3168,8 @@ function staleEvidenceLabeled(evidence: ReefQueryEvidenceBundle): number {
     reefFacts(evidence).filter((fact) => fact.freshness.state !== "fresh").length +
     (evidence.projectFindings?.findings.filter((finding) => finding.freshness.state !== "fresh").length ?? 0) +
     (evidence.whereUsed?.relatedFindings.filter((finding) => finding.freshness.state !== "fresh").length ?? 0) +
+    (evidence.featureFlow?.databaseObjects.filter((object) => object.freshness?.state && object.freshness.state !== "fresh").length ?? 0) +
+    (evidence.featureFlow?.findings.filter((finding) => finding.freshness.state !== "fresh").length ?? 0) +
     (evidence.openLoops?.loops.filter((loop) =>
       loop.kind === "stale_fact" ||
       loop.kind === "unknown_fact" ||
@@ -2886,6 +3207,7 @@ function returnedEvidenceCount(evidence: ReefQueryEvidenceBundle): number {
     (evidence.whereUsed?.definitions.length ?? 0) +
     (evidence.whereUsed?.usages.length ?? 0) +
     (evidence.whereUsed?.relatedFindings.length ?? 0) +
+    featureFlowEvidenceCount(evidence.featureFlow) +
     (evidence.activeFindingStatus?.totalActive ?? 0) +
     (evidence.duplicateCandidates?.candidates.length ?? 0);
 }
@@ -2941,6 +3263,7 @@ export async function compileReefQuery(
     routeContext,
     projectFindings,
     whereUsed,
+    featureFlow,
   } = evidence;
   const materializedFacts = reefFacts(evidence);
   const durableFindings = mergedFindings(evidence);
@@ -2960,6 +3283,7 @@ export async function compileReefQuery(
     rpcNeighborhood,
     routeContext,
     whereUsed,
+    featureFlow,
     ...(graphRevision !== undefined ? { revision: graphRevision } : {}),
   });
   warnings.push(...outputEvidence.graph.warnings);
@@ -3006,6 +3330,8 @@ export async function compileReefQuery(
         statusCalculationWarnings: evidence.statusCalculationWarnings,
         whereUsed,
         whereUsedWarnings: evidence.whereUsedWarnings,
+        featureFlow,
+        featureFlowWarnings: evidence.featureFlowWarnings,
       }),
       graphSummary: graphSummary(outputEvidence.graph),
       assumptions: [
@@ -3034,6 +3360,9 @@ export async function compileReefQuery(
         plan.whereUsed
           ? "The planner detected a usage/impact question and queried maintained where-used evidence directly."
           : "Where-used evidence is queried internally only for usage, caller, dependent, reference, or impact questions.",
+        plan.featureFlow
+          ? "The planner calculated a bounded feature-flow action surface across focused files, routes, imports, database facts, policies, triggers, RPC/table refs, and findings."
+          : "Feature-flow is calculated internally only for action-oriented questions or explicit focus anchors.",
       ],
       engineSteps: engineStepsForPlan(plan, evidence),
       calculations: plannedCalculationsForPlan(plan, evidence),

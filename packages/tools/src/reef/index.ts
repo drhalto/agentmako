@@ -9,6 +9,7 @@ export * from "./db-refresh.js";
 export * from "./diagnostic-refresh.js";
 export * from "./diff-impact.js";
 export * from "./evidence.js";
+export * from "./feature-flow.js";
 export * from "./file-preflight.js";
 export * from "./instructions.js";
 export * from "./inspect.js";

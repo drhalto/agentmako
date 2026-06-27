@@ -16,9 +16,10 @@ import { ReefToolExecutionSchema } from "./tool-reef-execution-schemas.js";
 const JsonObjectSchema = z.record(z.unknown()) as z.ZodType<JsonObject>;
 
 // Candidate sources reflect the providers that actually emit candidates.
-// Forward-looking sources (e.g. live_text_provider, ast_pattern_provider,
-// finding_ack_memory) will be added back when their providers ship.
+// Forward-looking sources (e.g. ast_pattern_provider, finding_ack_memory) will
+// be added back when their providers ship.
 export const ContextPacketSourceSchema = z.enum([
+  "live_text_provider",
   "route_provider",
   "file_provider",
   "schema_provider",
@@ -228,6 +229,180 @@ export const ContextPacketDatabaseObjectSchema = z.object({
   confidence: z.number().min(0).max(1),
 }) satisfies z.ZodType<ContextPacketDatabaseObject>;
 
+export const ContextPacketGraphFileRelationSchema = z.enum([
+  "anchor",
+  "dependency",
+  "dependent",
+  "bidirectional",
+  "central",
+  "unknown",
+]);
+export type ContextPacketGraphFileRelation = z.infer<typeof ContextPacketGraphFileRelationSchema>;
+
+export interface ContextPacketGraphFileSummary {
+  filePath: string;
+  relation: ContextPacketGraphFileRelation;
+  distance?: number;
+  sourceCount: number;
+  sources: ContextPacketSource[];
+  strategies: ContextPacketStrategy[];
+  score: number;
+  confidence: number;
+  reasons: string[];
+}
+
+export const ContextPacketGraphFileSummarySchema = z.object({
+  filePath: z.string().min(1),
+  relation: ContextPacketGraphFileRelationSchema,
+  distance: z.number().int().nonnegative().optional(),
+  sourceCount: z.number().int().positive(),
+  sources: z.array(ContextPacketSourceSchema),
+  strategies: z.array(ContextPacketStrategySchema),
+  score: z.number(),
+  confidence: z.number().min(0).max(1),
+  reasons: z.array(z.string().min(1)),
+}) satisfies z.ZodType<ContextPacketGraphFileSummary>;
+
+export const ContextPacketGraphEdgeRelationSchema = z.enum([
+  "anchor_dependency",
+  "anchor_dependent",
+  "anchor_link",
+  "context_import",
+]);
+export type ContextPacketGraphEdgeRelation = z.infer<typeof ContextPacketGraphEdgeRelationSchema>;
+
+export interface ContextPacketGraphEdgeSummary {
+  from: string;
+  to: string;
+  relation: ContextPacketGraphEdgeRelation;
+  specifier: string;
+  importKind: string;
+  isTypeOnly: boolean;
+  line?: number;
+}
+
+export const ContextPacketGraphEdgeSummarySchema = z.object({
+  from: z.string().min(1),
+  to: z.string().min(1),
+  relation: ContextPacketGraphEdgeRelationSchema,
+  specifier: z.string(),
+  importKind: z.string(),
+  isTypeOnly: z.boolean(),
+  line: z.number().int().positive().optional(),
+}) satisfies z.ZodType<ContextPacketGraphEdgeSummary>;
+
+export interface ContextPacketGraphSummary {
+  anchorFiles: string[];
+  returnedFileCount: number;
+  edgeCount: number;
+  dependencyFileCount: number;
+  dependentFileCount: number;
+  bidirectionalFileCount: number;
+  centralFileCount: number;
+  unknownRelationFileCount: number;
+  files: ContextPacketGraphFileSummary[];
+  edges: ContextPacketGraphEdgeSummary[];
+  truncated: boolean;
+  warnings: string[];
+}
+
+export const ContextPacketGraphSummarySchema = z.object({
+  anchorFiles: z.array(z.string().min(1)),
+  returnedFileCount: z.number().int().nonnegative(),
+  edgeCount: z.number().int().nonnegative(),
+  dependencyFileCount: z.number().int().nonnegative(),
+  dependentFileCount: z.number().int().nonnegative(),
+  bidirectionalFileCount: z.number().int().nonnegative(),
+  centralFileCount: z.number().int().nonnegative(),
+  unknownRelationFileCount: z.number().int().nonnegative(),
+  files: z.array(ContextPacketGraphFileSummarySchema),
+  edges: z.array(ContextPacketGraphEdgeSummarySchema),
+  truncated: z.boolean(),
+  warnings: z.array(z.string().min(1)),
+}) satisfies z.ZodType<ContextPacketGraphSummary>;
+
+export const ContextPacketRequestCoverageKindSchema = z.enum([
+  "file",
+  "symbol",
+  "route",
+  "database_object",
+  "quoted_text",
+]);
+export type ContextPacketRequestCoverageKind = z.infer<typeof ContextPacketRequestCoverageKindSchema>;
+
+export const ContextPacketRequestCoverageItemStatusSchema = z.enum([
+  "covered",
+  "uncovered",
+  "not_checked",
+]);
+export type ContextPacketRequestCoverageItemStatus = z.infer<typeof ContextPacketRequestCoverageItemStatusSchema>;
+
+export const ContextPacketRequestCoverageStatusSchema = z.enum([
+  "complete",
+  "partial",
+  "missing",
+  "not_requested",
+]);
+export type ContextPacketRequestCoverageStatus = z.infer<typeof ContextPacketRequestCoverageStatusSchema>;
+
+export interface ContextPacketRequestCoverageItem {
+  kind: ContextPacketRequestCoverageKind;
+  value: string;
+  status: ContextPacketRequestCoverageItemStatus;
+  matchedBy: string[];
+  reason: string;
+}
+
+export const ContextPacketRequestCoverageItemSchema = z.object({
+  kind: ContextPacketRequestCoverageKindSchema,
+  value: z.string().min(1),
+  status: ContextPacketRequestCoverageItemStatusSchema,
+  matchedBy: z.array(z.string().min(1)),
+  reason: z.string().min(1),
+}) satisfies z.ZodType<ContextPacketRequestCoverageItem>;
+
+export interface ContextPacketRequestCoverageKindSummary {
+  requested: number;
+  covered: number;
+  uncovered: number;
+  notChecked: number;
+}
+
+export const ContextPacketRequestCoverageKindSummarySchema = z.object({
+  requested: z.number().int().nonnegative(),
+  covered: z.number().int().nonnegative(),
+  uncovered: z.number().int().nonnegative(),
+  notChecked: z.number().int().nonnegative(),
+}) satisfies z.ZodType<ContextPacketRequestCoverageKindSummary>;
+
+export interface ContextPacketRequestCoverage {
+  status: ContextPacketRequestCoverageStatus;
+  requestedCount: number;
+  coveredCount: number;
+  uncoveredCount: number;
+  notCheckedCount: number;
+  byKind: Record<ContextPacketRequestCoverageKind, ContextPacketRequestCoverageKindSummary>;
+  items: ContextPacketRequestCoverageItem[];
+  recommendations: string[];
+}
+
+export const ContextPacketRequestCoverageSchema = z.object({
+  status: ContextPacketRequestCoverageStatusSchema,
+  requestedCount: z.number().int().nonnegative(),
+  coveredCount: z.number().int().nonnegative(),
+  uncoveredCount: z.number().int().nonnegative(),
+  notCheckedCount: z.number().int().nonnegative(),
+  byKind: z.object({
+    file: ContextPacketRequestCoverageKindSummarySchema,
+    symbol: ContextPacketRequestCoverageKindSummarySchema,
+    route: ContextPacketRequestCoverageKindSummarySchema,
+    database_object: ContextPacketRequestCoverageKindSummarySchema,
+    quoted_text: ContextPacketRequestCoverageKindSummarySchema,
+  }),
+  items: z.array(ContextPacketRequestCoverageItemSchema),
+  recommendations: z.array(z.string().min(1)),
+}) satisfies z.ZodType<ContextPacketRequestCoverage>;
+
 export interface ContextPacketRisk {
   code: string;
   reason: string;
@@ -284,11 +459,39 @@ export interface ContextPacketLimits {
   maxPrimaryContext: number;
   maxRelatedContext: number;
   providersRun: string[];
+  providersRunDetail: ContextPacketProviderRunDetail[];
   providersSkipped: string[];
+  providersSkippedDetail: ContextPacketProviderSkipDetail[];
   providersFailed: string[];
   candidatesConsidered: number;
   candidatesReturned: number;
 }
+
+export interface ContextPacketProviderRunDetail {
+  provider: string;
+  status: "success" | "failed";
+  candidateCount: number;
+  durationMs: number;
+}
+
+export const ContextPacketProviderRunDetailSchema = z.object({
+  provider: z.string().min(1),
+  status: z.enum(["success", "failed"]),
+  candidateCount: z.number().int().nonnegative(),
+  durationMs: z.number().nonnegative(),
+}) satisfies z.ZodType<ContextPacketProviderRunDetail>;
+
+export interface ContextPacketProviderSkipDetail {
+  provider: string;
+  reason: string;
+  adaptive: boolean;
+}
+
+export const ContextPacketProviderSkipDetailSchema = z.object({
+  provider: z.string().min(1),
+  reason: z.string().min(1),
+  adaptive: z.boolean(),
+}) satisfies z.ZodType<ContextPacketProviderSkipDetail>;
 
 export const ContextPacketLimitsSchema = z.object({
   budgetTokens: z.number().int().positive(),
@@ -296,11 +499,167 @@ export const ContextPacketLimitsSchema = z.object({
   maxPrimaryContext: z.number().int().nonnegative(),
   maxRelatedContext: z.number().int().nonnegative(),
   providersRun: z.array(z.string().min(1)),
+  providersRunDetail: z.array(ContextPacketProviderRunDetailSchema),
   providersSkipped: z.array(z.string().min(1)),
+  providersSkippedDetail: z.array(ContextPacketProviderSkipDetailSchema),
   providersFailed: z.array(z.string().min(1)),
   candidatesConsidered: z.number().int().nonnegative(),
   candidatesReturned: z.number().int().nonnegative(),
 }) satisfies z.ZodType<ContextPacketLimits>;
+
+export interface ContextPacketRetrievalSlowestProvider {
+  provider: string;
+  status: ContextPacketProviderRunDetail["status"];
+  candidateCount: number;
+  durationMs: number;
+}
+
+export const ContextPacketRetrievalSlowestProviderSchema = z.object({
+  provider: z.string().min(1),
+  status: ContextPacketProviderRunDetailSchema.shape.status,
+  candidateCount: z.number().int().nonnegative(),
+  durationMs: z.number().nonnegative(),
+}) satisfies z.ZodType<ContextPacketRetrievalSlowestProvider>;
+
+export interface ContextPacketLiveTextMiss {
+  query: string;
+  scope: "project" | "file";
+  scopePath?: string;
+}
+
+export const ContextPacketLiveTextMissSchema = z.object({
+  query: z.string().min(1),
+  scope: z.enum(["project", "file"]),
+  scopePath: z.string().min(1).optional(),
+}) satisfies z.ZodType<ContextPacketLiveTextMiss>;
+
+export interface ContextPacketRetrievalDiagnostics {
+  providerRunCount: number;
+  providerCandidateCount: number;
+  zeroCandidateProviders: string[];
+  failedProviders: string[];
+  adaptiveSkippedProviders: string[];
+  liveTextMisses: ContextPacketLiveTextMiss[];
+  slowestProvider?: ContextPacketRetrievalSlowestProvider;
+  recommendations: string[];
+}
+
+export const ContextPacketRetrievalDiagnosticsSchema = z.object({
+  providerRunCount: z.number().int().nonnegative(),
+  providerCandidateCount: z.number().int().nonnegative(),
+  zeroCandidateProviders: z.array(z.string().min(1)),
+  failedProviders: z.array(z.string().min(1)),
+  adaptiveSkippedProviders: z.array(z.string().min(1)),
+  liveTextMisses: z.array(ContextPacketLiveTextMissSchema),
+  slowestProvider: ContextPacketRetrievalSlowestProviderSchema.optional(),
+  recommendations: z.array(z.string().min(1)),
+}) satisfies z.ZodType<ContextPacketRetrievalDiagnostics>;
+
+export const ContextPacketEvidenceQualityLabelSchema = z.enum([
+  "strong",
+  "usable",
+  "partial",
+  "weak",
+]);
+export type ContextPacketEvidenceQualityLabel = z.infer<typeof ContextPacketEvidenceQualityLabelSchema>;
+
+export interface ContextPacketEvidenceQualityFreshness {
+  gateStatus: ProjectFreshnessGate["status"];
+  indexState: IndexFreshnessSummary["state"];
+  dirtyContextCount: number;
+}
+
+export const ContextPacketEvidenceQualityFreshnessSchema = z.object({
+  gateStatus: ProjectFreshnessGateSchema.shape.status,
+  indexState: IndexFreshnessSummarySchema.shape.state,
+  dirtyContextCount: z.number().int().nonnegative(),
+}) satisfies z.ZodType<ContextPacketEvidenceQualityFreshness>;
+
+export interface ContextPacketEvidenceQualityRequestCoverage {
+  status: ContextPacketRequestCoverageStatus;
+  requestedCount: number;
+  coveredCount: number;
+  unresolvedCount: number;
+  uncoveredCount: number;
+  notCheckedCount: number;
+}
+
+export const ContextPacketEvidenceQualityRequestCoverageSchema = z.object({
+  status: ContextPacketRequestCoverageStatusSchema,
+  requestedCount: z.number().int().nonnegative(),
+  coveredCount: z.number().int().nonnegative(),
+  unresolvedCount: z.number().int().nonnegative(),
+  uncoveredCount: z.number().int().nonnegative(),
+  notCheckedCount: z.number().int().nonnegative(),
+}) satisfies z.ZodType<ContextPacketEvidenceQualityRequestCoverage>;
+
+export const ContextPacketEvidenceQualityGraphStatusSchema = z.enum([
+  "connected",
+  "isolated",
+  "missing",
+  "not_requested",
+]);
+export type ContextPacketEvidenceQualityGraphStatus = z.infer<typeof ContextPacketEvidenceQualityGraphStatusSchema>;
+
+export interface ContextPacketEvidenceQualityGraph {
+  status: ContextPacketEvidenceQualityGraphStatus;
+  requested: boolean;
+  anchorFileCount: number;
+  returnedFileCount: number;
+  edgeCount: number;
+  connectedFileCount: number;
+  warningCount: number;
+}
+
+export const ContextPacketEvidenceQualityGraphSchema = z.object({
+  status: ContextPacketEvidenceQualityGraphStatusSchema,
+  requested: z.boolean(),
+  anchorFileCount: z.number().int().nonnegative(),
+  returnedFileCount: z.number().int().nonnegative(),
+  edgeCount: z.number().int().nonnegative(),
+  connectedFileCount: z.number().int().nonnegative(),
+  warningCount: z.number().int().nonnegative(),
+}) satisfies z.ZodType<ContextPacketEvidenceQualityGraph>;
+
+export interface ContextPacketEvidenceQuality {
+  label: ContextPacketEvidenceQualityLabel;
+  score: number;
+  reasons: string[];
+  recommendedAction: string;
+  primaryContextCount: number;
+  relatedContextCount: number;
+  totalContextCount: number;
+  freshContextCount: number;
+  staleContextCount: number;
+  unknownFreshnessCount: number;
+  liveOverlayContextCount: number;
+  corroboratedContextCount: number;
+  highConfidenceContextCount: number;
+  averageConfidence: number;
+  freshness: ContextPacketEvidenceQualityFreshness;
+  requestCoverage: ContextPacketEvidenceQualityRequestCoverage;
+  graph: ContextPacketEvidenceQualityGraph;
+}
+
+export const ContextPacketEvidenceQualitySchema = z.object({
+  label: ContextPacketEvidenceQualityLabelSchema,
+  score: z.number().min(0).max(1),
+  reasons: z.array(z.string().min(1)),
+  recommendedAction: z.string().min(1),
+  primaryContextCount: z.number().int().nonnegative(),
+  relatedContextCount: z.number().int().nonnegative(),
+  totalContextCount: z.number().int().nonnegative(),
+  freshContextCount: z.number().int().nonnegative(),
+  staleContextCount: z.number().int().nonnegative(),
+  unknownFreshnessCount: z.number().int().nonnegative(),
+  liveOverlayContextCount: z.number().int().nonnegative(),
+  corroboratedContextCount: z.number().int().nonnegative(),
+  highConfidenceContextCount: z.number().int().nonnegative(),
+  averageConfidence: z.number().min(0).max(1),
+  freshness: ContextPacketEvidenceQualityFreshnessSchema,
+  requestCoverage: ContextPacketEvidenceQualityRequestCoverageSchema,
+  graph: ContextPacketEvidenceQualityGraphSchema,
+}) satisfies z.ZodType<ContextPacketEvidenceQuality>;
 
 export interface ContextPacketModePolicySummary {
   enabledProviders: string[];
@@ -334,12 +693,16 @@ export interface ContextPacketToolOutput {
   symbols: ContextPacketSymbol[];
   routes: ContextPacketRoute[];
   databaseObjects: ContextPacketDatabaseObject[];
+  graphSummary: ContextPacketGraphSummary;
+  requestCoverage: ContextPacketRequestCoverage;
   risks: ContextPacketRisk[];
   scopedInstructions: ContextPacketInstruction[];
   recommendedHarnessPattern: string[];
   expandableTools: ContextPacketExpandableTool[];
   freshnessGate: ProjectFreshnessGate;
   indexFreshness?: IndexFreshnessSummary;
+  evidenceQuality: ContextPacketEvidenceQuality;
+  retrievalDiagnostics: ContextPacketRetrievalDiagnostics;
   reefExecution: ReefToolExecution;
   limits: ContextPacketLimits;
   warnings: string[];
@@ -359,12 +722,16 @@ export const ContextPacketToolOutputSchema = z.object({
   symbols: z.array(ContextPacketSymbolSchema),
   routes: z.array(ContextPacketRouteSchema),
   databaseObjects: z.array(ContextPacketDatabaseObjectSchema),
+  graphSummary: ContextPacketGraphSummarySchema,
+  requestCoverage: ContextPacketRequestCoverageSchema,
   risks: z.array(ContextPacketRiskSchema),
   scopedInstructions: z.array(ContextPacketInstructionSchema),
   recommendedHarnessPattern: z.array(z.string().min(1)),
   expandableTools: z.array(ContextPacketExpandableToolSchema),
   freshnessGate: ProjectFreshnessGateSchema,
   indexFreshness: IndexFreshnessSummarySchema.optional(),
+  evidenceQuality: ContextPacketEvidenceQualitySchema,
+  retrievalDiagnostics: ContextPacketRetrievalDiagnosticsSchema,
   reefExecution: ReefToolExecutionSchema,
   limits: ContextPacketLimitsSchema,
   warnings: z.array(z.string().min(1)),

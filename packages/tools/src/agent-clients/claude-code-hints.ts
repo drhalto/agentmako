@@ -127,7 +127,7 @@ export const CLAUDE_CODE_TOOL_HINTS: Record<
     searchHint: "complete table columns constraints indexes",
   },
   mako_help: {
-    searchHint: "mako workflow recipe tool sequence",
+    searchHint: "mako workflow recipe focus anchors",
     alwaysLoad: true,
   },
   ask: {
@@ -196,13 +196,13 @@ export const CLAUDE_CODE_TOOL_HINTS: Record<
     searchHint: "read database review comments notes",
   },
   repo_map: {
-    searchHint: "repo orientation outline central files first turn",
+    searchHint: "repo PageRank map focus anchors graph",
   },
   context_packet: {
-    searchHint: "deterministic scout packet ranked context",
+    searchHint: "ranked context packet graph anchors risks",
   },
   tool_batch: {
-    searchHint: "batch read only mako lookups",
+    searchHint: "batch compact summaries ranked graph evidence",
     alwaysLoad: true,
   },
   reef_ask: {

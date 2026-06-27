@@ -63,6 +63,7 @@ export function Shell({ children }: ShellProps) {
     { to: scopedPath("/agent"), label: "Agent", icon: <AgentIcon /> },
     { to: scopedPath("/artifacts"), label: "Artifacts", icon: <ArtifactsIcon /> },
     { to: scopedPath("/tools"), label: "Tools", icon: <ToolsIcon /> },
+    { to: scopedPath("/flow"), label: "Flow", icon: <FlowIcon /> },
     { to: scopedPath("/search"), label: "Search", icon: <SearchIcon /> },
     { to: scopedPath("/memory"), label: "Memory", icon: <MemoryIcon /> },
     { to: scopedPath("/usage"), label: "Usage", icon: <UsageIcon /> },
@@ -499,6 +500,17 @@ function SearchIcon() {
     <svg width="14" height="14" viewBox="0 0 16 16" aria-hidden fill="none">
       <circle cx="7" cy="7" r="4.5" stroke="currentColor" strokeWidth="1.4" />
       <path d="M11 11l3 3" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" />
+    </svg>
+  );
+}
+
+function FlowIcon() {
+  return (
+    <svg width="14" height="14" viewBox="0 0 16 16" aria-hidden fill="none">
+      <path d="M5.2 5.6L8 4M8 12L5.2 10.4M10.6 8H8" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round" />
+      <circle cx="3.5" cy="5" r="1.8" stroke="currentColor" strokeWidth="1.3" />
+      <circle cx="3.5" cy="11" r="1.8" stroke="currentColor" strokeWidth="1.3" />
+      <circle cx="12" cy="8" r="1.8" stroke="currentColor" strokeWidth="1.3" />
     </svg>
   );
 }

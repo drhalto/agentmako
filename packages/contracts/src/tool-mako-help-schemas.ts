@@ -53,6 +53,9 @@ export interface MakoHelpToolInput extends ProjectLocatorInput {
   task: string;
   focusFiles?: string[];
   changedFiles?: string[];
+  focusRoutes?: string[];
+  focusSymbols?: string[];
+  focusDatabaseObjects?: string[];
   route?: string;
   table?: string;
   rpc?: string;
@@ -63,6 +66,9 @@ export const MakoHelpToolInputSchema = ProjectLocatorInputObjectSchema.extend({
   task: z.string().trim().min(1),
   focusFiles: z.array(z.string().trim().min(1)).max(20).optional(),
   changedFiles: z.array(z.string().trim().min(1)).max(20).optional(),
+  focusRoutes: z.array(z.string().trim().min(1)).max(20).optional(),
+  focusSymbols: z.array(z.string().trim().min(1)).max(20).optional(),
+  focusDatabaseObjects: z.array(z.string().trim().min(1)).max(20).optional(),
   route: z.string().trim().min(1).optional(),
   table: z.string().trim().min(1).optional(),
   rpc: z.string().trim().min(1).optional(),

@@ -93,6 +93,7 @@ async function main(): Promise<void> {
     assert.equal(result.evidence.sections.primaryContext.total, result.evidence.primaryContext.length);
     assert.ok(result.queryPlan.evidenceLanes.includes("codebase"));
     assert.ok(result.queryPlan.evidenceLanes.includes("database"));
+    assert.ok(result.queryPlan.evidenceLanes.includes("flow"));
     assert.ok(result.queryPlan.evidenceLanes.includes("conventions"));
     assert.ok(result.queryPlan.evidenceLanes.includes("operations"));
     assert.ok(result.evidence.primaryContext.length > 0);
@@ -257,8 +258,46 @@ async function main(): Promise<void> {
       entry.status === "included" &&
       entry.evidenceCount > 0
     ));
+    assert.ok(result.answer.decisionTrace.entries.some((entry) =>
+      entry.lane === "reef_feature_flow" &&
+      entry.status === "included" &&
+      entry.evidenceCount > 0
+    ));
+    const featureFlowSummary = result.answer.featureFlowSummary;
+    assert.ok(featureFlowSummary);
+    assert.ok(result.evidence.featureFlow);
+    assert.ok(featureFlowSummary.files.some((file) =>
+      file.filePath === "lib/auth/session.ts" &&
+      file.role === "backend"
+    ));
+    assert.ok(featureFlowSummary.routes.some((featureRoute) =>
+      featureRoute.pattern === "/api/session" &&
+      featureRoute.filePath === "app/api/session/route.ts"
+    ));
+    assert.ok(featureFlowSummary.databaseObjects.some((object) =>
+      object.kind === "table" &&
+      object.objectName === "user_profiles"
+    ));
+    assert.ok(featureFlowSummary.databaseObjects.some((object) =>
+      object.kind === "trigger" &&
+      object.tableName === "user_profiles"
+    ));
+    assert.ok(featureFlowSummary.databaseObjects.some((object) =>
+      object.kind === "scheduled_job" &&
+      object.objectName === "sync_profile_subject_job"
+    ));
+    assert.ok(featureFlowSummary.findings.some((finding) =>
+      finding.ruleId === "auth.session_profile_rule"
+    ));
+    assert.ok(featureFlowSummary.links.some((link) => link.kind === "handles_route"));
+    assert.ok(featureFlowSummary.links.some((link) => link.kind === "reads_table"));
     assert.ok(result.queryPlan.calculations.some((calculation) =>
       calculation.queryKind === "table_neighborhood" &&
+      calculation.status === "included" &&
+      calculation.returnedCount > 0
+    ));
+    assert.ok(result.queryPlan.calculations.some((calculation) =>
+      calculation.queryKind === "feature_flow" &&
       calculation.status === "included" &&
       calculation.returnedCount > 0
     ));
@@ -288,6 +327,8 @@ async function main(): Promise<void> {
     assert.equal(enginePlan.contextInput.request, "Plan the auth/session change that touches the user_profiles table");
     assert.deepEqual(enginePlan.verificationFiles, ["lib/auth/session.ts"]);
     assert.equal(enginePlan.tableNeighborhood?.tableName, "user_profiles");
+    assert.ok(enginePlan.featureFlow);
+    assert.ok(enginePlan.featureFlow.databaseObjectSeeds.includes("public.user_profiles"));
 
     const exactPlan = planReefQuery({
       projectId,
@@ -505,6 +546,9 @@ async function main(): Promise<void> {
     assert.ok(databaseObjectSummary.rlsPolicies.some((policy) =>
       policy.name === "user_owner_policy" &&
       policy.command === "select"
+    ));
+    assert.ok(databaseObjectSummary.triggers.some((trigger) =>
+      trigger.name === "sync_profile_subject"
     ));
     assert.ok(databaseObject.queryPlan.engineSteps.some((step) =>
       step.name === "reef_database_object" &&
@@ -754,7 +798,7 @@ function seedProject(projectRoot: string, projectId: string): void {
         rlsEnabled: true,
         forceRls: false,
         policyCount: 1,
-        triggerCount: 0,
+        triggerCount: 1,
       }),
       dbSchemaFact(store, projectId, "db_column", "user_profiles.id", {
         schemaName: "public",
@@ -783,6 +827,25 @@ function seedProject(projectRoot: string, projectId: string): void {
         roles: ["authenticated"],
         usingExpression: "auth.uid() = id",
         withCheckExpression: null,
+      }),
+      dbSchemaFact(store, projectId, "db_trigger", "user_profiles.sync_profile_subject", {
+        schemaName: "public",
+        tableName: "user_profiles",
+        triggerName: "sync_profile_subject",
+        enabled: true,
+        enabledMode: "O",
+        timing: "AFTER",
+        events: ["INSERT", "UPDATE"],
+        hasBodyText: true,
+      }),
+      dbSchemaFact(store, projectId, "db_scheduled_job", "sync_profile_subject_job", {
+        schemaName: "cron",
+        jobName: "sync_profile_subject_job",
+        schedule: "0 * * * *",
+        command: "select public.sync_profile_subject() from public.user_profiles",
+        database: "postgres",
+        username: "postgres",
+        active: true,
       }),
     ];
     store.upsertReefFacts(rpcFacts);

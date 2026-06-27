@@ -125,6 +125,7 @@ export function buildHarnessToolExposurePlan(input: {
       catalog.push({
         name: item.summary.name,
         description: item.summary.description,
+        searchHint: item.summary.searchHint,
         category: item.summary.category,
         family: "registry",
         availability: item.exposure,

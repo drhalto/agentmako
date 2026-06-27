@@ -69,6 +69,23 @@ async function main(): Promise<void> {
     }
   }
 
+  assert.ok(
+    CLAUDE_CODE_TOOL_HINTS.repo_map.searchHint.includes("PageRank"),
+    "repo_map hint advertises graph ranking",
+  );
+  assert.ok(
+    CLAUDE_CODE_TOOL_HINTS.repo_map.searchHint.includes("anchors"),
+    "repo_map hint advertises focus anchors",
+  );
+  assert.ok(
+    CLAUDE_CODE_TOOL_HINTS.context_packet.searchHint.includes("graph"),
+    "context_packet hint advertises graph expansion",
+  );
+  assert.ok(
+    CLAUDE_CODE_TOOL_HINTS.tool_batch.searchHint.includes("compact"),
+    "tool_batch hint advertises compact summaries",
+  );
+
   assert.equal(
     GenericAgentClient.toolMeta({ name: "ask" }),
     undefined,
@@ -83,6 +100,25 @@ async function main(): Promise<void> {
     GenericAgentClient.serverInstructions(),
     MAKO_SERVER_INSTRUCTIONS,
     "GenericAgentClient returns the same shared mako instructions",
+  );
+  assert.ok(
+    MAKO_SERVER_INSTRUCTIONS.includes("context_packet"),
+    "server instructions point agents at context_packet",
+  );
+  assert.ok(
+    MAKO_SERVER_INSTRUCTIONS.includes("focusRoutes") &&
+      MAKO_SERVER_INSTRUCTIONS.includes("focusSymbols") &&
+      MAKO_SERVER_INSTRUCTIONS.includes("focusDatabaseObjects"),
+    "server instructions mention high-signal context anchors",
+  );
+  assert.ok(
+    MAKO_SERVER_INSTRUCTIONS.includes("repo_map") &&
+      MAKO_SERVER_INSTRUCTIONS.includes("PageRank"),
+    "server instructions connect repo_map to PageRank expansion",
+  );
+  assert.ok(
+    MAKO_SERVER_INSTRUCTIONS.includes("compact summaries"),
+    "server instructions mention compact tool_batch summaries",
   );
 
   console.log("agent-client-selection: PASS");

@@ -16,6 +16,7 @@ import { UsagePage } from "./pages/Usage";
 import { HealthPage } from "./pages/Health";
 import { ArtifactsPage } from "./pages/Artifacts";
 import { ToolsPage } from "./pages/Tools";
+import { FlowPage } from "./pages/Flow";
 import {
   ALL_PROJECTS_SLUG,
   computeSlugMap,
@@ -39,6 +40,7 @@ export function App() {
           <Route path="/:slug/health" element={<HealthPage />} />
           <Route path="/:slug/artifacts" element={<ArtifactsPage />} />
           <Route path="/:slug/tools" element={<ToolsPage />} />
+          <Route path="/:slug/flow" element={<FlowPage />} />
           <Route path="/:slug/memory" element={<MemoryPage />} />
           <Route path="/:slug/search" element={<SearchPage />} />
         </Route>

@@ -4,6 +4,7 @@ import type {
   SchemaIR,
   SchemaNamespace,
   SchemaRpc,
+  SchemaScheduledJob,
   SchemaSourceRef,
   SchemaTable,
   SchemaView,
@@ -46,6 +47,16 @@ interface FunctionRow {
   function_name: string;
   return_type: string | null;
   arg_types: string[];
+}
+
+interface ScheduledJobRow {
+  jobid: number;
+  jobname: string | null;
+  schedule: string;
+  command: string;
+  database: string | null;
+  username: string | null;
+  active: boolean | null;
 }
 
 const SYSTEM_SCHEMA_EXCLUSIONS = ["pg_catalog", "information_schema", "pg_toast"];
@@ -191,6 +202,35 @@ async function fetchFunctions(
   return result.rows;
 }
 
+async function fetchScheduledJobs(context: PgReadContext): Promise<ScheduledJobRow[]> {
+  const exists = await context.query<{ relation_name: string | null }>(
+    "SELECT to_regclass('cron.job')::text AS relation_name",
+    [],
+  );
+  if (!exists.rows[0]?.relation_name) {
+    return [];
+  }
+
+  try {
+    const result = await context.query<ScheduledJobRow>(
+      `SELECT
+        jobid::int AS jobid,
+        jobname::text AS jobname,
+        schedule::text AS schedule,
+        command::text AS command,
+        database::text AS database,
+        username::text AS username,
+        active AS active
+       FROM cron.job
+       ORDER BY jobid`,
+      [],
+    );
+    return result.rows;
+  } catch {
+    return [];
+  }
+}
+
 function emptyTableShape(): PgTableSchemaResult {
   return {
     columns: [],
@@ -208,6 +248,7 @@ async function assembleLiveIR(
   tableRows: TableRow[],
   enumRows: EnumRow[],
   functionRows: FunctionRow[],
+  scheduledJobRows: ScheduledJobRow[],
 ): Promise<SchemaIR> {
   const ir: SchemaIR = { version: "1.0.0", schemas: {} };
 
@@ -343,6 +384,19 @@ async function assembleLiveIR(
     namespace.rpcs.push(rpc);
   }
 
+  if (scheduledJobRows.length > 0) {
+    const namespace = ensureNamespace(ir, "cron");
+    namespace.scheduledJobs = scheduledJobRows.map<SchemaScheduledJob>((row) => ({
+      name: row.jobname?.trim() || `job_${row.jobid}`,
+      schedule: row.schedule,
+      command: row.command,
+      ...(row.database ? { database: row.database } : {}),
+      ...(row.username ? { username: row.username } : {}),
+      ...(row.active !== null ? { active: row.active } : {}),
+      sources: [makeLiveSourceRef("cron")],
+    }));
+  }
+
   return ir;
 }
 
@@ -358,7 +412,8 @@ export async function fetchLiveSchemaIR(options: FetchLiveSchemaIROptions): Prom
         const tableRows = await fetchTables(context, options.includedSchemas);
         const enumRows = await fetchEnums(context, options.includedSchemas);
         const functionRows = await fetchFunctions(context, options.includedSchemas);
-        return assembleLiveIR(context, schemaNames, tableRows, enumRows, functionRows);
+        const scheduledJobRows = await fetchScheduledJobs(context);
+        return assembleLiveIR(context, schemaNames, tableRows, enumRows, functionRows, scheduledJobRows);
       },
     );
   } catch (error) {

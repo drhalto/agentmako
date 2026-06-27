@@ -45,6 +45,105 @@ function countSummary(value: unknown): JsonObject {
   return { count: jsonArray(value).length };
 }
 
+function compactReefFeatureFlowSummary(value: Record<string, unknown>): JsonObject {
+  const files = jsonArray(value.files).map(jsonRecord).filter((file): file is Record<string, unknown> => Boolean(file));
+  const routes = jsonArray(value.routes).map(jsonRecord).filter((route): route is Record<string, unknown> => Boolean(route));
+  const databaseObjects = jsonArray(value.databaseObjects).map(jsonRecord).filter((object): object is Record<string, unknown> => Boolean(object));
+  const findings = jsonArray(value.findings).map(jsonRecord).filter((finding): finding is Record<string, unknown> => Boolean(finding));
+  const links = jsonArray(value.links).map(jsonRecord).filter((link): link is Record<string, unknown> => Boolean(link));
+  const coverage = jsonRecord(value.coverage);
+
+  return {
+    seedCount: numberValue(value.seedCount) ?? 0,
+    fileCount: numberValue(value.fileCount) ?? 0,
+    routeCount: numberValue(value.routeCount) ?? 0,
+    databaseObjectCount: numberValue(value.databaseObjectCount) ?? 0,
+    findingCount: numberValue(value.findingCount) ?? 0,
+    linkCount: numberValue(value.linkCount) ?? 0,
+    files: files.slice(0, 5).map((file) => ({
+      filePath: stringValue(file.filePath) ?? "",
+      role: stringValue(file.role) ?? "",
+      score: numberValue(file.score) ?? 0,
+      reasons: jsonValues(file.reasons).slice(0, 5),
+      routeCount: numberValue(file.routeCount) ?? 0,
+      outboundImportCount: numberValue(file.outboundImportCount) ?? 0,
+      inboundImportCount: numberValue(file.inboundImportCount) ?? 0,
+      schemaUsageCount: numberValue(file.schemaUsageCount) ?? 0,
+      findingCount: numberValue(file.findingCount) ?? 0,
+    })),
+    routes: routes.slice(0, 5).map((route) => {
+      const out: JsonObject = {
+        routeKey: stringValue(route.routeKey) ?? "",
+        filePath: stringValue(route.filePath) ?? "",
+        pattern: stringValue(route.pattern) ?? "",
+        isApi: booleanValue(route.isApi) ?? false,
+      };
+      const method = stringValue(route.method);
+      if (method) out.method = method;
+      return out;
+    }),
+    databaseObjects: databaseObjects.slice(0, 5).map((object) => {
+      const out: JsonObject = {
+        kind: stringValue(object.kind) ?? "",
+        objectName: stringValue(object.objectName) ?? "",
+        fileCount: numberValue(object.fileCount) ?? 0,
+        reasons: jsonValues(object.reasons).slice(0, 5),
+      };
+      const schemaName = stringValue(object.schemaName);
+      if (schemaName) out.schemaName = schemaName;
+      const tableName = stringValue(object.tableName);
+      if (tableName) out.tableName = tableName;
+      const freshness = jsonRecord(object.freshness);
+      const freshnessState = stringValue(freshness?.state);
+      if (freshnessState) out.freshness = { state: freshnessState };
+      return out;
+    }),
+    findings: findings.slice(0, 5).map((finding) => {
+      const out: JsonObject = {
+        source: stringValue(finding.source) ?? "",
+        severity: stringValue(finding.severity) ?? "",
+        message: stringValue(finding.message) ?? "",
+      };
+      const ruleId = stringValue(finding.ruleId);
+      if (ruleId) out.ruleId = ruleId;
+      const filePath = stringValue(finding.filePath);
+      if (filePath) out.filePath = filePath;
+      const line = numberValue(finding.line);
+      if (line != null) out.line = line;
+      return out;
+    }),
+    links: links.slice(0, 5).map((link) => ({
+      from: stringValue(link.from) ?? "",
+      to: stringValue(link.to) ?? "",
+      kind: stringValue(link.kind) ?? "",
+      confidence: numberValue(link.confidence) ?? 0,
+      reason: stringValue(link.reason) ?? "",
+    })),
+    coverage: {
+      importDepth: numberValue(coverage?.importDepth) ?? 0,
+      seedKinds: jsonValues(coverage?.seedKinds),
+      databaseEvidenceKinds: jsonValues(coverage?.databaseEvidenceKinds),
+      findingCount: numberValue(coverage?.findingCount) ?? 0,
+      staleDatabaseObjectCount: numberValue(coverage?.staleDatabaseObjectCount) ?? 0,
+    },
+    truncated: booleanValue(value.truncated) ?? false,
+    warnings: jsonValues(value.warnings),
+  } satisfies JsonObject;
+}
+
+function compactReefCalculation(value: unknown): JsonObject | undefined {
+  const calculation = jsonRecord(value);
+  if (!calculation) return undefined;
+  return {
+    nodeId: stringValue(calculation.nodeId) ?? "",
+    queryKind: stringValue(calculation.queryKind) ?? "",
+    lane: stringValue(calculation.lane) ?? "",
+    status: stringValue(calculation.status) ?? "",
+    returnedCount: numberValue(calculation.returnedCount) ?? 0,
+    reason: stringValue(calculation.reason) ?? "",
+  };
+}
+
 function compactReefAskSummary(value: JsonObject): JsonObject | undefined {
   if (value.toolName !== "reef_ask") {
     return undefined;
@@ -62,6 +161,7 @@ function compactReefAskSummary(value: JsonObject): JsonObject | undefined {
   const findingsSummary = jsonRecord(answer?.findingsSummary);
   const literalMatchesSummary = jsonRecord(answer?.literalMatchesSummary);
   const whereUsedSummary = jsonRecord(answer?.whereUsedSummary);
+  const featureFlowSummary = jsonRecord(answer?.featureFlowSummary);
 
   const summary: JsonObject = {
     toolName: "reef_ask",
@@ -145,6 +245,9 @@ function compactReefAskSummary(value: JsonObject): JsonObject | undefined {
             },
           }
         : {}),
+      ...(featureFlowSummary
+        ? { featureFlow: compactReefFeatureFlowSummary(featureFlowSummary) }
+        : {}),
       decisionTrace: {
         entries: jsonArray(decisionTrace?.entries)
           .map(jsonRecord)
@@ -172,6 +275,10 @@ function compactReefAskSummary(value: JsonObject): JsonObject | undefined {
           status: stringValue(step.status) ?? "",
           returnedCount: numberValue(step.returnedCount) ?? 0,
         })),
+      calculations: jsonArray(queryPlan?.calculations)
+        .map(compactReefCalculation)
+        .filter((calculation): calculation is JsonObject => Boolean(calculation))
+        .slice(0, 12),
     },
     freshness: (freshness as JsonObject | undefined) ?? {},
     evidence: {
@@ -184,9 +291,355 @@ function compactReefAskSummary(value: JsonObject): JsonObject | undefined {
   return summary;
 }
 
+function compactRepoMapSummary(value: JsonObject): JsonObject | undefined {
+  if (value.toolName !== "repo_map") {
+    return undefined;
+  }
+
+  const files = jsonArray(value.files).map(jsonRecord).filter((file): file is Record<string, unknown> => Boolean(file));
+  return {
+    toolName: "repo_map",
+    projectId: stringValue(value.projectId) ?? "",
+    tokenBudget: numberValue(value.tokenBudget) ?? 0,
+    estimatedTokens: numberValue(value.estimatedTokens) ?? 0,
+    totalFilesIndexed: numberValue(value.totalFilesIndexed) ?? 0,
+    totalFilesEligible: numberValue(value.totalFilesEligible) ?? 0,
+    truncatedByBudget: booleanValue(value.truncatedByBudget) ?? false,
+    truncatedByMaxFiles: booleanValue(value.truncatedByMaxFiles) ?? false,
+    topFiles: files.slice(0, 5).map((file) => {
+      const topFile: JsonObject = {
+        filePath: stringValue(file.filePath) ?? "",
+        score: numberValue(file.score) ?? 0,
+        graphRankScore: numberValue(file.graphRankScore) ?? 0,
+        graphRankMode: stringValue(file.graphRankMode) ?? "",
+        graphRankDirection: stringValue(file.graphRankDirection) ?? "",
+        inboundCount: numberValue(file.inboundCount) ?? 0,
+        outboundCount: numberValue(file.outboundCount) ?? 0,
+        symbolsIncluded: countSummary(file.symbolsIncluded),
+        symbolsTotal: numberValue(file.symbolsTotal) ?? 0,
+      };
+      const focusRelation = stringValue(file.focusRelation);
+      if (focusRelation) topFile.focusRelation = focusRelation;
+      const focusDistance = numberValue(file.focusDistance);
+      if (focusDistance != null) topFile.focusDistance = focusDistance;
+      const dependencyDistance = numberValue(file.dependencyDistance);
+      if (dependencyDistance != null) topFile.dependencyDistance = dependencyDistance;
+      const dependentDistance = numberValue(file.dependentDistance);
+      if (dependentDistance != null) topFile.dependentDistance = dependentDistance;
+      return topFile;
+    }),
+    warnings: jsonValues(value.warnings),
+  } satisfies JsonObject;
+}
+
+function compactContextMetadata(value: unknown): JsonObject | undefined {
+  const record = jsonRecord(value);
+  if (!record) return undefined;
+  const out: JsonObject = {};
+  for (const key of [
+    "graphDepth",
+    "graphPath",
+    "graphRankMode",
+    "graphRankDirection",
+    "graphRankScore",
+    "focusRelation",
+    "focusDistance",
+    "dependencyDistance",
+    "dependentDistance",
+    "corroboratedSignalCount",
+    "corroborationBonus",
+    "query",
+    "text",
+    "column",
+    "matchText",
+    "submatchCount",
+    "overlay",
+    "evidenceConfidenceLabel",
+    "liveTextProvider",
+    "scope",
+    "scopePath",
+  ]) {
+    const entry = record[key];
+    if (entry == null || typeof entry === "string" || typeof entry === "number" || typeof entry === "boolean") {
+      if (entry != null) out[key] = entry;
+      continue;
+    }
+    if (Array.isArray(entry)) {
+      out[key] = jsonValues(entry).slice(0, 6);
+    }
+  }
+  return Object.keys(out).length > 0 ? out : undefined;
+}
+
+function compactContextCandidate(value: unknown): JsonObject | undefined {
+  const candidate = jsonRecord(value);
+  if (!candidate) return undefined;
+  const out: JsonObject = {
+    kind: stringValue(candidate.kind) ?? "",
+    source: stringValue(candidate.source) ?? "",
+    strategy: stringValue(candidate.strategy) ?? "",
+    confidence: numberValue(candidate.confidence) ?? 0,
+    score: numberValue(candidate.score) ?? 0,
+  };
+  for (const key of ["path", "symbolName", "routeKey", "databaseObjectName", "evidenceRef", "whyIncluded"]) {
+    const entry = stringValue(candidate[key]);
+    if (entry) out[key] = entry;
+  }
+  for (const key of ["lineStart", "lineEnd"]) {
+    const entry = numberValue(candidate[key]);
+    if (entry != null) out[key] = entry;
+  }
+  const freshness = jsonRecord(candidate.freshness);
+  const freshnessState = stringValue(freshness?.state);
+  if (freshnessState) out.freshness = { state: freshnessState };
+  const compactMetadata = compactContextMetadata(candidate.metadata);
+  if (compactMetadata) out.metadata = compactMetadata;
+  return out;
+}
+
+function compactExpandableTool(value: unknown): JsonObject | undefined {
+  const tool = jsonRecord(value);
+  if (!tool) return undefined;
+  return {
+    toolName: stringValue(tool.toolName) ?? "",
+    suggestedArgs: asJsonObject(tool.suggestedArgs) ?? {},
+    readOnly: booleanValue(tool.readOnly) ?? true,
+    reason: stringValue(tool.reason) ?? "",
+    whenToUse: stringValue(tool.whenToUse) ?? "",
+  };
+}
+
+function compactContextGraphSummary(value: unknown): JsonObject | undefined {
+  const graph = jsonRecord(value);
+  if (!graph) return undefined;
+  const files = jsonArray(graph.files)
+    .map(jsonRecord)
+    .filter((file): file is Record<string, unknown> => Boolean(file));
+  const edges = jsonArray(graph.edges)
+    .map(jsonRecord)
+    .filter((edge): edge is Record<string, unknown> => Boolean(edge));
+  return {
+    anchorFiles: jsonValues(graph.anchorFiles),
+    returnedFileCount: numberValue(graph.returnedFileCount) ?? 0,
+    edgeCount: numberValue(graph.edgeCount) ?? 0,
+    dependencyFileCount: numberValue(graph.dependencyFileCount) ?? 0,
+    dependentFileCount: numberValue(graph.dependentFileCount) ?? 0,
+    bidirectionalFileCount: numberValue(graph.bidirectionalFileCount) ?? 0,
+    centralFileCount: numberValue(graph.centralFileCount) ?? 0,
+    unknownRelationFileCount: numberValue(graph.unknownRelationFileCount) ?? 0,
+    files: files.slice(0, 8).map((file) => {
+      const out: JsonObject = {
+        filePath: stringValue(file.filePath) ?? "",
+        relation: stringValue(file.relation) ?? "",
+        sourceCount: numberValue(file.sourceCount) ?? 0,
+        sources: jsonValues(file.sources),
+        strategies: jsonValues(file.strategies),
+        score: numberValue(file.score) ?? 0,
+        confidence: numberValue(file.confidence) ?? 0,
+        reasons: jsonValues(file.reasons).slice(0, 3),
+      };
+      const distance = numberValue(file.distance);
+      if (distance != null) out.distance = distance;
+      return out;
+    }),
+    edges: edges.slice(0, 8).map((edge) => {
+      const out: JsonObject = {
+        from: stringValue(edge.from) ?? "",
+        to: stringValue(edge.to) ?? "",
+        relation: stringValue(edge.relation) ?? "",
+        specifier: stringValue(edge.specifier) ?? "",
+        importKind: stringValue(edge.importKind) ?? "",
+        isTypeOnly: booleanValue(edge.isTypeOnly) ?? false,
+      };
+      const line = numberValue(edge.line);
+      if (line != null) out.line = line;
+      return out;
+    }),
+    truncated: booleanValue(graph.truncated) ?? false,
+    warnings: jsonValues(graph.warnings),
+  } satisfies JsonObject;
+}
+
+function compactRequestCoverage(value: unknown): JsonObject | undefined {
+  const coverage = jsonRecord(value);
+  if (!coverage) return undefined;
+  const items = jsonArray(coverage.items)
+    .map(jsonRecord)
+    .filter((item): item is Record<string, unknown> => Boolean(item));
+  const byKind = jsonRecord(coverage.byKind);
+  return {
+    status: stringValue(coverage.status) ?? "",
+    requestedCount: numberValue(coverage.requestedCount) ?? 0,
+    coveredCount: numberValue(coverage.coveredCount) ?? 0,
+    uncoveredCount: numberValue(coverage.uncoveredCount) ?? 0,
+    notCheckedCount: numberValue(coverage.notCheckedCount) ?? 0,
+    byKind: asJsonObject(byKind) ?? {},
+    items: items.slice(0, 12).map((item) => ({
+      kind: stringValue(item.kind) ?? "",
+      value: stringValue(item.value) ?? "",
+      status: stringValue(item.status) ?? "",
+      matchedBy: jsonValues(item.matchedBy).slice(0, 4),
+      reason: stringValue(item.reason) ?? "",
+    })),
+    recommendations: jsonValues(coverage.recommendations).slice(0, 5),
+  } satisfies JsonObject;
+}
+
+function compactContextPacketSummary(value: JsonObject): JsonObject | undefined {
+  if (value.toolName !== "context_packet") {
+    return undefined;
+  }
+
+  const intent = jsonRecord(value.intent);
+  const limits = jsonRecord(value.limits);
+  const freshnessGate = jsonRecord(value.freshnessGate);
+  const indexFreshness = jsonRecord(value.indexFreshness);
+  const evidenceQuality = jsonRecord(value.evidenceQuality);
+  const retrievalDiagnostics = jsonRecord(value.retrievalDiagnostics);
+  const graphSummary = compactContextGraphSummary(value.graphSummary);
+  const requestCoverage = compactRequestCoverage(value.requestCoverage);
+  const primaryContext = jsonArray(value.primaryContext)
+    .map(compactContextCandidate)
+    .filter((candidate): candidate is JsonObject => Boolean(candidate));
+  const relatedContext = jsonArray(value.relatedContext)
+    .map(compactContextCandidate)
+    .filter((candidate): candidate is JsonObject => Boolean(candidate));
+  const expandableTools = jsonArray(value.expandableTools)
+    .map(compactExpandableTool)
+    .filter((tool): tool is JsonObject => Boolean(tool));
+
+  return {
+    toolName: "context_packet",
+    projectId: stringValue(value.projectId) ?? "",
+    request: stringValue(value.request) ?? "",
+    mode: stringValue(value.mode) ?? "",
+    intent: {
+      primaryFamily: stringValue(intent?.primaryFamily) ?? "",
+      entities: asJsonObject(jsonRecord(intent?.entities)) ?? {},
+    },
+    primaryContext: {
+      count: primaryContext.length,
+      top: primaryContext.slice(0, 5),
+    },
+    relatedContext: {
+      count: relatedContext.length,
+      top: relatedContext.slice(0, 5),
+    },
+    activeFindings: countSummary(value.activeFindings),
+    symbols: countSummary(value.symbols),
+    routes: countSummary(value.routes),
+    databaseObjects: countSummary(value.databaseObjects),
+    ...(graphSummary ? { graphSummary } : {}),
+    ...(requestCoverage ? { requestCoverage } : {}),
+    risks: {
+      count: jsonArray(value.risks).length,
+      top: jsonArray(value.risks).map(jsonRecord).filter((risk): risk is Record<string, unknown> => Boolean(risk)).slice(0, 5).map((risk) => ({
+        code: stringValue(risk.code) ?? "",
+        severity: stringValue(risk.severity) ?? "",
+        confidence: numberValue(risk.confidence) ?? 0,
+        source: stringValue(risk.source) ?? "",
+      })),
+    },
+    scopedInstructions: countSummary(value.scopedInstructions),
+    expandableTools: {
+      count: expandableTools.length,
+      top: expandableTools.slice(0, 5),
+    },
+    freshnessGate: {
+      status: stringValue(freshnessGate?.status) ?? "",
+      source: stringValue(freshnessGate?.source) ?? "",
+    },
+    ...(evidenceQuality
+      ? {
+          evidenceQuality: {
+            label: stringValue(evidenceQuality.label) ?? "",
+            score: numberValue(evidenceQuality.score) ?? 0,
+            recommendedAction: stringValue(evidenceQuality.recommendedAction) ?? "",
+            reasons: jsonValues(evidenceQuality.reasons).slice(0, 5),
+            totalContextCount: numberValue(evidenceQuality.totalContextCount) ?? 0,
+            freshContextCount: numberValue(evidenceQuality.freshContextCount) ?? 0,
+            staleContextCount: numberValue(evidenceQuality.staleContextCount) ?? 0,
+            unknownFreshnessCount: numberValue(evidenceQuality.unknownFreshnessCount) ?? 0,
+            corroboratedContextCount: numberValue(evidenceQuality.corroboratedContextCount) ?? 0,
+            requestCoverage: asJsonObject(jsonRecord(evidenceQuality.requestCoverage)) ?? {},
+            graph: asJsonObject(jsonRecord(evidenceQuality.graph)) ?? {},
+          },
+        }
+      : {}),
+    ...(indexFreshness
+      ? {
+          indexFreshness: {
+            state: stringValue(indexFreshness.state) ?? "",
+            checkedAt: stringValue(indexFreshness.checkedAt) ?? "",
+          },
+        }
+      : {}),
+    ...(retrievalDiagnostics
+      ? {
+          retrievalDiagnostics: {
+            providerRunCount: numberValue(retrievalDiagnostics.providerRunCount) ?? 0,
+            providerCandidateCount: numberValue(retrievalDiagnostics.providerCandidateCount) ?? 0,
+            zeroCandidateProviders: jsonValues(retrievalDiagnostics.zeroCandidateProviders).slice(0, 8),
+            failedProviders: jsonValues(retrievalDiagnostics.failedProviders).slice(0, 8),
+            adaptiveSkippedProviders: jsonValues(retrievalDiagnostics.adaptiveSkippedProviders).slice(0, 8),
+            liveTextMisses: jsonArray(retrievalDiagnostics.liveTextMisses)
+              .map(jsonRecord)
+              .filter((miss): miss is Record<string, unknown> => Boolean(miss))
+              .slice(0, 8)
+              .map((miss) => {
+                const out: JsonObject = {
+                  query: stringValue(miss.query) ?? "",
+                  scope: stringValue(miss.scope) ?? "",
+                };
+                const scopePath = stringValue(miss.scopePath);
+                if (scopePath) out.scopePath = scopePath;
+                return out;
+              }),
+            slowestProvider: asJsonObject(retrievalDiagnostics.slowestProvider) ?? {},
+            recommendations: jsonValues(retrievalDiagnostics.recommendations).slice(0, 5),
+          },
+        }
+      : {}),
+    limits: {
+      budgetTokens: numberValue(limits?.budgetTokens) ?? 0,
+      maxPrimaryContext: numberValue(limits?.maxPrimaryContext) ?? 0,
+      maxRelatedContext: numberValue(limits?.maxRelatedContext) ?? 0,
+      providersRun: jsonValues(limits?.providersRun),
+      providersRunDetail: jsonArray(limits?.providersRunDetail)
+        .map(jsonRecord)
+        .filter((detail): detail is Record<string, unknown> => Boolean(detail))
+        .slice(0, 12)
+        .map((detail) => ({
+          provider: stringValue(detail.provider) ?? "",
+          status: stringValue(detail.status) ?? "",
+          candidateCount: numberValue(detail.candidateCount) ?? 0,
+          durationMs: numberValue(detail.durationMs) ?? 0,
+        })),
+      providersSkipped: jsonValues(limits?.providersSkipped),
+      providersSkippedDetail: jsonArray(limits?.providersSkippedDetail)
+        .map(jsonRecord)
+        .filter((detail): detail is Record<string, unknown> => Boolean(detail))
+        .slice(0, 8)
+        .map((detail) => ({
+          provider: stringValue(detail.provider) ?? "",
+          reason: stringValue(detail.reason) ?? "",
+          adaptive: booleanValue(detail.adaptive) ?? false,
+        })),
+      providersFailed: jsonValues(limits?.providersFailed),
+      candidatesConsidered: numberValue(limits?.candidatesConsidered) ?? 0,
+      candidatesReturned: numberValue(limits?.candidatesReturned) ?? 0,
+    },
+    warnings: jsonValues(value.warnings),
+  } satisfies JsonObject;
+}
+
 function summarizeJsonObject(value: JsonObject): JsonObject {
   const reefAskSummary = compactReefAskSummary(value);
   if (reefAskSummary) return reefAskSummary;
+  const repoMapSummary = compactRepoMapSummary(value);
+  if (repoMapSummary) return repoMapSummary;
+  const contextPacketSummary = compactContextPacketSummary(value);
+  if (contextPacketSummary) return contextPacketSummary;
 
   const summary: JsonObject = {};
   for (const [key, entry] of Object.entries(value)) {

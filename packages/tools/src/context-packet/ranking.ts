@@ -4,12 +4,16 @@ import type {
   ContextPacketSource,
   ContextPacketStrategy,
   IndexFreshnessDetail,
+  JsonObject,
+  JsonValue,
 } from "@mako-ai/contracts";
 import type { ContextPacketCandidateSeed } from "./types.js";
 
 const CHAR_PER_TOKEN = 4;
+const SUPPORTING_SIGNAL_LIMIT = 6;
 
 const SOURCE_WEIGHT: Record<ContextPacketSource, number> = {
+  live_text_provider: 34,
   route_provider: 30,
   file_provider: 28,
   schema_provider: 26,
@@ -86,6 +90,12 @@ export interface RankedContextCandidates {
   budgetExhausted: boolean;
 }
 
+interface MergeEntry {
+  candidate: ContextPacketCandidateSeed;
+  score: number;
+  supportingSignals: JsonObject[];
+}
+
 function candidateKey(candidate: ContextPacketCandidateSeed): string {
   const sourceScope = candidate.source === "working_tree_overlay" || candidate.source === "reef_convention"
     ? candidate.source
@@ -99,6 +109,145 @@ function candidateKey(candidate: ContextPacketCandidateSeed): string {
     candidate.databaseObjectName ?? "",
     candidate.lineStart ?? "",
   ].join("|");
+}
+
+function supportingSignalKey(signal: JsonObject): string {
+  return [
+    signal.source,
+    signal.strategy,
+    signal.path,
+    signal.symbolName,
+    signal.routeKey,
+    signal.databaseObjectName,
+    signal.lineStart,
+    signal.whyIncluded,
+  ].map((value) => String(value ?? "")).join("|");
+}
+
+function signalString(signal: JsonObject, key: string): string | undefined {
+  const value = signal[key];
+  return typeof value === "string" && value.trim().length > 0 ? value : undefined;
+}
+
+function corroborationBonus(entry: MergeEntry): number {
+  if (entry.supportingSignals.length === 0) return 0;
+
+  const sourceStrategyPairs = new Set<string>([`${entry.candidate.source}:${entry.candidate.strategy}`]);
+  const sources = new Set<string>([entry.candidate.source]);
+  for (const signal of entry.supportingSignals) {
+    const source = signalString(signal, "source");
+    const strategy = signalString(signal, "strategy");
+    if (source) sources.add(source);
+    if (source && strategy) sourceStrategyPairs.add(`${source}:${strategy}`);
+  }
+
+  const extraSourceCount = Math.max(0, sources.size - 1);
+  const extraPairCount = Math.max(0, sourceStrategyPairs.size - 1);
+  const sameSourcePairCount = Math.max(0, extraPairCount - extraSourceCount);
+  return Math.min(18, extraSourceCount * 7 + sameSourcePairCount * 3);
+}
+
+function withRankScoreOverride(candidate: ContextPacketCandidateSeed, score: number): ContextPacketCandidateSeed {
+  return {
+    ...candidate,
+    rankScoreOverride: Number(score.toFixed(4)),
+  };
+}
+
+function compactSignalMetadata(metadata: JsonObject | undefined): JsonObject | undefined {
+  if (!metadata) return undefined;
+  const kept: JsonObject = {};
+  const keys = [
+    "query",
+    "language",
+    "schemaObject",
+    "usageKind",
+    "direction",
+    "graphDepth",
+    "graphPath",
+    "graphRankMode",
+    "graphRankDirection",
+    "graphRankScore",
+    "focusRelation",
+    "focusDistance",
+    "dependencyDistance",
+    "dependentDistance",
+    "graphPersonalizationSeedCount",
+    "graphSeedSources",
+    "seedPath",
+    "from",
+    "target",
+    "specifier",
+    "inboundCount",
+    "outboundCount",
+    "overlay",
+    "conventionKind",
+    "hintKind",
+    "symbolKind",
+    "chunkKind",
+    "pattern",
+    "method",
+    "handlerName",
+    "isApi",
+  ];
+
+  for (const key of keys) {
+    const value = metadata[key];
+    if (value !== undefined) kept[key] = value as JsonValue;
+  }
+
+  return Object.keys(kept).length > 0 ? kept : undefined;
+}
+
+function supportingSignal(candidate: ContextPacketCandidateSeed, score: number): JsonObject {
+  const signal: JsonObject = {
+    source: candidate.source,
+    strategy: candidate.strategy,
+    whyIncluded: candidate.whyIncluded,
+    confidence: candidate.confidence,
+    score,
+  };
+  if (candidate.path) signal.path = candidate.path;
+  if (candidate.lineStart != null) signal.lineStart = candidate.lineStart;
+  if (candidate.lineEnd != null) signal.lineEnd = candidate.lineEnd;
+  if (candidate.symbolName) signal.symbolName = candidate.symbolName;
+  if (candidate.routeKey) signal.routeKey = candidate.routeKey;
+  if (candidate.databaseObjectName) signal.databaseObjectName = candidate.databaseObjectName;
+  const compactMetadata = compactSignalMetadata(candidate.metadata);
+  if (compactMetadata) signal.metadata = compactMetadata;
+  return signal;
+}
+
+function attachSupportingSignals(
+  candidate: ContextPacketCandidateSeed,
+  supportingSignals: readonly JsonObject[],
+  bonus: number,
+): ContextPacketCandidateSeed {
+  if (supportingSignals.length === 0 && bonus <= 0) return candidate;
+  const seen = new Set<string>();
+  const uniqueSignals: JsonObject[] = [];
+  for (const signal of supportingSignals) {
+    const key = supportingSignalKey(signal);
+    if (seen.has(key)) continue;
+    seen.add(key);
+    uniqueSignals.push(signal);
+  }
+  const sortedSignals = uniqueSignals
+    .sort((left, right) => Number(right.score ?? 0) - Number(left.score ?? 0))
+    .slice(0, SUPPORTING_SIGNAL_LIMIT);
+
+  if (sortedSignals.length === 0 && bonus <= 0) return candidate;
+  return {
+    ...candidate,
+    metadata: {
+      ...(candidate.metadata ?? {}),
+      ...(bonus > 0 ? {
+        corroborationBonus: Number(bonus.toFixed(4)),
+        corroboratedSignalCount: supportingSignals.length + 1,
+      } : {}),
+      ...(sortedSignals.length > 0 ? { supportingSignals: sortedSignals } : {}),
+    },
+  };
 }
 
 function candidateId(candidate: ContextPacketCandidateSeed): string {
@@ -175,6 +324,7 @@ function scoreCandidate(
   candidate: ContextPacketCandidateSeed,
   options: RankOptions,
 ): number {
+  if (candidate.rankScoreOverride != null) return candidate.rankScoreOverride;
   const rankingProfile = detectRankingProfile(options);
   let score = candidate.confidence * 100;
   score += SOURCE_WEIGHT[candidate.source] ?? 0;
@@ -234,40 +384,78 @@ export function rankContextCandidates(
   candidates: readonly ContextPacketCandidateSeed[],
   options: RankOptions,
 ): RankedContextCandidates {
-  const merged = new Map<string, ContextPacketCandidateSeed>();
+  const merged = new Map<string, MergeEntry>();
   for (const candidate of candidates) {
     const key = candidateKey(candidate);
     const existing = merged.get(key);
-    if (!existing || scoreCandidate(candidate, options) > scoreCandidate(existing, options)) {
-      merged.set(key, candidate);
+    const score = scoreCandidate(candidate, options);
+    if (!existing) {
+      merged.set(key, { candidate, score, supportingSignals: [] });
+      continue;
     }
+
+    if (score > existing.score) {
+      merged.set(key, {
+        candidate,
+        score,
+        supportingSignals: [
+          supportingSignal(existing.candidate, existing.score),
+          ...existing.supportingSignals,
+        ],
+      });
+      continue;
+    }
+
+    existing.supportingSignals.push(supportingSignal(candidate, score));
   }
 
   const ranked = [...merged.values()]
-    .map((candidate) => normalizeCandidate(candidate, options))
-    .filter((candidate): candidate is ContextPacketReadableCandidate => candidate != null)
-    .sort((left, right) => right.score - left.score || left.id.localeCompare(right.id));
+    .map((entry) => {
+      const bonus = corroborationBonus(entry);
+      const candidate = bonus > 0
+        ? withRankScoreOverride(entry.candidate, entry.score + bonus)
+        : entry.candidate;
+      return {
+        entry,
+        bonus,
+        candidateSeed: candidate,
+        candidate: normalizeCandidate(candidate, options),
+      };
+    })
+    .filter((item): item is {
+      entry: MergeEntry;
+      bonus: number;
+      candidateSeed: ContextPacketCandidateSeed;
+      candidate: ContextPacketReadableCandidate;
+    } => item.candidate != null)
+    .sort((left, right) => right.candidate.score - left.candidate.score || left.candidate.id.localeCompare(right.candidate.id));
 
   const primaryContext: ContextPacketReadableCandidate[] = [];
   const relatedContext: ContextPacketReadableCandidate[] = [];
   let usedTokens = 0;
   let budgetExhausted = false;
 
-  for (const candidate of ranked) {
+  for (const item of ranked) {
+    const candidate = item.candidate;
     const tokenCost = estimateCandidateTokens(candidate);
     if (usedTokens + tokenCost > options.budgetTokens && primaryContext.length > 0) {
       budgetExhausted = true;
       break;
     }
 
+    const candidateWithSupportingSignals = normalizeCandidate(
+      attachSupportingSignals(item.candidateSeed, item.entry.supportingSignals, item.bonus),
+      options,
+    ) ?? candidate;
+
     if (primaryContext.length < options.maxPrimaryContext) {
-      primaryContext.push(candidate);
+      primaryContext.push(candidateWithSupportingSignals);
       usedTokens += tokenCost;
       continue;
     }
 
     if (relatedContext.length < options.maxRelatedContext) {
-      relatedContext.push(candidate);
+      relatedContext.push(candidateWithSupportingSignals);
       usedTokens += tokenCost;
       continue;
     }

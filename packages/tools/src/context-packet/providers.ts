@@ -1,18 +1,27 @@
 import type {
   ContextPacketDatabaseObject,
   ContextPacketIntent,
+  ContextPacketProviderRunDetail,
   ContextPacketToolInput,
   JsonObject,
 } from "@mako-ai/contracts";
-import type { ProjectStore } from "@mako-ai/store";
+import type { FileImportLink, ProjectStore } from "@mako-ai/store";
 import type { HotIndex } from "../hot-index/index.js";
 import { searchHotIndex } from "../hot-index/index.js";
+import { rankImportGraphFiles } from "../code-intel/import-graph-ranking.js";
 import type { ContextPacketProviderName } from "./modes.js";
 import type { ContextPacketCandidateSeed } from "./types.js";
+
+const IMPORT_GRAPH_SEED_LIMIT = 20;
+const IMPORT_GRAPH_MAX_DEPTH = 2;
+const IMPORT_GRAPH_EDGE_LIMIT_PER_NODE = 8;
+const IMPORT_GRAPH_CANDIDATE_LIMIT = 80;
+const EXACT_SYMBOL_SCAN_LIMIT = 32;
 
 export interface ContextPacketProviderCollection {
   candidates: ContextPacketCandidateSeed[];
   providersRun: string[];
+  providersRunDetail: ContextPacketProviderRunDetail[];
   providersSkipped: string[];
   providersFailed: string[];
   warnings: string[];
@@ -24,9 +33,46 @@ export interface ProviderContext {
   projectStore: ProjectStore;
   hotIndex?: HotIndex;
   enabledProviders?: ReadonlySet<ContextPacketProviderName>;
+  cachedGraphSeeds?: GraphSeed[];
+  cachedGraphSeedWarnings?: string[];
+  cachedExactSymbolHits?: Map<string, SymbolSeedHit[]>;
 }
 
 type ProviderFn = (ctx: ProviderContext) => ContextPacketCandidateSeed[];
+type SymbolSeedHit = {
+  filePath: string;
+  name?: string;
+  kind?: string;
+  lineStart?: number;
+  lineEnd?: number;
+  chunkKind?: string;
+  snippet?: string;
+};
+
+interface SymbolHitOptions {
+  exactScan?: boolean;
+}
+type GraphSeedSource =
+  | "focus_file"
+  | "changed_file"
+  | "intent_file"
+  | "focus_route"
+  | "intent_route"
+  | "focus_symbol"
+  | "intent_symbol"
+  | "focus_database_object"
+  | "intent_database_object";
+
+interface GraphSeed {
+  path: string;
+  source: GraphSeedSource;
+  term: string;
+  reason: string;
+  routeKey?: string;
+  symbolName?: string;
+  databaseObjectName?: string;
+  usageKind?: string;
+}
 
 function unique(values: Iterable<string>): string[] {
   return [...new Set([...values].map((value) => value.trim()).filter(Boolean))];
@@ -51,6 +97,76 @@ function objectType(value: string | undefined): ContextPacketDatabaseObject["obj
     default:
       return "unknown";
   }
+}
+
+function exactSymbolScan(ctx: ProviderContext, term: string): SymbolSeedHit[] {
+  const normalizedTerm = term.toLowerCase();
+  ctx.cachedExactSymbolHits ??= new Map<string, SymbolSeedHit[]>();
+  const cached = ctx.cachedExactSymbolHits.get(normalizedTerm);
+  if (cached) return cached;
+
+  const hits: SymbolSeedHit[] = [];
+  const seen = new Set<string>();
+  for (const file of ctx.projectStore.listFiles()) {
+    for (const symbol of ctx.projectStore.listSymbolsForFile(file.path)) {
+      if (symbol.name.toLowerCase() !== normalizedTerm && symbol.exportName?.toLowerCase() !== normalizedTerm) {
+        continue;
+      }
+      const key = `${file.path}:${symbol.name}:${symbol.lineStart ?? ""}`;
+      if (seen.has(key)) continue;
+      seen.add(key);
+      hits.push({
+        filePath: file.path,
+        name: symbol.name,
+        kind: symbol.kind,
+        lineStart: symbol.lineStart,
+        lineEnd: symbol.lineEnd,
+        chunkKind: symbol.kind,
+        snippet: symbol.signatureText,
+      });
+      if (hits.length >= EXACT_SYMBOL_SCAN_LIMIT) {
+        ctx.cachedExactSymbolHits.set(normalizedTerm, hits);
+        return hits;
+      }
+    }
+  }
+
+  ctx.cachedExactSymbolHits.set(normalizedTerm, hits);
+  return hits;
+}
+
+function symbolHits(
+  ctx: ProviderContext,
+  term: string,
+  limit: number,
+  options: SymbolHitOptions = {},
+): SymbolSeedHit[] {
+  const byKey = new Map<string, SymbolSeedHit>();
+  for (const hit of ctx.projectStore.searchCodeChunks(term, { limit, symbolOnly: true })) {
+    const key = `${hit.filePath}:${hit.name ?? ""}:${hit.lineStart ?? ""}`;
+    byKey.set(key, {
+      filePath: hit.filePath,
+      name: hit.name,
+      kind: hit.chunkKind,
+      lineStart: hit.lineStart,
+      lineEnd: hit.lineEnd,
+      chunkKind: hit.chunkKind,
+      snippet: hit.snippet,
+    });
+  }
+
+  if (byKey.size >= limit || !options.exactScan) {
+    return [...byKey.values()].slice(0, limit);
+  }
+
+  for (const hit of exactSymbolScan(ctx, term)) {
+    const key = `${hit.filePath}:${hit.name ?? ""}:${hit.lineStart ?? ""}`;
+    if (byKey.has(key)) continue;
+    byKey.set(key, hit);
+    if (byKey.size >= limit) return [...byKey.values()].slice(0, limit);
+  }
+
+  return [...byKey.values()].slice(0, limit);
 }
 
 function fileProvider(ctx: ProviderContext): ContextPacketCandidateSeed[] {
@@ -132,14 +248,16 @@ function routeProvider(ctx: ProviderContext): ContextPacketCandidateSeed[] {
 
 function symbolProvider(ctx: ProviderContext): ContextPacketCandidateSeed[] {
   const candidates: ContextPacketCandidateSeed[] = [];
-  const terms = unique([
+  const exactTerms = unique([
     ...ctx.intent.entities.symbols,
     ...(ctx.input.focusSymbols ?? []),
-    ...ctx.intent.entities.keywords.slice(0, 10),
   ]);
+  const keywordTerms = unique([
+    ...ctx.intent.entities.keywords.slice(0, 10),
+  ]).filter((term) => !exactTerms.includes(term));
 
-  for (const term of terms) {
-    for (const hit of ctx.projectStore.searchCodeChunks(term, { limit: 8, symbolOnly: true })) {
+  for (const term of exactTerms) {
+    for (const hit of symbolHits(ctx, term, 8, { exactScan: true })) {
       candidates.push({
         kind: "symbol",
         path: hit.filePath,
@@ -152,8 +270,29 @@ function symbolProvider(ctx: ProviderContext): ContextPacketCandidateSeed[] {
         confidence: hit.name?.toLowerCase() === term.toLowerCase() ? 0.9 : 0.7,
         metadata: metadata({
           query: term,
-          chunkKind: hit.chunkKind,
-          snippet: hit.snippet,
+          ...(hit.chunkKind ? { chunkKind: hit.chunkKind } : {}),
+          ...(hit.snippet ? { snippet: hit.snippet } : {}),
+        }),
+      });
+    }
+  }
+
+  for (const term of keywordTerms) {
+    for (const hit of symbolHits(ctx, term, 8)) {
+      candidates.push({
+        kind: "symbol",
+        path: hit.filePath,
+        lineStart: hit.lineStart,
+        lineEnd: hit.lineEnd,
+        symbolName: hit.name ?? term,
+        source: "symbol_provider",
+        strategy: "symbol_reference",
+        whyIncluded: `Symbol index matched request term "${term}".`,
+        confidence: hit.name?.toLowerCase() === term.toLowerCase() ? 0.9 : 0.7,
+        metadata: metadata({
+          query: term,
+          ...(hit.chunkKind ? { chunkKind: hit.chunkKind } : {}),
+          ...(hit.snippet ? { snippet: hit.snippet } : {}),
         }),
       });
     }
@@ -213,83 +352,352 @@ function schemaProvider(ctx: ProviderContext): ContextPacketCandidateSeed[] {
   return candidates;
 }
 
-function importGraphProvider(ctx: ProviderContext): ContextPacketCandidateSeed[] {
-  const seedPaths = unique([
-    ...(ctx.input.focusFiles ?? []),
-    ...(ctx.input.changedFiles ?? []),
-    ...ctx.intent.entities.files,
+function addGraphSeed(seeds: GraphSeed[], seed: GraphSeed | undefined): void {
+  if (!seed) return;
+  if (!seed.path.trim()) return;
+  seeds.push(seed);
+}
+
+function fileGraphSeed(ctx: ProviderContext, path: string, source: GraphSeedSource, reason: string): GraphSeed | undefined {
+  const resolved = ctx.projectStore.findFile(path);
+  if (!resolved) return undefined;
+  return {
+    path: resolved.path,
+    source,
+    term: path,
+    reason,
+  };
+}
+
+function graphSeedResolutionWarning(source: GraphSeedSource, term: string): string | undefined {
+  switch (source) {
+    case "focus_file":
+      return `focus file is not indexed: ${term}`;
+    case "focus_route":
+      return `focus route did not resolve to an indexed route handler: ${term}`;
+    case "focus_symbol":
+      return `focus symbol did not resolve to an indexed symbol: ${term}`;
+    case "focus_database_object":
+      return `focus database object did not resolve to indexed schema usage: ${term}`;
+    default:
+      return undefined;
+  }
+}
+
+function uniqueGraphSeeds(seeds: readonly GraphSeed[]): GraphSeed[] {
+  const seen = new Set<string>();
+  const out: GraphSeed[] = [];
+  for (const seed of seeds) {
+    const key = [
+      seed.path,
+      seed.source,
+      seed.term,
+      seed.routeKey ?? "",
+      seed.symbolName ?? "",
+      seed.databaseObjectName ?? "",
+      seed.usageKind ?? "",
+    ].join("|");
+    if (seen.has(key)) continue;
+    seen.add(key);
+    out.push(seed);
+  }
+  return out;
+}
+
+function graphSeeds(ctx: ProviderContext): GraphSeed[] {
+  if (ctx.cachedGraphSeeds) return ctx.cachedGraphSeeds;
+
+  const seeds: GraphSeed[] = [];
+  const warnings: string[] = [];
+  for (const filePath of ctx.input.focusFiles ?? []) {
+    const seed = fileGraphSeed(ctx, filePath, "focus_file", "focusFiles named this file.");
+    if (!seed) {
+      const warning = graphSeedResolutionWarning("focus_file", filePath);
+      if (warning) warnings.push(warning);
+    }
+    addGraphSeed(seeds, seed);
+  }
+  for (const filePath of ctx.input.changedFiles ?? []) {
+    addGraphSeed(seeds, fileGraphSeed(ctx, filePath, "changed_file", "changedFiles named this file."));
+  }
+  for (const filePath of ctx.intent.entities.files) {
+    addGraphSeed(seeds, fileGraphSeed(ctx, filePath, "intent_file", "request text mentioned this file."));
+  }
+
+  const routeTerms = unique([
+    ...(ctx.input.focusRoutes ?? []).map((term) => `focus:${term}`),
+    ...ctx.intent.entities.routes.map((term) => `intent:${term}`),
   ]);
+  for (const term of routeTerms.slice(0, 12)) {
+    const [sourcePrefix, ...termParts] = term.split(":");
+    const routeTerm = termParts.join(":");
+    const source: GraphSeedSource = sourcePrefix === "focus" ? "focus_route" : "intent_route";
+    const before = seeds.length;
+    for (const route of ctx.projectStore.searchRoutes(routeTerm, 5)) {
+      addGraphSeed(seeds, {
+        path: route.filePath,
+        source,
+        term: routeTerm,
+        reason: `${source === "focus_route" ? "focusRoutes" : "request route text"} resolved to this route handler.`,
+        routeKey: route.routeKey,
+      });
+    }
+    if (source === "focus_route" && seeds.length === before) {
+      const warning = graphSeedResolutionWarning(source, routeTerm);
+      if (warning) warnings.push(warning);
+    }
+  }
+
+  const symbolTerms = unique([
+    ...(ctx.input.focusSymbols ?? []).map((term) => `focus:${term}`),
+    ...ctx.intent.entities.symbols.map((term) => `intent:${term}`),
+  ]);
+  for (const term of symbolTerms.slice(0, 12)) {
+    const [sourcePrefix, ...termParts] = term.split(":");
+    const symbolTerm = termParts.join(":");
+    const source: GraphSeedSource = sourcePrefix === "focus" ? "focus_symbol" : "intent_symbol";
+    const before = seeds.length;
+    for (const hit of symbolHits(ctx, symbolTerm, 5, { exactScan: true })) {
+      addGraphSeed(seeds, {
+        path: hit.filePath,
+        source,
+        term: symbolTerm,
+        reason: `${source === "focus_symbol" ? "focusSymbols" : "request symbol text"} resolved to this symbol file.`,
+        symbolName: hit.name ?? symbolTerm,
+      });
+    }
+    if (source === "focus_symbol" && seeds.length === before) {
+      const warning = graphSeedResolutionWarning(source, symbolTerm);
+      if (warning) warnings.push(warning);
+    }
+  }
+
+  const databaseObjectTerms = unique([
+    ...(ctx.input.focusDatabaseObjects ?? []).map((term) => `focus:${term}`),
+    ...ctx.intent.entities.databaseObjects.map((term) => `intent:${term}`),
+  ]);
+  for (const term of databaseObjectTerms.slice(0, 12)) {
+    const [sourcePrefix, ...termParts] = term.split(":");
+    const objectTerm = termParts.join(":");
+    const source: GraphSeedSource = sourcePrefix === "focus" ? "focus_database_object" : "intent_database_object";
+    const before = seeds.length;
+    for (const object of ctx.projectStore.searchSchemaObjects(objectTerm, 5)) {
+      const objectName = `${object.schemaName}.${object.objectName}`;
+      for (const usage of ctx.projectStore.listSchemaUsages(object.objectId).slice(0, 5)) {
+        addGraphSeed(seeds, {
+          path: usage.filePath,
+          source,
+          term: objectTerm,
+          reason: `${source === "focus_database_object" ? "focusDatabaseObjects" : "request schema text"} resolved to this schema usage file.`,
+          databaseObjectName: objectName,
+          usageKind: usage.usageKind,
+        });
+      }
+    }
+    if (source === "focus_database_object" && seeds.length === before) {
+      const warning = graphSeedResolutionWarning(source, objectTerm);
+      if (warning) warnings.push(warning);
+    }
+  }
+
+  ctx.cachedGraphSeeds = uniqueGraphSeeds(seeds);
+  ctx.cachedGraphSeedWarnings = unique(warnings);
+  return ctx.cachedGraphSeeds;
+}
+
+function graphSeedPaths(ctx: ProviderContext): string[] {
+  return unique(graphSeeds(ctx).map((seed) => seed.path));
+}
+
+function graphSeedSourcesForPath(ctx: ProviderContext, path: string): JsonObject[] {
+  return graphSeeds(ctx)
+    .filter((seed) => seed.path === path)
+    .slice(0, 6)
+    .map((seed) => {
+      const out: JsonObject = {
+        source: seed.source,
+        term: seed.term,
+        reason: seed.reason,
+      };
+      if (seed.routeKey) out.routeKey = seed.routeKey;
+      if (seed.symbolName) out.symbolName = seed.symbolName;
+      if (seed.databaseObjectName) out.databaseObjectName = seed.databaseObjectName;
+      if (seed.usageKind) out.usageKind = seed.usageKind;
+      return out;
+    });
+}
+
+type ImportGraphDirection = "outbound" | "inbound";
+
+interface ImportGraphQueueItem {
+  filePath: string;
+  depth: number;
+  graphPath: string[];
+}
+
+function uniqueInternalEdges(edges: readonly FileImportLink[]): FileImportLink[] {
+  const seen = new Set<string>();
+  const out: FileImportLink[] = [];
+  for (const edge of edges) {
+    if (!edge.targetExists) continue;
+    const key = `${edge.sourcePath}->${edge.targetPath}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    out.push(edge);
+  }
+  return out;
+}
+
+function importGraphConfidence(direction: ImportGraphDirection, depth: number): number {
+  const base = direction === "outbound" ? 0.62 : 0.58;
+  return Math.max(0.46, Number((base - (depth - 1) * 0.1).toFixed(2)));
+}
+
+function importGraphBaseScore(direction: ImportGraphDirection, depth: number): number {
+  const base = direction === "outbound" ? 120 : 108;
+  return Math.max(30, base - depth * 18);
+}
+
+function importGraphWhy(args: {
+  seedPath: string;
+  currentPath: string;
+  direction: ImportGraphDirection;
+  depth: number;
+  specifier: string;
+}): string {
+  if (args.direction === "outbound") {
+    return args.depth === 1
+      ? `${args.seedPath} imports this file via ${args.specifier}.`
+      : `${args.seedPath} reaches this transitive import through ${args.currentPath} via ${args.specifier}.`;
+  }
+
+  return args.depth === 1
+    ? `This file imports focused file ${args.seedPath} via ${args.specifier}.`
+    : `This transitive dependent reaches ${args.seedPath} through ${args.currentPath} via ${args.specifier}.`;
+}
+
+function walkImportGraph(args: {
+  ctx: ProviderContext;
+  seedPath: string;
+  direction: ImportGraphDirection;
+  candidates: ContextPacketCandidateSeed[];
+}): void {
+  const visited = new Set<string>([args.seedPath]);
+  const queue: ImportGraphQueueItem[] = [{
+    filePath: args.seedPath,
+    depth: 0,
+    graphPath: [args.seedPath],
+  }];
+
+  while (queue.length > 0 && args.candidates.length < IMPORT_GRAPH_CANDIDATE_LIMIT) {
+    const current = queue.shift() as ImportGraphQueueItem;
+    if (current.depth >= IMPORT_GRAPH_MAX_DEPTH) continue;
+
+    const edges = uniqueInternalEdges(
+      args.direction === "outbound"
+        ? args.ctx.projectStore.listImportsForFile(current.filePath)
+        : args.ctx.projectStore.listDependentsForFile(current.filePath),
+    ).slice(0, IMPORT_GRAPH_EDGE_LIMIT_PER_NODE);
+
+    for (const edge of edges) {
+      const candidatePath = args.direction === "outbound" ? edge.targetPath : edge.sourcePath;
+      if (visited.has(candidatePath)) continue;
+      visited.add(candidatePath);
+
+      const depth = current.depth + 1;
+      const graphPath = [...current.graphPath, candidatePath];
+      args.candidates.push({
+        kind: "file",
+        path: candidatePath,
+        source: "import_graph_provider",
+        strategy: "deterministic_graph",
+        whyIncluded: importGraphWhy({
+          seedPath: args.seedPath,
+          currentPath: current.filePath,
+          direction: args.direction,
+          depth,
+          specifier: edge.specifier,
+        }),
+        confidence: importGraphConfidence(args.direction, depth),
+        baseScore: importGraphBaseScore(args.direction, depth),
+        metadata: metadata({
+          seedPath: args.seedPath,
+          graphSeedSources: graphSeedSourcesForPath(args.ctx, args.seedPath),
+          from: edge.sourcePath,
+          target: edge.targetPath,
+          specifier: edge.specifier,
+          direction: args.direction,
+          graphDepth: depth,
+          graphPath,
+        }),
+      });
+
+      if (depth < IMPORT_GRAPH_MAX_DEPTH) {
+        queue.push({ filePath: candidatePath, depth, graphPath });
+      }
+
+      if (args.candidates.length >= IMPORT_GRAPH_CANDIDATE_LIMIT) break;
+    }
+  }
+}
+
+function importGraphProvider(ctx: ProviderContext): ContextPacketCandidateSeed[] {
+  const seedPaths = graphSeedPaths(ctx);
   const candidates: ContextPacketCandidateSeed[] = [];
 
-  for (const filePath of seedPaths.slice(0, 20)) {
+  for (const filePath of seedPaths.slice(0, IMPORT_GRAPH_SEED_LIMIT)) {
     const file = ctx.projectStore.findFile(filePath);
     if (!file) continue;
-    for (const edge of ctx.projectStore.listImportsForFile(file.path).slice(0, 8)) {
-      if (!edge.targetExists) continue;
-      candidates.push({
-        kind: "file",
-        path: edge.targetPath,
-        source: "import_graph_provider",
-        strategy: "deterministic_graph",
-        whyIncluded: `${file.path} imports this file via ${edge.specifier}.`,
-        confidence: 0.62,
-        metadata: metadata({ from: file.path, specifier: edge.specifier, direction: "outbound" }),
-      });
-    }
-    for (const edge of ctx.projectStore.listDependentsForFile(file.path).slice(0, 8)) {
-      candidates.push({
-        kind: "file",
-        path: edge.sourcePath,
-        source: "import_graph_provider",
-        strategy: "deterministic_graph",
-        whyIncluded: `This file imports focused file ${file.path}.`,
-        confidence: 0.58,
-        metadata: metadata({ target: file.path, specifier: edge.specifier, direction: "inbound" }),
-      });
-    }
+    walkImportGraph({ ctx, seedPath: file.path, direction: "outbound", candidates });
+    walkImportGraph({ ctx, seedPath: file.path, direction: "inbound", candidates });
+    if (candidates.length >= IMPORT_GRAPH_CANDIDATE_LIMIT) break;
   }
 
   return candidates;
 }
 
 function repoMapProvider(ctx: ProviderContext): ContextPacketCandidateSeed[] {
-  const files = ctx.projectStore.listFiles();
-  const inbound = new Map<string, number>(files.map((file) => [file.path, 0]));
-  const outbound = new Map<string, number>(files.map((file) => [file.path, 0]));
-  const seen = new Set<string>();
+  const seedPaths = graphSeedPaths(ctx);
+  const graphSeedCount = seedPaths.length;
+  const ranks = rankImportGraphFiles(ctx.projectStore, {
+    seedPaths,
+    personalizationDirection: "bidirectional",
+  });
+  const personalized = graphSeedCount > 0;
+  const entries = personalized
+    ? ranks.filter((entry) => entry.pageRank > 0)
+    : ranks;
 
-  for (const edge of ctx.projectStore.listAllImportEdges()) {
-    if (!edge.targetExists) continue;
-    const key = `${edge.sourcePath}->${edge.targetPath}`;
-    if (seen.has(key)) continue;
-    seen.add(key);
-    outbound.set(edge.sourcePath, (outbound.get(edge.sourcePath) ?? 0) + 1);
-    inbound.set(edge.targetPath, (inbound.get(edge.targetPath) ?? 0) + 1);
-  }
-
-  return files
-    .map((file) => {
-      const fanIn = inbound.get(file.path) ?? 0;
-      const fanOut = outbound.get(file.path) ?? 0;
-      return {
-        file,
-        fanIn,
-        fanOut,
-        centrality: fanIn * 2 + fanOut + 0.1,
-      };
-    })
-    .sort((left, right) => right.centrality - left.centrality || left.file.path.localeCompare(right.file.path))
+  return entries
     .slice(0, 8)
-    .map((entry) => ({
-      kind: "file" as const,
-      path: entry.file.path,
-      source: "repo_map_provider" as const,
-      strategy: "centrality_rank" as const,
-      whyIncluded: "High-centrality file in the import graph.",
-      confidence: Math.min(0.62, 0.35 + entry.centrality / 30),
-      baseScore: entry.centrality,
-      metadata: metadata({ inboundCount: entry.fanIn, outboundCount: entry.fanOut }),
-    }));
+    .map((entry) => {
+      const contextScore = Math.min(42, entry.score / 8);
+      return {
+        kind: "file" as const,
+        path: entry.filePath,
+        source: "repo_map_provider" as const,
+        strategy: "centrality_rank" as const,
+        whyIncluded: entry.mode === "personalized"
+          ? "High graph-rank file near focused request files in the import graph."
+          : "High PageRank file in the import graph.",
+        confidence: Math.min(0.66, 0.36 + contextScore / 80),
+        baseScore: contextScore,
+        metadata: metadata({
+          inboundCount: entry.inboundCount,
+          outboundCount: entry.outboundCount,
+          graphRank: Number(entry.pageRank.toFixed(8)),
+          graphRankScore: entry.score,
+          graphRankMode: entry.mode,
+          graphRankDirection: entry.rankDirection,
+          ...(entry.focusRelation ? { focusRelation: entry.focusRelation } : {}),
+          ...(entry.focusDistance != null ? { focusDistance: entry.focusDistance } : {}),
+          ...(entry.dependencyDistance != null ? { dependencyDistance: entry.dependencyDistance } : {}),
+          ...(entry.dependentDistance != null ? { dependentDistance: entry.dependentDistance } : {}),
+          graphPersonalizationSeedCount: graphSeedCount,
+          graphSeedSources: graphSeedSourcesForPath(ctx, entry.filePath),
+        }),
+      };
+    });
 }
 
 function hotHintProvider(ctx: ProviderContext): ContextPacketCandidateSeed[] {
@@ -353,6 +761,10 @@ function hotHintProvider(ctx: ProviderContext): ContextPacketCandidateSeed[] {
   });
 }
 
+function elapsedMs(startMs: number): number {
+  return Math.max(0, Date.now() - startMs);
+}
+
 const PROVIDERS: Array<{ name: ContextPacketProviderName; run: ProviderFn }> = [
   { name: "file_provider", run: fileProvider },
   { name: "route_provider", run: routeProvider },
@@ -370,6 +782,7 @@ const PROVIDERS: Array<{ name: ContextPacketProviderName; run: ProviderFn }> = [
 export function collectContextPacketProviders(ctx: ProviderContext): ContextPacketProviderCollection {
   const candidates: ContextPacketCandidateSeed[] = [];
   const providersRun: string[] = [];
+  const providersRunDetail: ContextPacketProviderRunDetail[] = [];
   const providersSkipped: string[] = [];
   const providersFailed: string[] = [];
   const warnings: string[] = [];
@@ -380,13 +793,34 @@ export function collectContextPacketProviders(ctx: ProviderContext): ContextPack
       continue;
     }
     providersRun.push(provider.name);
+    const startedAtMs = Date.now();
     try {
-      candidates.push(...provider.run(ctx));
+      const providerCandidates = provider.run(ctx);
+      candidates.push(...providerCandidates);
+      providersRunDetail.push({
+        provider: provider.name,
+        status: "success",
+        candidateCount: providerCandidates.length,
+        durationMs: elapsedMs(startedAtMs),
+      });
     } catch (error) {
       providersFailed.push(provider.name);
+      providersRunDetail.push({
+        provider: provider.name,
+        status: "failed",
+        candidateCount: 0,
+        durationMs: elapsedMs(startedAtMs),
+      });
       warnings.push(`${provider.name} failed: ${error instanceof Error ? error.message : String(error)}`);
     }
   }
 
-  return { candidates, providersRun, providersSkipped, providersFailed, warnings };
+  return {
+    candidates,
+    providersRun,
+    providersRunDetail,
+    providersSkipped,
+    providersFailed,
+    warnings: unique([...warnings, ...(ctx.cachedGraphSeedWarnings ?? [])]),
+  };
 }

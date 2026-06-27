@@ -32,6 +32,7 @@ const DB_REEF_FACT_KINDS = [
   "db_enum",
   "db_rpc",
   "db_rpc_table_ref",
+  "db_scheduled_job",
   "db_usage",
 ] as const;
 
@@ -149,15 +150,16 @@ function factsFromSnapshot(snapshot: SchemaSnapshot, builder: DbFactBuilder): Pr
     facts.push(makeFact(builder, {
       kind: "db_schema",
       subject: { kind: "schema_object", schemaName, objectName: schemaName },
-      data: {
-        schemaName,
-        tableCount: namespace.tables.length,
-        viewCount: namespace.views.length,
-        enumCount: namespace.enums.length,
-        rpcCount: namespace.rpcs.length,
-      },
-      dependencies: snapshotDependencies,
-    }));
+        data: {
+          schemaName,
+          tableCount: namespace.tables.length,
+          viewCount: namespace.views.length,
+          enumCount: namespace.enums.length,
+          rpcCount: namespace.rpcs.length,
+          scheduledJobCount: namespace.scheduledJobs?.length ?? 0,
+        },
+        dependencies: snapshotDependencies,
+      }));
 
     for (const table of namespace.tables) {
       const tableDependencies = dependenciesFromRefs(table.sources, snapshotDependencies);
@@ -331,6 +333,23 @@ function factsFromSnapshot(snapshot: SchemaSnapshot, builder: DbFactBuilder): Pr
           hasBodyText: Boolean(rpc.bodyText),
         },
         dependencies: dependenciesFromRefs(rpc.sources, snapshotDependencies),
+      }));
+    }
+
+    for (const job of namespace.scheduledJobs ?? []) {
+      facts.push(makeFact(builder, {
+        kind: "db_scheduled_job",
+        subject: schemaSubject(schemaName, job.name),
+        data: {
+          schemaName,
+          jobName: job.name,
+          schedule: job.schedule,
+          command: job.command,
+          database: job.database ?? null,
+          username: job.username ?? null,
+          active: job.active ?? null,
+        },
+        dependencies: dependenciesFromRefs(job.sources, snapshotDependencies),
       }));
     }
   }

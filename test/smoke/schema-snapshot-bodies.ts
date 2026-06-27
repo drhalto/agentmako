@@ -109,6 +109,12 @@ BEFORE UPDATE OF owner_id OR DELETE ON private.events
 FOR EACH ROW
 WHEN (OLD.owner_id IS NOT NULL)
 EXECUTE FUNCTION public.record_event();
+
+SELECT cron.schedule(
+  'rotate_events_hourly',
+  '0 * * * *',
+  'SELECT public.rotate_events()'
+);
 `;
 
 async function main(): Promise<void> {
@@ -216,6 +222,14 @@ async function main(): Promise<void> {
         t.bodyText,
     ),
     "events table trigger must carry bodyText",
+  );
+  assert.ok(
+    ir.schemas["cron"]?.scheduledJobs?.some((job) =>
+      job.name === "rotate_events_hourly" &&
+      job.schedule === "0 * * * *" &&
+      job.command === "SELECT public.rotate_events()"
+    ),
+    "repo-SQL cron.schedule calls must populate SchemaNamespace.scheduledJobs",
   );
 
   // --- Store-level: saveSchemaSnapshot persists + derives function_refs ---

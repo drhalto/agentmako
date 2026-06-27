@@ -264,6 +264,7 @@ import { healthTrendTool, issuesNextTool, sessionHandoffTool } from "./project-i
 import type { ToolServiceOptions } from "./runtime.js";
 import { exportsOfTool, symbolsOfTool } from "./symbols/index.js";
 import { toolBatchTool } from "./tool-batch/index.js";
+import { REGISTRY_TOOL_SEARCH_HINTS } from "./tool-search-hints.js";
 import { toolAnnotations } from "./tool-operational-metadata.js";
 import { workflowPacketTool } from "./workflow-packets/surfaces.js";
 
@@ -584,7 +585,7 @@ export const TOOL_DEFINITIONS: readonly MakoToolDefinition[] = [
   {
     name: "mako_help",
     category: "context",
-    description: "Orientation tool for coding agents: given a natural-language task, return the recommended Mako workflow recipe as an ordered tool sequence with pre-filled suggestedArgs, batchable follow-ups, and notes. Use before reading long AGENTS/CLAUDE docs when deciding how to start with reef_ask and which specialist follow-ups to load. Read-only and does not execute the returned steps.",
+    description: "Orientation tool for coding agents: given a natural-language task plus optional focusFiles, changedFiles, focusRoutes, focusSymbols, focusDatabaseObjects, route, table, or rpc anchors, return the recommended Mako workflow recipe as an ordered tool sequence with pre-filled suggestedArgs, batchable follow-ups, and notes. Use before reading long AGENTS/CLAUDE docs when deciding how to start with reef_ask and which specialist follow-ups to load. Read-only and does not execute the returned steps.",
     annotations: toolAnnotations("mako_help"),
     inputSchema: MakoHelpToolInputSchema,
     outputSchema: MakoHelpToolOutputSchema,
@@ -692,7 +693,7 @@ export const TOOL_DEFINITIONS: readonly MakoToolDefinition[] = [
   {
     name: "db_reef_refresh",
     category: "project",
-    description: "Explicit Reef DB ingestion tool: replace indexed Reef facts for the current schema snapshot, including schemas, tables, columns, indexes, foreign keys, RLS policies, triggers, enums, RPCs, RPC-to-table refs, and indexed schema usages. Uses the existing schema snapshot/read-model indexes; run project_index_refresh first if the snapshot is stale or missing.",
+    description: "Explicit Reef DB ingestion tool: replace indexed Reef facts for the current schema snapshot, including schemas, tables, columns, indexes, foreign keys, RLS policies, triggers, enums, RPCs, scheduled jobs, RPC-to-table refs, and indexed schema usages. Uses the existing schema snapshot/read-model indexes; run project_index_refresh first if the snapshot is stale or missing.",
     annotations: toolAnnotations("db_reef_refresh"),
     inputSchema: DbReefRefreshToolInputSchema,
     outputSchema: DbReefRefreshToolOutputSchema,
@@ -719,7 +720,7 @@ export const TOOL_DEFINITIONS: readonly MakoToolDefinition[] = [
   {
     name: "repo_map",
     category: "code_intel",
-    description: "Code-intelligence tool for repo orientation: emit a token-budgeted aider-style outline of the indexed project (ranked files + key symbols) as first-turn context for agents meeting an unfamiliar codebase. Ranking approximates centrality via `fanIn * 2 + fanOut + 0.1`; symbol selection prefers exported declarations. Read-only; default budget 1024 tokens (char/4 approximation), cap 16384.",
+    description: "Code-intelligence tool for repo orientation: emit a token-budgeted aider-style outline of the indexed project (ranked files + key symbols) as first-turn context for agents meeting an unfamiliar codebase. Ranking uses import-graph PageRank, personalized bidirectionally around focusFiles, focusRoutes, focusSymbols, or focusDatabaseObjects when supplied so nearby dependencies and dependents surface first. Symbol selection prefers exported declarations. Read-only; default budget 1024 tokens (char/4 approximation), cap 16384.",
     annotations: toolAnnotations("repo_map"),
     inputSchema: RepoMapToolInputSchema,
     outputSchema: RepoMapToolOutputSchema,
@@ -728,7 +729,7 @@ export const TOOL_DEFINITIONS: readonly MakoToolDefinition[] = [
   {
     name: "context_packet",
     category: "context",
-    description: "Context scout for coding agents: turn a messy request into ranked, source-labeled, readable context using deterministic providers first (files, routes, symbols, schema, import graph, centrality, hot hints). Reef-backed enrichments add working-tree overlay metadata and active findings; use risksMinConfidence to suppress low-confidence risk speculation. Set MAKO_REEF_BACKED=legacy for the one-release rollback path. Read-only; does not refresh the index. Use as the first-mile packet before normal harness read/search/edit loops.",
+    description: "Context scout for coding agents: turn a messy request into ranked, source-labeled, readable context using deterministic providers first (bounded live quoted-literal search, files, routes, symbols, schema, import graph, centrality, hot hints). Reef-backed enrichments add working-tree overlay metadata and active findings; use risksMinConfidence to suppress low-confidence risk speculation. Set MAKO_REEF_BACKED=legacy for the one-release rollback path. Read-only; does not refresh the index. Use as the first-mile packet before normal harness read/search/edit loops.",
     annotations: toolAnnotations("context_packet"),
     inputSchema: ContextPacketToolInputSchema,
     outputSchema: ContextPacketToolOutputSchema,
@@ -1139,6 +1140,7 @@ export function listToolDefinitions(): ToolDefinitionSummary[] {
     outputSchema: schemaToJson(withToolHintsSchema(tool.outputSchema), `${tool.name}Output`, {
       useRootRefs: tool.category === "artifact",
     }),
+    ...(REGISTRY_TOOL_SEARCH_HINTS[tool.name] ? { searchHint: REGISTRY_TOOL_SEARCH_HINTS[tool.name] } : {}),
   }));
 }
 

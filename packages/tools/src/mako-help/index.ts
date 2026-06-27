@@ -65,11 +65,70 @@ function filesForDiagnostics(input: MakoHelpToolInput): string[] {
       : ["<changed-file>"];
 }
 
-function reefAskStep(input: MakoHelpToolInput, mode: "explore" | "plan" | "implement" | "review" | "verify" = "explore"): MakoHelpToolStep {
-  const focusDatabaseObjects = [
+function uniqueStrings(values: readonly string[]): string[] {
+  return [...new Set(values.filter((value) => value.trim().length > 0))];
+}
+
+function focusRoutes(input: MakoHelpToolInput): string[] {
+  return uniqueStrings([
+    ...(input.focusRoutes ?? []),
+    ...(input.route ? [input.route] : []),
+  ]);
+}
+
+function focusSymbols(input: MakoHelpToolInput): string[] {
+  return uniqueStrings(input.focusSymbols ?? []);
+}
+
+function focusDatabaseObjects(input: MakoHelpToolInput): string[] {
+  return uniqueStrings([
+    ...(input.focusDatabaseObjects ?? []),
     ...(input.table ? [input.table] : []),
     ...(input.rpc ? [input.rpc] : []),
-  ];
+  ]);
+}
+
+function quotedTaskText(input: MakoHelpToolInput): string | undefined {
+  for (const match of input.task.matchAll(/["'`]([^"'`]{2,160})["'`]/g)) {
+    const value = match[1]?.trim();
+    if (value) return value;
+  }
+  return undefined;
+}
+
+function liveTextQuery(input: MakoHelpToolInput): string {
+  return quotedTaskText(input) ?? input.focusSymbols?.[0] ?? input.task;
+}
+
+function repoMapStep(input: MakoHelpToolInput): MakoHelpToolStep {
+  const focusFiles = uniqueStrings([
+    ...(input.focusFiles ?? []),
+    ...(input.changedFiles ?? []),
+  ]);
+  const routes = focusRoutes(input);
+  const symbols = focusSymbols(input);
+  const databaseObjects = focusDatabaseObjects(input);
+  return step({
+    id: "repo-map",
+    phase: "expand",
+    toolName: "repo_map",
+    title: "Expand into an anchor-personalized repo map",
+    why: "Uses import-graph PageRank around known files, routes, symbols, or database objects to surface nearby dependencies and dependents before broad search.",
+    whenToUse: "Use when the first packet is too narrow or when you need a compact project map before reading files.",
+    suggestedArgs: withLocator(input, {
+      ...(focusFiles.length ? { focusFiles } : {}),
+      ...(routes.length ? { focusRoutes: routes } : {}),
+      ...(symbols.length ? { focusSymbols: symbols } : {}),
+      ...(databaseObjects.length ? { focusDatabaseObjects: databaseObjects } : {}),
+    }),
+    batchable: true,
+  });
+}
+
+function reefAskStep(input: MakoHelpToolInput, mode: "explore" | "plan" | "implement" | "review" | "verify" = "explore"): MakoHelpToolStep {
+  const routes = focusRoutes(input);
+  const symbols = focusSymbols(input);
+  const databaseObjects = focusDatabaseObjects(input);
   return step({
     id: "reef-ask",
     phase: "orient",
@@ -82,8 +141,9 @@ function reefAskStep(input: MakoHelpToolInput, mode: "explore" | "plan" | "imple
       mode,
       ...(input.focusFiles?.length ? { focusFiles: input.focusFiles } : {}),
       ...(input.changedFiles?.length ? { changedFiles: input.changedFiles } : {}),
-      ...(input.route ? { focusRoutes: [input.route] } : {}),
-      ...(focusDatabaseObjects.length ? { focusDatabaseObjects } : {}),
+      ...(routes.length ? { focusRoutes: routes } : {}),
+      ...(symbols.length ? { focusSymbols: symbols } : {}),
+      ...(databaseObjects.length ? { focusDatabaseObjects: databaseObjects } : {}),
       freshnessPolicy: "prefer_fresh",
       budgetTokens: 5000,
     }),
@@ -118,6 +178,9 @@ function classifyRecipe(input: MakoHelpToolInput): MakoHelpRecipeId {
 }
 
 function contextPacketStep(input: MakoHelpToolInput, mode: "explore" | "plan" | "implement" | "review" = "explore"): MakoHelpToolStep {
+  const routes = focusRoutes(input);
+  const symbols = focusSymbols(input);
+  const databaseObjects = focusDatabaseObjects(input);
   return step({
     id: "context",
     phase: "orient",
@@ -129,7 +192,10 @@ function contextPacketStep(input: MakoHelpToolInput, mode: "explore" | "plan" | 
       request: input.task,
       mode,
       ...(input.focusFiles?.length ? { focusFiles: input.focusFiles } : {}),
-      ...(input.route ? { focusRoutes: [input.route] } : {}),
+      ...(input.changedFiles?.length ? { changedFiles: input.changedFiles } : {}),
+      ...(routes.length ? { focusRoutes: routes } : {}),
+      ...(symbols.length ? { focusSymbols: symbols } : {}),
+      ...(databaseObjects.length ? { focusDatabaseObjects: databaseObjects } : {}),
       includeInstructions: true,
       includeRisks: true,
       risksMinConfidence: 0.7,
@@ -144,6 +210,7 @@ function generalRecipe(input: MakoHelpToolInput): { summary: string; steps: Mako
   const steps = [
     reefAskStep(input, "explore"),
     contextPacketStep(input),
+    repoMapStep(input),
     step({
       id: "cross-search",
       phase: "expand",
@@ -166,10 +233,11 @@ function generalRecipe(input: MakoHelpToolInput): { summary: string; steps: Mako
     }),
   ];
   return {
-    summary: "General Mako orientation: ask Reef first, expand with context/search only when needed, then check freshness before relying on indexed line evidence.",
+    summary: "General Mako orientation: ask Reef first, expand with context or an anchor-personalized repo map when needed, fall back to broad indexed search, then check freshness before relying on indexed line evidence.",
     steps,
     notes: [
       "Ask reef_ask with a quoted literal for bounded current-disk text checks; use live_text_search or shell rg for regex, custom globs, or raw full inventories.",
+      "Use repo_map before cross_search when import graph proximity is likely more useful than broad lexical recall.",
       "When RPC/schema terms are only part of a duplicate or structural search scope, stay with reef_ask/context_packet before using DB-object inspection tools.",
       "Use tool_batch for independent read-only follow-ups after the first reef_ask result.",
     ],
@@ -177,8 +245,9 @@ function generalRecipe(input: MakoHelpToolInput): { summary: string; steps: Mako
 }
 
 function authRecipe(input: MakoHelpToolInput): { summary: string; steps: MakoHelpToolStep[]; notes: string[] } {
-  const authArgs = input.route
-    ? { route: input.route }
+  const route = input.route ?? input.focusRoutes?.[0];
+  const authArgs = route
+    ? { route }
     : input.focusFiles?.length
       ? { filePath: input.focusFiles[0] }
       : { feature: input.task };
@@ -270,6 +339,7 @@ function dbRecipe(input: MakoHelpToolInput): { summary: string; steps: MakoHelpT
   const rpc = input.rpc ?? "<rpc-name>";
   const steps = [
     reefAskStep(input, "review"),
+    contextPacketStep(input, "review"),
     step({
       id: "table-schema",
       phase: "inspect",
@@ -312,7 +382,7 @@ function dbRecipe(input: MakoHelpToolInput): { summary: string; steps: MakoHelpT
     }),
   ];
   return {
-    summary: "Database workflow: ask Reef first for combined code/database context, inspect live DB facts for table/RLS/RPC questions, then use neighborhoods/traces only when deeper expansion is needed.",
+    summary: "Database workflow: ask Reef first for combined code/database context, expand a ranked context packet around named schema anchors, inspect live DB facts for table/RLS/RPC questions, then use neighborhoods/traces only when deeper expansion is needed.",
     steps,
     notes: [
       "Run db_reef_refresh after schema migrations or Supabase type regeneration so Reef-backed tools use current database facts.",
@@ -342,7 +412,7 @@ function fileEditRecipe(input: MakoHelpToolInput): { summary: string; steps: Mak
       title: "Fallback to raw live text search",
       why: "Reads current disk text with raw match rows, glob scope, and regex support.",
       whenToUse: "Use when reef_ask's bounded literal lane is not enough: regex, custom globs, generated/unindexed files, or full inventories.",
-      suggestedArgs: withLocator(input, { query: input.task, fixedStrings: true, maxMatches: 50 }),
+      suggestedArgs: withLocator(input, { query: liveTextQuery(input), fixedStrings: true, maxMatches: 50 }),
       batchable: true,
     }),
     step({
@@ -518,7 +588,7 @@ export async function makoHelpTool(input: MakoHelpToolInput): Promise<MakoHelpTo
     ops,
   });
   const placeholderNotes = steps.some((entry) => JSON.stringify(entry.suggestedArgs).includes("<"))
-    ? ["Some suggestedArgs contain placeholders; pass focusFiles, changedFiles, route, table, or rpc for fully concrete args."]
+    ? ["Some suggestedArgs contain placeholders; pass focusFiles, changedFiles, focusRoutes, focusSymbols, focusDatabaseObjects, route, table, or rpc for fully concrete args."]
     : [];
 
   return {

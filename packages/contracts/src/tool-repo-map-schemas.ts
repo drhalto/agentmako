@@ -15,12 +15,15 @@ import { ProjectLocatorInputObjectSchema } from "./tool-project-locator.js";
  *   `projectStore.listSymbolsForFile(...)`, never the live filesystem
  * - bounded: default 1024-token budget, cap 16384; uses char/4 approximation
  *   (portable, no per-language tokenizers)
- * - ranked: approximate centrality via `fanIn * log2(fanOut + 2)`; real
- *   PageRank deferred as premature complexity
+ * - ranked: import-graph PageRank, personalized bidirectionally around
+ *   resolved focus anchors when supplied so both dependencies and dependents
+ *   can appear; zero-reach files outside that focused graph are omitted with
+ *   a warning instead of being shown under a personalized label
  *
  * Output is rendered plaintext with aider-visual conventions (`⋮...` for
  * elided interior content, `│` left-bar for kept signature lines). JSON
- * projection of the same data ships alongside the rendered text so callers
+ * projection of the same data ships alongside the rendered text, including
+ * graph rank and focused dependency/dependent relation metadata, so callers
  * can consume either form.
  */
 
@@ -44,6 +47,14 @@ export const RepoMapSymbolEntrySchema = z.object({
 
 export interface RepoMapFileEntry {
   filePath: string;
+  graphRank: number;
+  graphRankScore: number;
+  graphRankMode: "global" | "personalized";
+  graphRankDirection: "outbound" | "inbound" | "bidirectional";
+  focusRelation?: "self" | "dependency" | "dependent" | "bidirectional";
+  focusDistance?: number;
+  dependencyDistance?: number;
+  dependentDistance?: number;
   score: number;
   inboundCount: number;
   outboundCount: number;
@@ -54,6 +65,14 @@ export interface RepoMapFileEntry {
 
 export const RepoMapFileEntrySchema = z.object({
   filePath: z.string().min(1),
+  graphRank: z.number().nonnegative(),
+  graphRankScore: z.number().nonnegative(),
+  graphRankMode: z.enum(["global", "personalized"]),
+  graphRankDirection: z.enum(["outbound", "inbound", "bidirectional"]),
+  focusRelation: z.enum(["self", "dependency", "dependent", "bidirectional"]).optional(),
+  focusDistance: z.number().int().nonnegative().optional(),
+  dependencyDistance: z.number().int().nonnegative().optional(),
+  dependentDistance: z.number().int().nonnegative().optional(),
   score: z.number().nonnegative(),
   inboundCount: z.number().int().nonnegative(),
   outboundCount: z.number().int().nonnegative(),
@@ -80,9 +99,11 @@ export interface RepoMapToolInput {
    * compact so the rendered outline stays scannable; default stays 6.
    */
   maxSymbolsPerFile?: number;
-  // Files named here get a score boost and are emitted first (helpful when an
-  // agent already knows the relevant subtree).
+  // Focus anchors get a score boost and personalize the graph map.
   focusFiles?: string[];
+  focusRoutes?: string[];
+  focusSymbols?: string[];
+  focusDatabaseObjects?: string[];
   // Optional SQLite-style GLOB filter on file paths.
   pathGlob?: string;
 }
@@ -95,6 +116,9 @@ export const RepoMapToolInputSchema = ProjectLocatorInputObjectSchema.extend({
   // Cost class: shape-cost. Default 6 in tool implementation.
   maxSymbolsPerFile: z.number().int().positive().max(32).optional(),
   focusFiles: z.array(z.string().trim().min(1)).max(64).optional(),
+  focusRoutes: z.array(z.string().trim().min(1)).max(64).optional(),
+  focusSymbols: z.array(z.string().trim().min(1)).max(64).optional(),
+  focusDatabaseObjects: z.array(z.string().trim().min(1)).max(64).optional(),
   pathGlob: z.string().trim().min(1).max(256).optional(),
 }).strict() satisfies z.ZodType<RepoMapToolInput>;
 
