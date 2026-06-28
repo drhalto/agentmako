@@ -7,6 +7,15 @@ it reaches 1.0.
 
 ## [Unreleased]
 
+## [0.4.2] - 2026-06-28
+
+### Fixed
+
+- Trimmed the MCP server instructions back under Claude Code's
+  `MAX_MCP_DESCRIPTION_LENGTH` (2048) cap; the 0.4.1 instructions were 2258
+  characters, so Claude Code silently truncated the tail when loading the
+  server. Content is unchanged in substance — only tightened.
+
 ## [0.4.1] - 2026-06-28
 
 ### Added
