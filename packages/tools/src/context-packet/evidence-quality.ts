@@ -59,6 +59,9 @@ function labelForScore(args: {
   dirtyContextCount: number;
   changedFilesMissingOverlayCount: number;
   budgetExhausted: boolean;
+  selectionLimitHit: boolean;
+  requestedAnchorsOmitted: number;
+  supportingSignalsOmitted: number;
   freshnessGateStatus: ProjectFreshnessGate["status"];
   requestCoverageStatus: ContextPacketRequestCoverage["status"];
   unresolvedRequestCount: number;
@@ -66,6 +69,7 @@ function labelForScore(args: {
 }): ContextPacketEvidenceQuality["label"] {
   if (args.totalContextCount === 0 || args.score < 0.35) return "weak";
   if (args.requestCoverageStatus === "missing" && args.unresolvedRequestCount > 0) return "weak";
+  if (args.requestedAnchorsOmitted > 0) return "partial";
   if (args.requestCoverageStatus === "partial" && args.unresolvedRequestCount > 0) return "partial";
   if (args.graphStatus === "missing") return "partial";
   if (args.graphStatus === "isolated") return "partial";
@@ -75,6 +79,8 @@ function labelForScore(args: {
     args.dirtyContextCount === 0 &&
     args.changedFilesMissingOverlayCount === 0 &&
     !args.budgetExhausted &&
+    !args.selectionLimitHit &&
+    args.supportingSignalsOmitted === 0 &&
     args.freshnessGateStatus !== "stale" &&
     args.freshnessGateStatus !== "degraded" &&
     (args.requestCoverageStatus === "complete" || args.requestCoverageStatus === "not_requested") &&
@@ -91,7 +97,15 @@ function recommendedAction(args: {
   requestCoverageStatus: ContextPacketRequestCoverage["status"];
   unresolvedRequestCount: number;
   graphStatus: GraphQuality["status"];
+  budgetExhausted: boolean;
+  selectionLimitHit: boolean;
+  requestedAnchorsOmitted: number;
+  supportingSignalsOmitted: number;
+  graphWarningCount: number;
 }): string {
+  if (args.requestedAnchorsOmitted > 0) {
+    return "Inspect omitted requested anchors with anchor-specific follow-ups or higher context limits before relying on this packet.";
+  }
   if (args.unresolvedRequestCount > 0) {
     if (args.requestCoverageStatus === "missing") {
       return "Do not rely on this packet for the requested anchors until expandableTools or live_text_search resolve the missing coverage.";
@@ -103,6 +117,18 @@ function recommendedAction(args: {
   }
   if (args.graphStatus === "isolated") {
     return "Treat this as file-local context; run repo_map or imports_impact before making broader dependency or impact claims.";
+  }
+  if (args.graphWarningCount > 0) {
+    return "Treat graph evidence as bounded; run graph follow-ups before making exhaustive dependency or impact claims.";
+  }
+  if (args.budgetExhausted) {
+    return "Increase budgetTokens or narrow the request before relying on broad claims from this packet.";
+  }
+  if (args.selectionLimitHit) {
+    return "Raise maxPrimaryContext/maxRelatedContext or use follow-ups to inspect omitted ranked candidates before broad claims.";
+  }
+  if (args.supportingSignalsOmitted > 0) {
+    return "Use recommended follow-ups for full provenance before relying on compacted supporting evidence.";
   }
   switch (args.label) {
     case "strong":
@@ -156,6 +182,9 @@ export function assessContextPacketEvidenceQuality(args: {
   indexFreshness: IndexFreshnessSummary;
   providersFailed: readonly string[];
   budgetExhausted: boolean;
+  selectionLimitHit: boolean;
+  requestedAnchorsOmitted: number;
+  supportingSignalsOmitted: number;
   changedFilesMissingOverlayCount: number;
   requestCoverage: ContextPacketRequestCoverage;
 }): ContextPacketEvidenceQuality {
@@ -197,6 +226,9 @@ export function assessContextPacketEvidenceQuality(args: {
   const providerPenalty = Math.min(0.15, args.providersFailed.length * 0.05);
   const overlayPenalty = Math.min(0.12, args.changedFilesMissingOverlayCount * 0.04);
   const budgetPenalty = args.budgetExhausted ? 0.05 : 0;
+  const selectionPenalty = args.selectionLimitHit ? 0.04 : 0;
+  const requestedAnchorOmissionPenalty = Math.min(0.2, args.requestedAnchorsOmitted * 0.09);
+  const supportingSignalPenalty = Math.min(0.06, args.supportingSignalsOmitted * 0.02);
   const unresolvedRequestCount = args.requestCoverage.uncoveredCount + args.requestCoverage.notCheckedCount;
   const coveragePenalty = args.requestCoverage.status === "missing"
     ? 0.32
@@ -212,6 +244,7 @@ export function assessContextPacketEvidenceQuality(args: {
     : graph.status === "isolated"
       ? 0.18
       : 0;
+  const graphWarningPenalty = graph.requested ? Math.min(0.08, graph.warningCount * 0.02) : 0;
 
   const score = clamp01(
     contextCoverage * 0.35 +
@@ -226,8 +259,12 @@ export function assessContextPacketEvidenceQuality(args: {
     providerPenalty -
     overlayPenalty -
     budgetPenalty -
+    selectionPenalty -
+    requestedAnchorOmissionPenalty -
+    supportingSignalPenalty -
     coveragePenalty -
-    graphPenalty,
+    graphPenalty -
+    graphWarningPenalty,
   );
   const roundedScore = round4(score);
   const label = labelForScore({
@@ -237,6 +274,9 @@ export function assessContextPacketEvidenceQuality(args: {
     dirtyContextCount,
     changedFilesMissingOverlayCount: args.changedFilesMissingOverlayCount,
     budgetExhausted: args.budgetExhausted,
+    selectionLimitHit: args.selectionLimitHit,
+    requestedAnchorsOmitted: args.requestedAnchorsOmitted,
+    supportingSignalsOmitted: args.supportingSignalsOmitted,
     freshnessGateStatus: args.freshnessGate.status,
     requestCoverageStatus: args.requestCoverage.status,
     unresolvedRequestCount,
@@ -266,9 +306,20 @@ export function assessContextPacketEvidenceQuality(args: {
     reasons.push("Dependency/impact-style request has no graph anchors or returned graph evidence.");
   } else if (graph.status === "isolated") {
     reasons.push("Dependency/impact-style request only returned isolated graph evidence with no connected dependency edges.");
+  } else if (graph.requested && graph.warningCount > 0) {
+    reasons.push(`${graph.warningCount} graph evidence warning(s) indicate bounded or incomplete traversal.`);
   }
   if (args.budgetExhausted) {
     reasons.push("Context was truncated by the token budget.");
+  }
+  if (args.selectionLimitHit) {
+    reasons.push("Ranked context was truncated by maxPrimaryContext/maxRelatedContext limits.");
+  }
+  if (args.requestedAnchorsOmitted > 0) {
+    reasons.push(`${args.requestedAnchorsOmitted} requested anchor(s) were ranked but omitted from returned context.`);
+  }
+  if (args.supportingSignalsOmitted > 0) {
+    reasons.push(`${args.supportingSignalsOmitted} supporting provider signal(s) were omitted to keep context compact.`);
   }
   if (args.providersFailed.length > 0) {
     reasons.push(`${args.providersFailed.length} provider(s) failed while building the packet.`);
@@ -289,6 +340,11 @@ export function assessContextPacketEvidenceQuality(args: {
       requestCoverageStatus: args.requestCoverage.status,
       unresolvedRequestCount,
       graphStatus: graph.status,
+      budgetExhausted: args.budgetExhausted,
+      selectionLimitHit: args.selectionLimitHit,
+      requestedAnchorsOmitted: args.requestedAnchorsOmitted,
+      supportingSignalsOmitted: args.supportingSignalsOmitted,
+      graphWarningCount: graph.requested ? graph.warningCount : 0,
     }),
     primaryContextCount,
     relatedContextCount,

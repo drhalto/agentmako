@@ -19,6 +19,9 @@ const STOP_WORDS = new Set([
   "where",
   "why",
   "what",
+  "get",
+  "set",
+  "use",
   "does",
   "is",
   "are",
@@ -39,7 +42,7 @@ const STOP_WORDS = new Set([
   "fix",
 ]);
 
-const FILE_TOKEN = /(?:[A-Za-z]:)?(?:[\w.-]+[\\/])+[\w.[\]()-]+\.(?:ts|tsx|js|jsx|mjs|cjs|sql|md|json|css|scss|html|py|rs|go)/g;
+const FILE_TOKEN = /(?:[A-Za-z]:)?(?:[\w.-]+[\\/])+[\w.[\]()-]+\.(?:tsx|ts|jsx|js|mjs|cjs|sql|md|json|scss|css|html|py|rs|go)/g;
 const ROUTE_TOKEN = /(?:^|\s)(\/[A-Za-z0-9_./:{}[\]-]+)/g;
 const IDENTIFIER = /\b[A-Za-z_$][A-Za-z0-9_$]{2,}\b/g;
 const DB_IDENTIFIER = /\b(?:[a-z][a-z0-9]*_+[a-z0-9_]+|[a-z][a-z0-9]*\.[a-z][a-z0-9_]+)\b/g;
@@ -47,7 +50,7 @@ const DB_IDENTIFIER = /\b(?:[a-z][a-z0-9]*_+[a-z0-9_]+|[a-z][a-z0-9]*\.[a-z][a-z
 const FAMILY_KEYWORDS: Record<ContextPacketIntentFamily, string[]> = {
   debug_route: ["route", "api", "endpoint", "callback", "handler", "page", "server action"],
   debug_type_contract: ["type", "interface", "contract", "schema", "prop", "props", "generic"],
-  debug_auth_state: ["auth", "session", "login", "logout", "user", "jwt", "token", "permission"],
+  debug_auth_state: ["auth", "session", "login", "logout", "user", "jwt", "token", "permission", "role", "roles", "access"],
   debug_database_usage: ["db", "database", "table", "rpc", "rls", "sql", "migration", "schema", "policy"],
   debug_ui_behavior: ["ui", "component", "hydration", "render", "client", "useeffect", "state", "hook"],
   implement_feature: ["add", "build", "implement", "feature", "create", "support"],
@@ -112,14 +115,33 @@ function extractDatabaseObjects(request: string, input: ContextPacketToolInput):
   return unique(objects).slice(0, 60);
 }
 
-function extractKeywords(request: string): string[] {
+function keywordCandidate(value: string): string | undefined {
+  const keyword = value.toLowerCase().replace(/^[./_-]+|[./_-]+$/g, "");
+  return keyword.length >= 3 && !STOP_WORDS.has(keyword) ? keyword : undefined;
+}
+
+function splitCompoundTerms(value: string): string[] {
+  return value
+    .replace(/([A-Z]+)([A-Z][a-z])/g, "$1 $2")
+    .replace(/([a-z0-9])([A-Z])/g, "$1 $2")
+    .replace(/[^A-Za-z0-9]+/g, " ")
+    .split(/\s+/)
+    .map((word) => keywordCandidate(word))
+    .filter((word): word is string => Boolean(word));
+}
+
+function extractKeywords(request: string, entityTerms: readonly string[]): string[] {
   const words = request
     .toLowerCase()
     .replace(/[^a-z0-9_./-]+/g, " ")
     .split(/\s+/)
-    .map((word) => word.replace(/^[./-]+|[./-]+$/g, ""))
-    .filter((word) => word.length >= 3 && !STOP_WORDS.has(word));
-  return unique(words).slice(0, 40);
+    .map((word) => keywordCandidate(word))
+    .filter((word): word is string => Boolean(word));
+  const expandedTerms = unique([
+    ...(request.match(/[A-Za-z0-9_$./-]{3,}/g) ?? []),
+    ...entityTerms,
+  ].flatMap(splitCompoundTerms));
+  return unique([...words, ...expandedTerms]).slice(0, 40);
 }
 
 function scoreFamily(requestLower: string, keywords: readonly string[], family: ContextPacketIntentFamily): {
@@ -140,7 +162,17 @@ function scoreFamily(requestLower: string, keywords: readonly string[], family: 
 export function detectContextPacketIntent(input: ContextPacketToolInput): ContextPacketIntent {
   const request = input.request.trim();
   const requestLower = request.toLowerCase();
-  const keywords = extractKeywords(request);
+  const files = extractFiles(request, input);
+  const symbols = extractSymbols(request, input);
+  const routes = extractRoutes(request, input);
+  const databaseObjects = extractDatabaseObjects(request, input);
+  const quotedText = extractQuotedText(request);
+  const keywords = extractKeywords(request, [
+    ...symbols,
+    ...routes,
+    ...databaseObjects,
+    ...quotedText,
+  ]);
   const families: ContextPacketIntent["families"] = (Object.keys(FAMILY_KEYWORDS) as ContextPacketIntentFamily[])
     .filter((family) => family !== "unknown")
     .map((family) => ({
@@ -162,11 +194,11 @@ export function detectContextPacketIntent(input: ContextPacketToolInput): Contex
     primaryFamily: families[0]?.family ?? "unknown",
     families,
     entities: {
-      files: extractFiles(request, input),
-      symbols: extractSymbols(request, input),
-      routes: extractRoutes(request, input),
-      databaseObjects: extractDatabaseObjects(request, input),
-      quotedText: extractQuotedText(request),
+      files,
+      symbols,
+      routes,
+      databaseObjects,
+      quotedText,
       keywords,
     },
   };

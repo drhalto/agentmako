@@ -1,6 +1,12 @@
 import type { ToolName } from "@mako-ai/contracts";
 
 export const REGISTRY_TOOL_SEARCH_HINTS: Partial<Record<ToolName, string>> = {
+  owasp_audit: [
+    "owasp top 10 2025 security audit vulnerability scan",
+    "injection xss sqli eval command injection broken access control",
+    "weak crypto md5 hardcoded secret tls verification cors",
+    "auth failures jwt empty catch error exposure cwe findings",
+  ].join(" "),
   mako_help: [
     "start here for Mako workflow selection",
     "repo knowledge workflow recipe focus anchors",

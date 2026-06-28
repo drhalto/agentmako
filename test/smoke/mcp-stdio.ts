@@ -2,12 +2,12 @@ import assert from "node:assert/strict";
 import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { once } from "node:events";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 import { stopReefDaemon } from "../../services/indexer/src/index.ts";
-import { openGlobalStore, openProjectStore } from "../../packages/store/src/index.ts";
+import { normalizePath, openGlobalStore, openProjectStore } from "../../packages/store/src/index.ts";
 
 /**
  * Smoke test for `agentmako mcp` (stdio MCP transport).
@@ -28,6 +28,13 @@ interface JsonRpcResponse {
   id: number | string;
   result?: unknown;
   error?: { code: number; message: string };
+}
+
+interface JsonRpcRequest {
+  jsonrpc: "2.0";
+  id: number | string;
+  method: string;
+  params?: unknown;
 }
 
 interface ToolDescriptor {
@@ -80,6 +87,29 @@ interface ToolBatchStructured {
   summary: {
     requestedOps: number;
   };
+}
+
+interface McpStructuredToolError {
+  ok: false;
+  toolName: string;
+  requestId: string;
+  error: {
+    code: string;
+    message: string;
+    statusCode: number;
+    details?: {
+      suggestedProjectRef?: string;
+      suggestedCommand?: string;
+      unmatchedLocations?: Array<{
+        source: string;
+        normalizedPath: string;
+        exists: boolean;
+        suggestedProjectRoot?: string;
+        suggestedProjectRootReason?: string;
+      }>;
+    };
+  };
+  _hints: string[];
 }
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
@@ -135,6 +165,15 @@ function parseStructured<T>(result: ToolCallResult): T {
   return result.structuredContent as T;
 }
 
+function parseStructuredError<T>(result: ToolCallResult): T {
+  assert.equal(result.isError, true, "tools/call should return isError=true");
+  assert.ok(
+    result.structuredContent,
+    `tools/call error result includes structuredContent: ${JSON.stringify(result)}`,
+  );
+  return result.structuredContent as T;
+}
+
 async function removeTempDirWithRetries(dir: string): Promise<void> {
   for (let attempt = 0; attempt < 20; attempt += 1) {
     try {
@@ -152,13 +191,16 @@ async function removeTempDirWithRetries(dir: string): Promise<void> {
 
 class StdioClient {
   private readonly child: ChildProcessWithoutNullStreams;
+  private readonly rootPaths: string[];
   private readonly pendingResponses = new Map<number, (response: JsonRpcResponse) => void>();
   private stdoutBuffer = "";
   readonly stderrChunks: string[] = [];
   readonly stdoutChunks: string[] = [];
+  rootsListRequestCount = 0;
 
-  constructor(child: ChildProcessWithoutNullStreams) {
+  constructor(child: ChildProcessWithoutNullStreams, rootPaths: string[] = []) {
     this.child = child;
+    this.rootPaths = rootPaths;
     child.stdout.setEncoding("utf8");
     child.stderr.setEncoding("utf8");
     child.stdout.on("data", (chunk: string) => {
@@ -185,6 +227,11 @@ class StdioClient {
             `stdout carried non-JSON line (stdio transport is pure JSON-RPC): ${JSON.stringify(line)} (parse error: ${error instanceof Error ? error.message : String(error)})`,
           );
         }
+        if (typeof (parsed as { method?: unknown }).method === "string") {
+          this.respondToServerRequest(parsed as unknown as JsonRpcRequest);
+          newlineIndex = this.stdoutBuffer.indexOf("\n");
+          continue;
+        }
         if (typeof parsed.id === "number") {
           const resolver = this.pendingResponses.get(parsed.id);
           if (resolver) {
@@ -195,6 +242,33 @@ class StdioClient {
       }
       newlineIndex = this.stdoutBuffer.indexOf("\n");
     }
+  }
+
+  private respondToServerRequest(request: JsonRpcRequest): void {
+    if (request.method === "roots/list") {
+      this.rootsListRequestCount += 1;
+      this.child.stdin.write(
+        JSON.stringify({
+          jsonrpc: "2.0",
+          id: request.id,
+          result: {
+            roots: this.rootPaths.map((root, index) => ({
+              uri: pathToFileURL(root).href,
+              name: `root-${index}`,
+            })),
+          },
+        }) + "\n",
+      );
+      return;
+    }
+
+    this.child.stdin.write(
+      JSON.stringify({
+        jsonrpc: "2.0",
+        id: request.id,
+        error: { code: -32601, message: `Unknown server request: ${request.method}` },
+      }) + "\n",
+    );
   }
 
   async request<T>(id: number, method: string, params?: unknown): Promise<T> {
@@ -235,6 +309,10 @@ async function main(): Promise<void> {
   mkdirSync(stateHome, { recursive: true });
   const projectRoot = path.join(tmp, "project");
   mkdirSync(projectRoot, { recursive: true });
+  const unattachedRoot = path.join(tmp, "unattached project");
+  const unattachedNestedCwd = path.join(unattachedRoot, "packages", "app");
+  mkdirSync(unattachedNestedCwd, { recursive: true });
+  mkdirSync(path.join(unattachedRoot, ".git"));
   writeFileSync(
     path.join(projectRoot, "live-search-target.txt"),
     "mako live text search packaged ripgrep\n",
@@ -316,6 +394,51 @@ async function main(): Promise<void> {
         `tools/list must include ${expected}; got: ${toolNames.join(", ")}`,
       );
     }
+
+    const missingProjectResult = await client.request<ToolCallResult>(30, "tools/call", {
+      name: "project_index_status",
+      arguments: {
+        includeUnindexed: false,
+      },
+      _meta: {
+        cwd: unattachedNestedCwd,
+      },
+    });
+    const missingProject = parseStructuredError<McpStructuredToolError>(missingProjectResult);
+    const expectedUnattachedRef = normalizePath(realpathSync(unattachedRoot));
+    const expectedUnattachedCwd = normalizePath(realpathSync(unattachedNestedCwd));
+    assert.equal(missingProject.ok, false);
+    assert.equal(missingProject.toolName, "project_index_status");
+    assert.equal(missingProject.error.code, "missing_project_context");
+    assert.match(
+      missingProject.error.message,
+      /MCP roots\/cwd did not match any attached Mako project/,
+    );
+    assert.equal(missingProject.error.details?.suggestedProjectRef, expectedUnattachedRef);
+    assert.equal(
+      missingProject.error.details?.suggestedCommand,
+      `agentmako connect "${expectedUnattachedRef}" --no-db`,
+    );
+    assert.ok(
+      missingProject.error.details?.unmatchedLocations?.some(
+        (entry) =>
+          entry.source === "meta_cwd" &&
+          entry.normalizedPath === expectedUnattachedCwd &&
+          entry.exists === true &&
+          entry.suggestedProjectRoot === expectedUnattachedRef &&
+          entry.suggestedProjectRootReason === "git_root",
+      ),
+      "structured MCP error should preserve unmatched cwd and discovered project root details",
+    );
+    assert.ok(
+      missingProject._hints.some((hint) => hint.includes("agentmako connect")),
+      "structured MCP error should include actionable recovery hints",
+    );
+    assert.equal(
+      client.rootsListRequestCount,
+      0,
+      "stdio clients without roots capability should not receive roots/list requests",
+    );
 
     const liveSearchResult = await client.request<ToolCallResult>(3, "tools/call", {
       name: "live_text_search",

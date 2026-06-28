@@ -20,6 +20,7 @@ import { withProjectContext, type ToolServiceOptions } from "../runtime.js";
  */
 
 const DEFAULT_LIMIT = 100;
+const REASON_CODE_AGGREGATE_LIMIT = 50;
 const ALL_GRADES: RuntimeUsefulnessGrade[] = ["full", "partial", "no"];
 
 export async function runtimeTelemetryReportTool(
@@ -48,6 +49,10 @@ export async function runtimeTelemetryReportTool(
     const byGrade = fillZeroGrades(
       projectStore.aggregateUsefulnessEventsByGrade(filter),
     );
+    const byReasonCode = projectStore.aggregateUsefulnessEventsByReasonCode(
+      filter,
+      REASON_CODE_AGGREGATE_LIMIT,
+    );
 
     // Event list is the only shape that pages; aggregates stay honest.
     const events = projectStore.queryUsefulnessEvents({ ...filter, limit });
@@ -65,6 +70,7 @@ export async function runtimeTelemetryReportTool(
       byDecisionKind,
       byFamily,
       byGrade,
+      byReasonCode,
       events,
       truncated,
       warnings,
@@ -103,4 +109,3 @@ function fillZeroGrades(
   }));
   return filled.sort((left, right) => right.count - left.count);
 }
-

@@ -18,7 +18,7 @@ import {
   type ToolRunLike,
 } from "./extract-files";
 
-export type FlowNodeKind = "tool" | "file" | "dir";
+export type FlowNodeKind = "origin" | "tool" | "file" | "dir";
 
 export interface FlowNode {
   id: string;
@@ -86,10 +86,19 @@ export interface BuildFlowGraphOptions {
   expandedDirs?: Set<string>;
   /** Cap on file/dir nodes; least-active beyond this are hidden. */
   maxFileNodes?: number;
+  /**
+   * Add a single central "origin" node (the agent/session that invokes the
+   * tools) with one edge to every tool, so the graph reads origin → tools →
+   * files instead of leaving tools floating with no root. Default true.
+   */
+  includeOrigin?: boolean;
+  /** Display label for the origin node (e.g. the session title or "agent"). */
+  originLabel?: string;
 }
 
 const DEFAULT_MAX_FILE_NODES = 220;
 
+export const ORIGIN_NODE_ID = "origin:root";
 export const toolNodeId = (tool: string): string => `tool:${tool}`;
 export const fileNodeId = (path: string): string => `file:${path}`;
 export const dirNodeId = (dir: string): string => `dir:${dir}`;
@@ -193,6 +202,8 @@ export function buildFlowGraph(
   const groupByDirectory = options.groupByDirectory ?? true;
   const expandedDirs = options.expandedDirs ?? new Set<string>();
   const maxFileNodes = options.maxFileNodes ?? DEFAULT_MAX_FILE_NODES;
+  const includeOrigin = options.includeOrigin ?? true;
+  const originLabel = options.originLabel?.trim() || "agent";
 
   const nodes = new Map<string, FlowNode>();
   const edges = new Map<string, FlowEdge>();
@@ -298,7 +309,42 @@ export function buildFlowGraph(
     }
   }
 
-  const toolCount = [...nodes.values()].filter((n) => n.kind === "tool").length;
+  const toolNodes = [...nodes.values()].filter((n) => n.kind === "tool");
+  const toolCount = toolNodes.length;
+
+  // Add the central origin (the agent/session that called these tools), with
+  // one edge to each tool weighted by how many times that tool was invoked.
+  // Added after the file/dir cap so it is never pruned.
+  if (includeOrigin && toolCount > 0) {
+    let totalCalls = 0;
+    let totalErrors = 0;
+    let lastActivityMs = 0;
+    for (const tool of toolNodes) {
+      totalCalls += tool.runs;
+      totalErrors += tool.errors;
+      if (tool.lastActivityMs > lastActivityMs) lastActivityMs = tool.lastActivityMs;
+    }
+    nodes.set(ORIGIN_NODE_ID, {
+      id: ORIGIN_NODE_ID,
+      kind: "origin",
+      label: originLabel,
+      title: originLabel,
+      runs: totalCalls,
+      errors: totalErrors,
+      lastActivityMs,
+    });
+    for (const tool of toolNodes) {
+      const edgeId = `${ORIGIN_NODE_ID}__${tool.id}`;
+      edges.set(edgeId, {
+        id: edgeId,
+        source: ORIGIN_NODE_ID,
+        target: tool.id,
+        weight: tool.runs,
+        mutations: 0,
+        lastActivityMs: tool.lastActivityMs,
+      });
+    }
+  }
 
   return {
     nodes: [...nodes.values()],

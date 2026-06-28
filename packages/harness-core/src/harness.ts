@@ -128,6 +128,25 @@ function deriveAutoTitle(content: string): string | null {
   return `${safe}…`;
 }
 
+/**
+ * A session marked "active" but untouched for this long is reported as "idle".
+ * The turn lifecycle normally settles status on its own, so this only matters as
+ * a self-healing guard for sessions that crashed mid-turn (the settle never ran)
+ * or that were left "active" by an older build before the lifecycle existed.
+ * Comfortably longer than a normal agent turn so an in-progress turn is never
+ * mislabelled idle.
+ */
+const ACTIVE_STALE_MS = 10 * 60 * 1000;
+
+function effectiveStatus(record: HarnessSessionRecord): HarnessSessionRecord["status"] {
+  if (record.status !== "active") return record.status;
+  const updatedMs = Date.parse(record.updatedAt);
+  if (Number.isFinite(updatedMs) && Date.now() - updatedMs > ACTIVE_STALE_MS) {
+    return "idle";
+  }
+  return "active";
+}
+
 function toSession(record: HarnessSessionRecord): Session {
   return {
     id: record.sessionId,
@@ -140,7 +159,7 @@ function toSession(record: HarnessSessionRecord): Session {
     activeProvider: record.activeProvider,
     activeModel: record.activeModel,
     fallbackChain: record.fallbackChain,
-    status: record.status,
+    status: effectiveStatus(record),
   };
 }
 
@@ -150,6 +169,13 @@ export class Harness {
   readonly permissionEngine: PermissionEngine;
 
   private embeddingProviderPromise: Promise<EmbeddingResolutionResult> | null = null;
+
+  /**
+   * In-flight turn count per session. A session is "active" while this is > 0;
+   * when the last turn settles we return the session to "idle" (or "error").
+   * Guards against two overlapping turns racing the status back to idle.
+   */
+  private readonly inFlightTurns = new Map<string, number>();
 
   constructor(private readonly options: HarnessOptions) {
     this.bus = new SessionEventBus(options.store);
@@ -401,13 +427,49 @@ export class Harness {
       text: content,
     });
 
-    void this.runTurn(sessionId, session.tier, content, callerKind).catch((error: unknown) => {
-      const message = error instanceof Error ? error.message : String(error);
-      harnessLogger.warn("turn.failed", { sessionId, error: message });
-      this.bus.emit(sessionId, { kind: "error", code: "turn-failed", message });
-    });
+    this.beginTurn(sessionId);
+    void this.runTurn(sessionId, session.tier, content, callerKind)
+      .then(() => {
+        this.settleTurn(sessionId, null);
+      })
+      .catch((error: unknown) => {
+        const message = error instanceof Error ? error.message : String(error);
+        harnessLogger.warn("turn.failed", { sessionId, error: message });
+        this.bus.emit(sessionId, { kind: "error", code: "turn-failed", message });
+        this.settleTurn(sessionId, message);
+      });
 
     return { messageId: userMessage.messageId, started: true };
+  }
+
+  /** Mark a turn as in flight (the session is "active" while any turn runs). */
+  private beginTurn(sessionId: string): void {
+    this.inFlightTurns.set(sessionId, (this.inFlightTurns.get(sessionId) ?? 0) + 1);
+  }
+
+  /**
+   * A turn finished. When the last in-flight turn for a session settles, return
+   * the session to a resting state — "error" if this turn failed, otherwise
+   * "idle" — so a session never lingers as "active" once the agent stops working.
+   * Never resurrects a deleted or explicitly closed session.
+   */
+  private settleTurn(sessionId: string, errorMessage: string | null): void {
+    const remaining = (this.inFlightTurns.get(sessionId) ?? 1) - 1;
+    if (remaining > 0) {
+      this.inFlightTurns.set(sessionId, remaining);
+      return;
+    }
+    this.inFlightTurns.delete(sessionId);
+    try {
+      const existing = this.options.store.getHarnessSession(sessionId);
+      if (!existing || existing.status === "closed") return;
+      this.options.store.updateHarnessSession(sessionId, { status: errorMessage ? "error" : "idle" });
+    } catch (error) {
+      harnessLogger.warn("session.settle-failed", {
+        sessionId,
+        reason: error instanceof Error ? error.message : String(error),
+      });
+    }
   }
 
   private buildHistory(sessionId: string): CoreMessage[] {

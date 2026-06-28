@@ -62,6 +62,8 @@ import {
   SymbolsOfToolOutputSchema,
   TenantLeakAuditToolInputSchema,
   TenantLeakAuditToolOutputSchema,
+  OwaspAuditToolInputSchema,
+  OwaspAuditToolOutputSchema,
   ToolAnnotationsSchema,
   ToolHintsSchema,
   TraceFileToolInputSchema,
@@ -259,7 +261,7 @@ import { changePlanTool, flowMapTool, graphNeighborsTool, graphPathTool } from "
 import { importsCyclesTool, importsDepsTool, importsHotspotsTool, importsImpactTool } from "./imports/index.js";
 import { investigateTool, suggestTool } from "./investigation/index.js";
 import { makoHelpTool } from "./mako-help/index.js";
-import { tenantLeakAuditTool } from "./operators/index.js";
+import { owaspAuditTool, tenantLeakAuditTool } from "./operators/index.js";
 import { healthTrendTool, issuesNextTool, sessionHandoffTool } from "./project-intelligence/index.js";
 import type { ToolServiceOptions } from "./runtime.js";
 import { exportsOfTool, symbolsOfTool } from "./symbols/index.js";
@@ -401,6 +403,15 @@ export const TOOL_DEFINITIONS: readonly MakoToolDefinition[] = [
     inputSchema: TenantLeakAuditToolInputSchema,
     outputSchema: TenantLeakAuditToolOutputSchema,
     execute: (input, options) => tenantLeakAuditTool(input as never, options),
+  },
+  {
+    name: "owasp_audit",
+    category: "operator",
+    description: "Operator tool for OWASP Top 10 (2025) review: scan indexed TS/JS files for evidence-backed security issues mapped to OWASP categories (A01 broken access control, A02 misconfiguration, A04 crypto failures, A05 injection, A07 auth failures, A10 exceptional conditions) with CWE references and a direct_evidence/weak_signal honesty strength. Always returns a full 10-category coverage section, explicitly naming categories it does not statically check (A03 supply chain, A06 insecure design, A08 integrity, A09 logging). Advisory and heuristic — requires acknowledgeAdvisory:true; not a replacement for dedicated SAST/SCA. Read-only; does not persist findings.",
+    annotations: toolAnnotations("owasp_audit"),
+    inputSchema: OwaspAuditToolInputSchema,
+    outputSchema: OwaspAuditToolOutputSchema,
+    execute: (input, options) => owaspAuditTool(input as never, options),
   },
   {
     name: "session_handoff",
@@ -729,7 +740,7 @@ export const TOOL_DEFINITIONS: readonly MakoToolDefinition[] = [
   {
     name: "context_packet",
     category: "context",
-    description: "Context scout for coding agents: turn a messy request into ranked, source-labeled, readable context using deterministic providers first (bounded live quoted-literal search, files, routes, symbols, schema, import graph, centrality, hot hints). Reef-backed enrichments add working-tree overlay metadata and active findings; use risksMinConfidence to suppress low-confidence risk speculation. Set MAKO_REEF_BACKED=legacy for the one-release rollback path. Read-only; does not refresh the index. Use as the first-mile packet before normal harness read/search/edit loops.",
+    description: "Context scout for coding agents: turn a messy request into ranked, source-labeled, readable context using deterministic providers first (bounded live quoted-literal search, files, routes, symbols, schema, import graph, centrality, hot hints). Retrieval diagnostics expose providerExecutionMode, totalProviderDurationMs, slowestProvider, evidence gates, and executable follow-ups so agents can distinguish recall gaps from slow or incomplete provider lanes. Reef-backed enrichments add working-tree overlay metadata and active findings; use risksMinConfidence to suppress low-confidence risk speculation. Set MAKO_REEF_BACKED=legacy for the one-release rollback path. Read-only; does not refresh the index. Use as the first-mile packet before normal harness read/search/edit loops.",
     annotations: toolAnnotations("context_packet"),
     inputSchema: ContextPacketToolInputSchema,
     outputSchema: ContextPacketToolOutputSchema,
@@ -738,7 +749,7 @@ export const TOOL_DEFINITIONS: readonly MakoToolDefinition[] = [
   {
     name: "tool_batch",
     category: "context",
-    description: "Read-only batching wrapper for independent Mako lookups. The input schema only accepts batchable read-only tools; runtime also rejects mutation tools and recursive tool_batch calls defensively. Returns labeled sub-results with per-op duration. Use `verbosity: \"compact\"` or per-op `resultMode: \"summary\"` to return compact summaries instead of full payloads; per-op `resultMode: \"full\"` keeps the full output. Each sub-op's `projectId` is overridden with the parent batch's resolved project, so all ops run against one project. Use to reduce round-trips after a context_packet recommends several expansions.",
+    description: "Read-only batching wrapper for independent Mako lookups. The input schema only accepts batchable read-only tools; runtime also rejects mutation tools and recursive tool_batch calls defensively. With continueOnError=true, operations run with bounded concurrency while results preserve input order; tune maxConcurrency to trade latency against shared-store pressure. continueOnError=false keeps fail-fast sequential execution. Returns labeled sub-results with per-op duration plus summary latency metadata including totalOpDurationMs and slowestOp. Use `verbosity: \"compact\"` or per-op `resultMode: \"summary\"` to return compact summaries instead of full payloads; per-op `resultMode: \"full\"` keeps the full output. Each sub-op's `projectId` is overridden with the parent batch's resolved project, so all ops run against one project. Use to reduce round-trips after a context_packet recommends several expansions.",
     annotations: toolAnnotations("tool_batch"),
     inputSchema: ToolBatchInputSchema,
     outputSchema: ToolBatchToolOutputSchema,

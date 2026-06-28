@@ -1,5 +1,10 @@
 import assert from "node:assert/strict";
+import { mkdirSync, mkdtempSync, realpathSync, rmSync } from "node:fs";
+import os from "node:os";
+import path from "node:path";
+import { normalizePath, openGlobalStore } from "../../packages/store/src/index.ts";
 import { MakoToolError } from "../../packages/tools/src/errors.ts";
+import { resolveProject } from "../../packages/tools/src/runtime.ts";
 import { invokeTool } from "../../packages/tools/src/registry.ts";
 
 async function expectSuggestion(args: {
@@ -32,6 +37,68 @@ async function expectSuggestion(args: {
   }
 }
 
+async function expectProjectContextAttachGuidance(): Promise<void> {
+  const tmp = mkdtempSync(path.join(os.tmpdir(), "mako-project-context-"));
+  const stateHome = path.join(tmp, "state");
+  const projectRoot = path.join(tmp, "unattached project");
+  const nestedRoot = path.join(projectRoot, "packages", "app");
+  const nestedCwd = path.join(nestedRoot, "src");
+  mkdirSync(nestedCwd, { recursive: true });
+  mkdirSync(path.join(projectRoot, ".git"));
+
+  const globalStore = openGlobalStore({ homeDir: stateHome });
+  try {
+    await resolveProject(
+      {},
+      {
+        sharedGlobalStore: globalStore,
+        requestContext: {
+          meta: { cwd: nestedCwd },
+          getRoots: async () => [nestedRoot],
+        },
+      },
+    );
+    assert.fail("resolveProject should reject unmatched MCP roots/cwd");
+  } catch (error) {
+    assert.ok(error instanceof MakoToolError);
+    assert.equal(error.code, "missing_project_context");
+    assert.match(error.message, /MCP roots\/cwd did not match any attached Mako project/);
+    assert.match(error.message, /agentmako connect/);
+    assert.match(error.message, /--no-db/);
+
+    const expectedProjectRef = normalizePath(realpathSync(projectRoot));
+    assert.equal(error.details?.suggestedProjectRef, expectedProjectRef);
+    assert.equal(
+      error.details?.suggestedCommand,
+      `agentmako connect "${expectedProjectRef}" --no-db`,
+    );
+    assert.equal(
+      error.details?.suggestedAction,
+      "Run the suggested command from a terminal, then retry the MCP tool call.",
+    );
+
+    const unmatchedLocations = error.details?.unmatchedLocations;
+    assert.ok(Array.isArray(unmatchedLocations));
+    assert.ok(
+      unmatchedLocations.some(
+        (entry) =>
+          typeof entry === "object" &&
+          entry != null &&
+          !Array.isArray(entry) &&
+          entry.source === "meta_cwd" &&
+          entry.normalizedPath === normalizePath(realpathSync(nestedCwd)) &&
+          entry.exists === true &&
+          entry.suggestedProjectRoot === expectedProjectRef &&
+          entry.suggestedProjectRootReason === "git_root",
+      ),
+      "expected unmatched location details to include _meta.cwd and discovered project root",
+    );
+  } finally {
+    globalStore.close();
+    rmSync(tmp, { recursive: true, force: true });
+  }
+}
+
 async function main(): Promise<void> {
   await expectSuggestion({
     toolName: "file_facts",
@@ -57,6 +124,7 @@ async function main(): Promise<void> {
     received: "schemaName",
     expected: "schema",
   });
+  await expectProjectContextAttachGuidance();
 
   console.log("tool-validation-errors: PASS");
 }

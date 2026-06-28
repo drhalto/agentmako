@@ -80,6 +80,16 @@ export const RuntimeTelemetryReportGradeCountSchema = z.object({
   count: z.number().int().nonnegative(),
 }) satisfies z.ZodType<RuntimeTelemetryReportGradeCount>;
 
+export interface RuntimeTelemetryReportReasonCodeCount {
+  reasonCode: string;
+  count: number;
+}
+
+export const RuntimeTelemetryReportReasonCodeCountSchema = z.object({
+  reasonCode: z.string().min(1),
+  count: z.number().int().nonnegative(),
+}) satisfies z.ZodType<RuntimeTelemetryReportReasonCodeCount>;
+
 export interface RuntimeTelemetryReportToolOutput {
   toolName: "runtime_telemetry_report";
   projectId: string;
@@ -87,6 +97,7 @@ export interface RuntimeTelemetryReportToolOutput {
   byDecisionKind: RuntimeTelemetryReportDecisionKindCount[];
   byFamily: RuntimeTelemetryReportFamilyCount[];
   byGrade: RuntimeTelemetryReportGradeCount[];
+  byReasonCode: RuntimeTelemetryReportReasonCodeCount[];
   events: RuntimeUsefulnessEvent[];
   truncated: boolean;
   warnings: string[];
@@ -99,6 +110,7 @@ export const RuntimeTelemetryReportToolOutputSchema = z.object({
   byDecisionKind: z.array(RuntimeTelemetryReportDecisionKindCountSchema),
   byFamily: z.array(RuntimeTelemetryReportFamilyCountSchema),
   byGrade: z.array(RuntimeTelemetryReportGradeCountSchema),
+  byReasonCode: z.array(RuntimeTelemetryReportReasonCodeCountSchema),
   events: z.array(RuntimeUsefulnessEventSchema),
   truncated: z.boolean(),
   warnings: z.array(z.string()),

@@ -332,7 +332,34 @@ function compactRepoMapSummary(value: JsonObject): JsonObject | undefined {
   } satisfies JsonObject;
 }
 
-function compactContextMetadata(value: unknown): JsonObject | undefined {
+function compactSupportingSignal(value: unknown): JsonObject | undefined {
+  const signal = jsonRecord(value);
+  if (!signal) return undefined;
+  const out: JsonObject = {
+    source: stringValue(signal.source) ?? "",
+    strategy: stringValue(signal.strategy) ?? "",
+  };
+  const confidence = numberValue(signal.confidence);
+  if (confidence != null) out.confidence = confidence;
+  const score = numberValue(signal.score);
+  if (score != null) out.score = score;
+  for (const key of ["path", "symbolName", "routeKey", "databaseObjectName", "whyIncluded"]) {
+    const entry = stringValue(signal[key]);
+    if (entry) out[key] = entry;
+  }
+  for (const key of ["lineStart", "lineEnd"]) {
+    const entry = numberValue(signal[key]);
+    if (entry != null) out[key] = entry;
+  }
+  const metadata = compactContextMetadata(signal.metadata, { includeSupportingSignals: false });
+  if (metadata) out.metadata = metadata;
+  return out;
+}
+
+function compactContextMetadata(
+  value: unknown,
+  options: { includeSupportingSignals?: boolean } = {},
+): JsonObject | undefined {
   const record = jsonRecord(value);
   if (!record) return undefined;
   const out: JsonObject = {};
@@ -342,6 +369,7 @@ function compactContextMetadata(value: unknown): JsonObject | undefined {
     "graphRankMode",
     "graphRankDirection",
     "graphRankScore",
+    "graphTraversalMode",
     "focusRelation",
     "focusDistance",
     "dependencyDistance",
@@ -349,6 +377,7 @@ function compactContextMetadata(value: unknown): JsonObject | undefined {
     "corroboratedSignalCount",
     "corroborationBonus",
     "query",
+    "queryKind",
     "text",
     "column",
     "matchText",
@@ -366,6 +395,19 @@ function compactContextMetadata(value: unknown): JsonObject | undefined {
     }
     if (Array.isArray(entry)) {
       out[key] = jsonValues(entry).slice(0, 6);
+    }
+  }
+  if (options.includeSupportingSignals !== false) {
+    const supportingSignals = jsonArray(record.supportingSignals);
+    const compactedSignals = supportingSignals
+      .map(compactSupportingSignal)
+      .filter((signal): signal is JsonObject => Boolean(signal))
+      .slice(0, 4);
+    if (compactedSignals.length > 0) {
+      out.supportingSignals = {
+        count: supportingSignals.length,
+        top: compactedSignals,
+      };
     }
   }
   return Object.keys(out).length > 0 ? out : undefined;
@@ -409,6 +451,19 @@ function compactExpandableTool(value: unknown): JsonObject | undefined {
   };
 }
 
+function compactOmittedRequestedAnchor(value: unknown): JsonObject | undefined {
+  const anchor = jsonRecord(value);
+  if (!anchor) return undefined;
+  return {
+    kind: stringValue(anchor.kind) ?? "",
+    value: stringValue(anchor.value) ?? "",
+    reason: stringValue(anchor.reason) ?? "",
+    candidateId: stringValue(anchor.candidateId) ?? "",
+    score: numberValue(anchor.score) ?? 0,
+    ...(stringValue(anchor.path) ? { path: stringValue(anchor.path) } : {}),
+  };
+}
+
 function compactContextGraphSummary(value: unknown): JsonObject | undefined {
   const graph = jsonRecord(value);
   if (!graph) return undefined;
@@ -440,6 +495,27 @@ function compactContextGraphSummary(value: unknown): JsonObject | undefined {
       };
       const distance = numberValue(file.distance);
       if (distance != null) out.distance = distance;
+      const pathEvidence = jsonArray(file.pathEvidence)
+        .map(jsonRecord)
+        .filter((entry): entry is Record<string, unknown> => Boolean(entry))
+        .slice(0, 3)
+        .map((entry) => {
+          const evidence: JsonObject = {
+            anchorFile: stringValue(entry.anchorFile) ?? "",
+            targetFile: stringValue(entry.targetFile) ?? "",
+            relation: stringValue(entry.relation) ?? "",
+            distance: numberValue(entry.distance) ?? 0,
+            path: jsonValues(entry.path),
+            source: stringValue(entry.source) ?? "",
+            strategy: stringValue(entry.strategy) ?? "",
+            reason: stringValue(entry.reason) ?? "",
+          };
+          return evidence;
+        });
+      if (pathEvidence.length > 0) {
+        out.pathEvidence = pathEvidence;
+        out.pathEvidenceCount = numberValue(file.pathEvidenceCount) ?? pathEvidence.length;
+      }
       return out;
     }),
     edges: edges.slice(0, 8).map((edge) => {
@@ -485,6 +561,95 @@ function compactRequestCoverage(value: unknown): JsonObject | undefined {
   } satisfies JsonObject;
 }
 
+function compactMakoHelpStep(value: unknown): JsonObject | undefined {
+  const recipeStep = jsonRecord(value);
+  if (!recipeStep) return undefined;
+  return {
+    id: stringValue(recipeStep.id) ?? "",
+    phase: stringValue(recipeStep.phase) ?? "",
+    toolName: stringValue(recipeStep.toolName) ?? "",
+    title: stringValue(recipeStep.title) ?? "",
+    whenToUse: stringValue(recipeStep.whenToUse) ?? "",
+    suggestedArgs: asJsonObject(recipeStep.suggestedArgs) ?? {},
+    readOnly: booleanValue(recipeStep.readOnly) ?? true,
+    batchable: booleanValue(recipeStep.batchable) ?? false,
+  } satisfies JsonObject;
+}
+
+function compactRetrievalPlanGuide(value: unknown): JsonObject | undefined {
+  const guide = jsonRecord(value);
+  if (!guide) return undefined;
+  return {
+    sourceStepId: stringValue(guide.sourceStepId) ?? "",
+    planPath: stringValue(guide.planPath) ?? "",
+    recommendedToolsPath: stringValue(guide.recommendedToolsPath) ?? "",
+    recommendedFollowUpsPath: stringValue(guide.recommendedFollowUpsPath) ?? "",
+    expandableToolsPath: stringValue(guide.expandableToolsPath) ?? "",
+    requiredEvidencePath: stringValue(guide.requiredEvidencePath) ?? "",
+    evidenceGapsPath: stringValue(guide.evidenceGapsPath) ?? "",
+    preferToolBatch: booleanValue(guide.preferToolBatch) ?? false,
+    evidenceGate: stringValue(guide.evidenceGate) ?? "",
+    strategyActions: jsonArray(guide.strategyActions)
+      .map(jsonRecord)
+      .filter((action): action is Record<string, unknown> => Boolean(action))
+      .slice(0, 4)
+      .map((action) => ({
+        strategy: stringValue(action.strategy) ?? "",
+        action: stringValue(action.action) ?? "",
+      })),
+  } satisfies JsonObject;
+}
+
+function compactMakoHelpSummary(value: JsonObject): JsonObject | undefined {
+  if (value.toolName !== "mako_help") {
+    return undefined;
+  }
+
+  const steps = jsonArray(value.steps)
+    .map(compactMakoHelpStep)
+    .filter((recipeStep): recipeStep is JsonObject => Boolean(recipeStep));
+  const batchHint = jsonRecord(value.batchHint);
+  const batchArgs = jsonRecord(batchHint?.suggestedArgs);
+  const batchOps = jsonArray(batchArgs?.ops)
+    .map(jsonRecord)
+    .filter((op): op is Record<string, unknown> => Boolean(op));
+  const retrievalPlanGuide = compactRetrievalPlanGuide(value.retrievalPlanGuide);
+
+  return {
+    toolName: "mako_help",
+    task: stringValue(value.task) ?? "",
+    recipeId: stringValue(value.recipeId) ?? "",
+    summary: stringValue(value.summary) ?? "",
+    steps: {
+      count: steps.length,
+      top: steps.slice(0, 8),
+    },
+    batchHint: {
+      toolName: stringValue(batchHint?.toolName) ?? "tool_batch",
+      eligibleStepIds: jsonValues(batchHint?.eligibleStepIds),
+        suggestedArgs: {
+          verbosity: stringValue(batchArgs?.verbosity) ?? "",
+          continueOnError: booleanValue(batchArgs?.continueOnError) ?? true,
+          maxConcurrency: numberValue(batchArgs?.maxConcurrency) ?? 0,
+          ops: batchOps.slice(0, 8).map((op) => ({
+            label: stringValue(op.label) ?? "",
+            tool: stringValue(op.tool) ?? "",
+          resultMode: stringValue(op.resultMode) ?? "",
+        })),
+      },
+    },
+    ...(retrievalPlanGuide ? { retrievalPlanGuide } : { retrievalPlanGuide: null }),
+    notes: jsonValues(value.notes).slice(0, 8),
+  } satisfies JsonObject;
+}
+
+function withSourceHints(summary: JsonObject, value: JsonObject): JsonObject {
+  const hints = jsonValues(value._hints).slice(0, 8);
+  return hints.length > 0
+    ? { ...summary, _hints: hints }
+    : summary;
+}
+
 function compactContextPacketSummary(value: JsonObject): JsonObject | undefined {
   if (value.toolName !== "context_packet") {
     return undefined;
@@ -496,6 +661,8 @@ function compactContextPacketSummary(value: JsonObject): JsonObject | undefined 
   const indexFreshness = jsonRecord(value.indexFreshness);
   const evidenceQuality = jsonRecord(value.evidenceQuality);
   const retrievalDiagnostics = jsonRecord(value.retrievalDiagnostics);
+  const retrievalPlan = jsonRecord(retrievalDiagnostics?.retrievalPlan);
+  const retrievalEvidenceGate = jsonRecord(retrievalPlan?.evidenceGate);
   const graphSummary = compactContextGraphSummary(value.graphSummary);
   const requestCoverage = compactRequestCoverage(value.requestCoverage);
   const primaryContext = jsonArray(value.primaryContext)
@@ -577,8 +744,44 @@ function compactContextPacketSummary(value: JsonObject): JsonObject | undefined 
     ...(retrievalDiagnostics
       ? {
           retrievalDiagnostics: {
+            retrievalPlan: {
+              level: stringValue(retrievalPlan?.level) ?? "",
+              strategy: stringValue(retrievalPlan?.strategy) ?? "",
+              confidence: numberValue(retrievalPlan?.confidence) ?? 0,
+              signals: jsonValues(retrievalPlan?.signals).slice(0, 8),
+              evidenceGate: {
+                status: stringValue(retrievalEvidenceGate?.status) ?? "",
+                canAnswerFromPacket: booleanValue(retrievalEvidenceGate?.canAnswerFromPacket) ?? false,
+                canEditFromPacket: booleanValue(retrievalEvidenceGate?.canEditFromPacket) ?? false,
+                blockingReasons: jsonValues(retrievalEvidenceGate?.blockingReasons).slice(0, 8),
+                advisoryReasons: jsonValues(retrievalEvidenceGate?.advisoryReasons).slice(0, 8),
+              },
+              evidenceGaps: jsonArray(retrievalPlan?.evidenceGaps)
+                .map(jsonRecord)
+                .filter((gap): gap is Record<string, unknown> => Boolean(gap))
+                .slice(0, 8)
+                .map((gap) => ({
+                  kind: stringValue(gap.kind) ?? "",
+                  severity: stringValue(gap.severity) ?? "",
+                  message: stringValue(gap.message) ?? "",
+                  recommendedTools: jsonValues(gap.recommendedTools).slice(0, 4),
+                  anchors: jsonArray(gap.anchors)
+                    .map(compactOmittedRequestedAnchor)
+                    .filter((anchor): anchor is JsonObject => Boolean(anchor))
+                    .slice(0, 6),
+                })),
+              requiredEvidence: jsonValues(retrievalPlan?.requiredEvidence).slice(0, 8),
+              recommendedTools: jsonValues(retrievalPlan?.recommendedTools).slice(0, 8),
+              recommendedFollowUps: jsonArray(retrievalPlan?.recommendedFollowUps)
+                .map(compactExpandableTool)
+                .filter((tool): tool is JsonObject => Boolean(tool))
+                .slice(0, 8),
+              nextStep: stringValue(retrievalPlan?.nextStep) ?? "",
+            },
             providerRunCount: numberValue(retrievalDiagnostics.providerRunCount) ?? 0,
             providerCandidateCount: numberValue(retrievalDiagnostics.providerCandidateCount) ?? 0,
+            providerExecutionMode: stringValue(retrievalDiagnostics.providerExecutionMode) ?? "",
+            totalProviderDurationMs: numberValue(retrievalDiagnostics.totalProviderDurationMs) ?? 0,
             zeroCandidateProviders: jsonValues(retrievalDiagnostics.zeroCandidateProviders).slice(0, 8),
             failedProviders: jsonValues(retrievalDiagnostics.failedProviders).slice(0, 8),
             adaptiveSkippedProviders: jsonValues(retrievalDiagnostics.adaptiveSkippedProviders).slice(0, 8),
@@ -589,6 +792,7 @@ function compactContextPacketSummary(value: JsonObject): JsonObject | undefined 
               .map((miss) => {
                 const out: JsonObject = {
                   query: stringValue(miss.query) ?? "",
+                  queryKind: stringValue(miss.queryKind) ?? "quoted_text",
                   scope: stringValue(miss.scope) ?? "",
                 };
                 const scopePath = stringValue(miss.scopePath);
@@ -602,6 +806,7 @@ function compactContextPacketSummary(value: JsonObject): JsonObject | undefined 
       : {}),
     limits: {
       budgetTokens: numberValue(limits?.budgetTokens) ?? 0,
+      returnedTokenEstimate: numberValue(limits?.returnedTokenEstimate) ?? 0,
       maxPrimaryContext: numberValue(limits?.maxPrimaryContext) ?? 0,
       maxRelatedContext: numberValue(limits?.maxRelatedContext) ?? 0,
       providersRun: jsonValues(limits?.providersRun),
@@ -627,7 +832,16 @@ function compactContextPacketSummary(value: JsonObject): JsonObject | undefined 
         })),
       providersFailed: jsonValues(limits?.providersFailed),
       candidatesConsidered: numberValue(limits?.candidatesConsidered) ?? 0,
+      rankedCandidateCount: numberValue(limits?.rankedCandidateCount) ?? 0,
       candidatesReturned: numberValue(limits?.candidatesReturned) ?? 0,
+      selectionLimitHit: booleanValue(limits?.selectionLimitHit) ?? false,
+      candidatesOmittedByLimit: numberValue(limits?.candidatesOmittedByLimit) ?? 0,
+      requestedAnchorsOmitted: numberValue(limits?.requestedAnchorsOmitted) ?? 0,
+      omittedRequestedAnchors: jsonArray(limits?.omittedRequestedAnchors)
+        .map(compactOmittedRequestedAnchor)
+        .filter((anchor): anchor is JsonObject => Boolean(anchor))
+        .slice(0, 8),
+      supportingSignalsOmitted: numberValue(limits?.supportingSignalsOmitted) ?? 0,
     },
     warnings: jsonValues(value.warnings),
   } satisfies JsonObject;
@@ -635,11 +849,13 @@ function compactContextPacketSummary(value: JsonObject): JsonObject | undefined 
 
 function summarizeJsonObject(value: JsonObject): JsonObject {
   const reefAskSummary = compactReefAskSummary(value);
-  if (reefAskSummary) return reefAskSummary;
+  if (reefAskSummary) return withSourceHints(reefAskSummary, value);
   const repoMapSummary = compactRepoMapSummary(value);
-  if (repoMapSummary) return repoMapSummary;
+  if (repoMapSummary) return withSourceHints(repoMapSummary, value);
   const contextPacketSummary = compactContextPacketSummary(value);
-  if (contextPacketSummary) return contextPacketSummary;
+  if (contextPacketSummary) return withSourceHints(contextPacketSummary, value);
+  const makoHelpSummary = compactMakoHelpSummary(value);
+  if (makoHelpSummary) return withSourceHints(makoHelpSummary, value);
 
   const summary: JsonObject = {};
   for (const [key, entry] of Object.entries(value)) {
@@ -655,7 +871,7 @@ function summarizeJsonObject(value: JsonObject): JsonObject {
       summary[key] = { keys: Object.keys(entry).slice(0, 12) };
     }
   }
-  return summary;
+  return withSourceHints(summary, value);
 }
 
 function rejectedResult(
@@ -671,6 +887,28 @@ function rejectedResult(
     durationMs,
     error: { code, message },
   };
+}
+
+async function runBoundedConcurrentOps(
+  ops: readonly ToolBatchInput["ops"][number][],
+  maxConcurrency: number,
+  runOp: (op: ToolBatchInput["ops"][number]) => Promise<ToolBatchResult>,
+): Promise<ToolBatchResult[]> {
+  const results: Array<ToolBatchResult | undefined> = new Array(ops.length);
+  let nextIndex = 0;
+  const workerCount = Math.min(maxConcurrency, ops.length);
+  await Promise.all(
+    Array.from({ length: workerCount }, async () => {
+      for (;;) {
+        const index = nextIndex;
+        nextIndex += 1;
+        const op = ops[index];
+        if (!op) return;
+        results[index] = await runOp(op);
+      }
+    }),
+  );
+  return results.filter((result): result is ToolBatchResult => Boolean(result));
 }
 
 function emitToolBatchTelemetry(args: {
@@ -709,6 +947,12 @@ export async function toolBatchTool(
     const startedAtMs = Date.now();
     const maxOps = Math.min(input.maxOps ?? 8, input.ops.length);
     const ops = input.ops.slice(0, maxOps);
+    const continueOnError = input.continueOnError ?? true;
+    const executionMode: ToolBatchToolOutput["summary"]["executionMode"] = continueOnError ? "parallel" : "sequential";
+    const maxConcurrency = executionMode === "parallel"
+      ? Math.min(input.maxConcurrency ?? 8, ops.length)
+      : 1;
+    const concurrencyLimited = executionMode === "parallel" && ops.length > maxConcurrency;
     const warnings: string[] = [];
     if (input.ops.length > maxOps) {
       warnings.push(`truncated: ${input.ops.length - maxOps} operation(s) were skipped by maxOps.`);
@@ -716,43 +960,35 @@ export async function toolBatchTool(
 
     const { getToolDefinition } = await import("../tool-definitions.js");
     const { invokeTool } = await import("../registry.js");
-    const results: ToolBatchResult[] = [];
-    const continueOnError = input.continueOnError ?? true;
 
-    for (const op of ops) {
+    const runOp = async (op: ToolBatchInput["ops"][number]): Promise<ToolBatchResult> => {
       const opStartedAtMs = Date.now();
       if ((op.tool as string) === "tool_batch") {
-        results.push(rejectedResult(
+        return rejectedResult(
           op,
           Math.max(0, Date.now() - opStartedAtMs),
           "recursive_batch_rejected",
           "tool_batch cannot call itself.",
-        ));
-        if (!continueOnError) break;
-        continue;
+        );
       }
 
       const definition = getToolDefinition(op.tool);
       if (!definition) {
-        results.push(rejectedResult(
+        return rejectedResult(
           op,
           Math.max(0, Date.now() - opStartedAtMs),
           "unknown_tool",
           `Unknown tool: ${op.tool}`,
-        ));
-        if (!continueOnError) break;
-        continue;
+        );
       }
 
       if ("mutation" in definition.annotations) {
-        results.push(rejectedResult(
+        return rejectedResult(
           op,
           Math.max(0, Date.now() - opStartedAtMs),
           "mutation_rejected",
           `${op.tool} is a mutation tool and cannot be called from read-only tool_batch.`,
-        ));
-        if (!continueOnError) break;
-        continue;
+        );
       }
 
       try {
@@ -764,22 +1000,32 @@ export async function toolBatchTool(
         const result = asJsonObject(output);
         const summarizeResult = op.resultMode === "summary" ||
           (op.resultMode !== "full" && input.verbosity === "compact");
-        results.push({
+        return {
           label: op.label,
           tool: op.tool,
           ok: true,
           durationMs: Math.max(0, Date.now() - opStartedAtMs),
           ...(result && summarizeResult ? { resultSummary: summarizeJsonObject(result) } : {}),
           ...(result && !summarizeResult ? { result } : {}),
-        });
+        };
       } catch (error) {
-        results.push(rejectedResult(
+        return rejectedResult(
           op,
           Math.max(0, Date.now() - opStartedAtMs),
           "tool_error",
           error instanceof Error ? error.message : String(error),
-        ));
-        if (!continueOnError) break;
+        );
+      }
+    };
+
+    const results: ToolBatchResult[] = [];
+    if (continueOnError) {
+      results.push(...await runBoundedConcurrentOps(ops, maxConcurrency, runOp));
+    } else {
+      for (const op of ops) {
+        const result = await runOp(op);
+        results.push(result);
+        if (!result.ok) break;
       }
     }
 
@@ -790,6 +1036,16 @@ export async function toolBatchTool(
       result.error?.code === "unknown_tool"
     ).length;
     const failedOps = results.length - succeededOps;
+    const totalOpDurationMs = results.reduce((sum, result) => sum + result.durationMs, 0);
+    const slowestResult = [...results].sort((left, right) => right.durationMs - left.durationMs).at(0);
+    const slowestOp = slowestResult
+      ? {
+          label: slowestResult.label,
+          tool: slowestResult.tool,
+          durationMs: slowestResult.durationMs,
+          ok: slowestResult.ok,
+        }
+      : null;
 
     emitToolBatchTelemetry({
       projectStore,
@@ -810,6 +1066,11 @@ export async function toolBatchTool(
         failedOps,
         rejectedOps,
         durationMs: Math.max(0, Date.now() - startedAtMs),
+        totalOpDurationMs,
+        slowestOp,
+        executionMode,
+        maxConcurrency,
+        concurrencyLimited,
       },
       warnings,
     };

@@ -78,6 +78,9 @@ interface RankOptions {
   freshnessByPath: Map<string, IndexFreshnessDetail>;
   focusFiles: Set<string>;
   changedFiles: Set<string>;
+  focusSymbols: Set<string>;
+  focusRoutes: Set<string>;
+  focusDatabaseObjects: Set<string>;
   request?: string;
   intent?: ContextPacketIntent;
 }
@@ -85,15 +88,58 @@ interface RankOptions {
 export interface RankedContextCandidates {
   primaryContext: ContextPacketReadableCandidate[];
   relatedContext: ContextPacketReadableCandidate[];
+  /**
+   * Selected candidates with their supporting signals always attached,
+   * regardless of budget compaction. Request coverage / diagnostics derive
+   * "what was retrieved" from this so a signal stripped only to fit budgetTokens
+   * is not mis-reported as an uncovered anchor.
+   */
+  coverageContext: ContextPacketReadableCandidate[];
   candidatesConsidered: number;
+  rankedCandidateCount: number;
   candidatesReturned: number;
+  returnedTokenEstimate: number;
+  supportingSignalsOmitted: number;
+  selectionLimitHit: boolean;
+  candidatesOmittedByLimit: number;
+  requestedAnchorsOmitted: number;
+  omittedRequestedAnchors: RankedOmittedRequestedAnchor[];
   budgetExhausted: boolean;
+}
+
+export interface RankedOmittedRequestedAnchor {
+  kind: ContextPacketReadableCandidate["kind"];
+  value: string;
+  reason: "budget" | "selection_limit";
+  candidateId: string;
+  score: number;
+  path?: string;
 }
 
 interface MergeEntry {
   candidate: ContextPacketCandidateSeed;
   score: number;
   supportingSignals: JsonObject[];
+}
+
+interface RankedCandidateItem {
+  entry: MergeEntry;
+  bonus: number;
+  candidateSeed: ContextPacketCandidateSeed;
+  candidate: ContextPacketReadableCandidate;
+}
+
+interface SelectedCandidateItem {
+  item: RankedCandidateItem;
+  candidate: ContextPacketReadableCandidate;
+  tokenCost: number;
+  slot: "primary" | "related";
+}
+
+interface RequestedAnchorIdentity {
+  kind: ContextPacketReadableCandidate["kind"];
+  value: string;
+  priority: number;
 }
 
 function candidateKey(candidate: ContextPacketCandidateSeed): string {
@@ -168,6 +214,7 @@ function compactSignalMetadata(metadata: JsonObject | undefined): JsonObject | u
     "graphRankMode",
     "graphRankDirection",
     "graphRankScore",
+    "graphTraversalMode",
     "focusRelation",
     "focusDistance",
     "dependencyDistance",
@@ -175,6 +222,7 @@ function compactSignalMetadata(metadata: JsonObject | undefined): JsonObject | u
     "graphPersonalizationSeedCount",
     "graphSeedSources",
     "seedPath",
+    "queryKind",
     "from",
     "target",
     "specifier",
@@ -330,11 +378,8 @@ function scoreCandidate(
   score += SOURCE_WEIGHT[candidate.source] ?? 0;
   score += STRATEGY_WEIGHT[candidate.strategy] ?? 0;
   score += candidate.baseScore ?? 0;
-  // Only path-bearing focus signals get a ranking boost here. focusSymbols /
-  // focusRoutes / focusDatabaseObjects are already injected as provider
-  // search terms, so the symbol/route/schema providers will surface them as
-  // exact_match candidates with their natural source/strategy weight — no
-  // separate boost is needed.
+  // Non-file anchors are injected as provider search terms and then preserved
+  // during final selection, so they do not need a separate score boost here.
   if (candidate.path && options.focusFiles.has(candidate.path)) score += 70;
   if (candidate.path && options.changedFiles.has(candidate.path)) score += 55;
   if (candidate.lineStart != null) score += 4;
@@ -380,6 +425,201 @@ function estimateCandidateTokens(candidate: ContextPacketReadableCandidate): num
   return Math.max(1, Math.ceil(JSON.stringify(candidate).length / CHAR_PER_TOKEN));
 }
 
+function candidateSupportingSignalCount(candidate: ContextPacketReadableCandidate): number {
+  const signals = candidate.metadata?.supportingSignals;
+  return Array.isArray(signals) ? signals.length : 0;
+}
+
+function stringMetadata(value: unknown): string | undefined {
+  return typeof value === "string" && value.trim().length > 0 ? value : undefined;
+}
+
+function normalizeLoose(value: string): string {
+  return value.trim().toLowerCase();
+}
+
+function normalizeRouteAnchor(value: string): string {
+  return normalizeLoose(value)
+    .replace(/^nextjs:/, "")
+    .replace(/^(get|post|put|patch|delete|options|head):/, "$1 ")
+    .replace(/\s+/g, " ");
+}
+
+function normalizeDatabaseObjectAnchor(value: string): string {
+  return normalizeLoose(value).replace(/["'`]/g, "");
+}
+
+function metadataString(value: unknown): string | undefined {
+  return typeof value === "string" && value.trim().length > 0 ? value : undefined;
+}
+
+function graphSeedPath(item: RankedCandidateItem): string | undefined {
+  if (item.candidate.source !== "import_graph_provider" && item.candidate.strategy !== "deterministic_graph") {
+    return undefined;
+  }
+  return metadataString(item.candidate.metadata?.seedPath);
+}
+
+function diversifyGraphSeededCandidates(
+  ranked: readonly RankedCandidateItem[],
+): RankedCandidateItem[] {
+  const graphGroups = new Map<string, RankedCandidateItem[]>();
+  const graphSeedOrder: string[] = [];
+  for (const item of ranked) {
+    const seedPath = graphSeedPath(item);
+    if (!seedPath) continue;
+    const group = graphGroups.get(seedPath);
+    if (group) {
+      group.push(item);
+    } else {
+      graphGroups.set(seedPath, [item]);
+      graphSeedOrder.push(seedPath);
+    }
+  }
+
+  if (graphGroups.size <= 1) return [...ranked];
+
+  const diversifiedGraphItems: RankedCandidateItem[] = [];
+  while ([...graphGroups.values()].some((group) => group.length > 0)) {
+    const heads = graphSeedOrder
+      .flatMap((seedPath) => {
+        const group = graphGroups.get(seedPath) ?? [];
+        const head = group[0];
+        return head ? [{ seedPath, head }] : [];
+      })
+      .sort((left, right) =>
+        right.head.candidate.score - left.head.candidate.score ||
+        graphSeedOrder.indexOf(left.seedPath) - graphSeedOrder.indexOf(right.seedPath)
+      );
+
+    for (const { seedPath } of heads) {
+      const group = graphGroups.get(seedPath);
+      const next = group?.shift();
+      if (next) diversifiedGraphItems.push(next);
+    }
+  }
+
+  const graphQueue = [...diversifiedGraphItems];
+  return ranked.map((item) => graphSeedPath(item) ? graphQueue.shift() ?? item : item);
+}
+
+function requestedFileAnchorIdentity(
+  item: RankedCandidateItem,
+  options: RankOptions,
+): RequestedAnchorIdentity | undefined {
+  const filePath = item.candidate.path;
+  if (!filePath) return undefined;
+  if (options.changedFiles.has(filePath)) return { kind: "file", value: filePath, priority: 0 };
+  if (options.focusFiles.has(filePath)) return { kind: "file", value: filePath, priority: 1 };
+  return undefined;
+}
+
+function symbolAnchorIdentity(
+  candidate: ContextPacketReadableCandidate,
+  options: RankOptions,
+): RequestedAnchorIdentity | undefined {
+  const symbolName = candidate.symbolName;
+  if (!symbolName || !options.focusSymbols.has(normalizeLoose(symbolName))) return undefined;
+  return { kind: "symbol", value: symbolName, priority: 2 };
+}
+
+function routeAnchorIdentity(
+  candidate: ContextPacketReadableCandidate,
+  options: RankOptions,
+): RequestedAnchorIdentity | undefined {
+  const routeValues = [
+    candidate.routeKey,
+    stringMetadata(candidate.metadata?.pattern),
+  ].filter((value): value is string => Boolean(value));
+  for (const raw of routeValues) {
+    const route = normalizeRouteAnchor(raw);
+    const matched = [...options.focusRoutes].find((focusRoute) =>
+      route === focusRoute || route.includes(focusRoute) || focusRoute.includes(route)
+    );
+    if (matched) return { kind: "route", value: matched, priority: 3 };
+  }
+  return undefined;
+}
+
+function databaseObjectAnchorIdentity(
+  candidate: ContextPacketReadableCandidate,
+  options: RankOptions,
+): RequestedAnchorIdentity | undefined {
+  const objectValues = [
+    candidate.databaseObjectName,
+    stringMetadata(candidate.metadata?.schemaObject),
+  ].filter((value): value is string => Boolean(value));
+  for (const raw of objectValues) {
+    const objectName = normalizeDatabaseObjectAnchor(raw);
+    const matched = [...options.focusDatabaseObjects].find((focusObject) =>
+      objectName === focusObject ||
+      objectName.endsWith(`.${focusObject}`) ||
+      focusObject.endsWith(`.${objectName}`)
+    );
+    if (matched) return { kind: "database_object", value: matched, priority: 4 };
+  }
+  return undefined;
+}
+
+function requestedAnchorIdentity(
+  item: RankedCandidateItem,
+  options: RankOptions,
+): RequestedAnchorIdentity | undefined {
+  return requestedFileAnchorIdentity(item, options) ??
+    symbolAnchorIdentity(item.candidate, options) ??
+    routeAnchorIdentity(item.candidate, options) ??
+    databaseObjectAnchorIdentity(item.candidate, options);
+}
+
+function requestedAnchorIdentityKey(identity: RequestedAnchorIdentity): string {
+  return `${identity.kind}:${normalizeLoose(identity.value)}`;
+}
+
+function requestedAnchorPriority(item: RankedCandidateItem, options: RankOptions): number {
+  return requestedAnchorIdentity(item, options)?.priority ?? 5;
+}
+
+function prioritizeRequestedAnchors(
+  ranked: readonly RankedCandidateItem[],
+  options: RankOptions,
+): RankedCandidateItem[] {
+  return [...ranked].sort((left, right) =>
+    requestedAnchorPriority(left, options) - requestedAnchorPriority(right, options)
+  );
+}
+
+function omittedRequestedAnchors(args: {
+  ranked: readonly RankedCandidateItem[];
+  selected: readonly SelectedCandidateItem[];
+  options: RankOptions;
+  reason: RankedOmittedRequestedAnchor["reason"];
+}): RankedOmittedRequestedAnchor[] {
+  const selectedAnchors = new Set<string>();
+  for (const selectedItem of args.selected) {
+    const identity = requestedAnchorIdentity(selectedItem.item, args.options);
+    if (identity) selectedAnchors.add(requestedAnchorIdentityKey(identity));
+  }
+
+  const omitted: RankedOmittedRequestedAnchor[] = [];
+  const seen = new Set<string>();
+  for (const item of args.ranked) {
+    const identity = requestedAnchorIdentity(item, args.options);
+    if (!identity) continue;
+    const key = requestedAnchorIdentityKey(identity);
+    if (selectedAnchors.has(key) || seen.has(key)) continue;
+    seen.add(key);
+    omitted.push({
+      kind: identity.kind,
+      value: identity.value,
+      reason: args.reason,
+      candidateId: item.candidate.id,
+      score: item.candidate.score,
+      ...(item.candidate.path ? { path: item.candidate.path } : {}),
+    });
+  }
+  return omitted;
+}
+
 export function rankContextCandidates(
   candidates: readonly ContextPacketCandidateSeed[],
   options: RankOptions,
@@ -409,7 +649,7 @@ export function rankContextCandidates(
     existing.supportingSignals.push(supportingSignal(candidate, score));
   }
 
-  const ranked = [...merged.values()]
+  const scoreRanked = [...merged.values()]
     .map((entry) => {
       const bonus = corroborationBonus(entry);
       const candidate = bonus > 0
@@ -422,40 +662,36 @@ export function rankContextCandidates(
         candidate: normalizeCandidate(candidate, options),
       };
     })
-    .filter((item): item is {
-      entry: MergeEntry;
-      bonus: number;
-      candidateSeed: ContextPacketCandidateSeed;
-      candidate: ContextPacketReadableCandidate;
-    } => item.candidate != null)
+    .filter((item): item is RankedCandidateItem => item.candidate != null)
     .sort((left, right) => right.candidate.score - left.candidate.score || left.candidate.id.localeCompare(right.candidate.id));
+  const graphDiversified = diversifyGraphSeededCandidates(scoreRanked);
+  const ranked = prioritizeRequestedAnchors(graphDiversified, options);
 
   const primaryContext: ContextPacketReadableCandidate[] = [];
   const relatedContext: ContextPacketReadableCandidate[] = [];
+  const selected: SelectedCandidateItem[] = [];
   let usedTokens = 0;
   let budgetExhausted = false;
+  let supportingSignalsOmitted = 0;
 
   for (const item of ranked) {
     const candidate = item.candidate;
     const tokenCost = estimateCandidateTokens(candidate);
-    if (usedTokens + tokenCost > options.budgetTokens && primaryContext.length > 0) {
+    if (usedTokens + tokenCost > options.budgetTokens) {
       budgetExhausted = true;
-      break;
+      if (selected.length > 0) break;
     }
 
-    const candidateWithSupportingSignals = normalizeCandidate(
-      attachSupportingSignals(item.candidateSeed, item.entry.supportingSignals, item.bonus),
-      options,
-    ) ?? candidate;
-
     if (primaryContext.length < options.maxPrimaryContext) {
-      primaryContext.push(candidateWithSupportingSignals);
+      selected.push({ item, candidate, tokenCost, slot: "primary" });
+      primaryContext.push(candidate);
       usedTokens += tokenCost;
       continue;
     }
 
     if (relatedContext.length < options.maxRelatedContext) {
-      relatedContext.push(candidateWithSupportingSignals);
+      selected.push({ item, candidate, tokenCost, slot: "related" });
+      relatedContext.push(candidate);
       usedTokens += tokenCost;
       continue;
     }
@@ -463,11 +699,69 @@ export function rankContextCandidates(
     break;
   }
 
+  const maxSelectableCandidates = options.maxPrimaryContext + options.maxRelatedContext;
+  const selectionLimitHit = selected.length >= maxSelectableCandidates && selected.length < ranked.length;
+  const candidatesOmittedByLimit = selectionLimitHit ? ranked.length - selected.length : 0;
+  const omittedAnchorReason: RankedOmittedRequestedAnchor["reason"] = budgetExhausted
+    ? "budget"
+    : "selection_limit";
+  const omittedAnchors = omittedRequestedAnchors({
+    ranked,
+    selected,
+    options,
+    reason: omittedAnchorReason,
+  });
+
+  primaryContext.length = 0;
+  relatedContext.length = 0;
+  const coverageContext: ContextPacketReadableCandidate[] = [];
+  for (const selectedItem of selected) {
+    const candidateWithSupportingSignals = normalizeCandidate(
+      attachSupportingSignals(
+        selectedItem.item.candidateSeed,
+        selectedItem.item.entry.supportingSignals,
+        selectedItem.item.bonus,
+      ),
+      options,
+    ) ?? selectedItem.candidate;
+    // Coverage reflects retrieval, not the budget-trimmed payload, so always
+    // record the enriched candidate even when its signals are omitted below.
+    coverageContext.push(candidateWithSupportingSignals);
+    const enrichedTokenCost = estimateCandidateTokens(candidateWithSupportingSignals);
+    const extraTokenCost = enrichedTokenCost - selectedItem.tokenCost;
+    const supportingSignalCount = candidateSupportingSignalCount(candidateWithSupportingSignals);
+    const omitSupportingSignals =
+      supportingSignalCount > 0 &&
+      extraTokenCost > 0 &&
+      usedTokens + extraTokenCost > options.budgetTokens;
+    const finalCandidate = omitSupportingSignals ? selectedItem.candidate : candidateWithSupportingSignals;
+    if (omitSupportingSignals) {
+      supportingSignalsOmitted += supportingSignalCount;
+    }
+    if (finalCandidate === candidateWithSupportingSignals) {
+      usedTokens += Math.max(0, extraTokenCost);
+    }
+
+    if (selectedItem.slot === "primary") {
+      primaryContext.push(finalCandidate);
+    } else {
+      relatedContext.push(finalCandidate);
+    }
+  }
+
   return {
     primaryContext,
     relatedContext,
+    coverageContext,
     candidatesConsidered: candidates.length,
+    rankedCandidateCount: ranked.length,
     candidatesReturned: primaryContext.length + relatedContext.length,
+    returnedTokenEstimate: usedTokens,
+    supportingSignalsOmitted,
+    selectionLimitHit,
+    candidatesOmittedByLimit,
+    requestedAnchorsOmitted: omittedAnchors.length,
+    omittedRequestedAnchors: omittedAnchors,
     budgetExhausted,
   };
 }

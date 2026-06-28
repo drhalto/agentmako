@@ -9,7 +9,7 @@ import type {
 } from "../../packages/contracts/src/index.ts";
 import { captureRuntimeUsefulnessForToolInvocation } from "../../packages/tools/src/runtime-telemetry/index.ts";
 import { invokeTool } from "../../packages/tools/src/registry.ts";
-import { openGlobalStore } from "../../packages/store/src/index.ts";
+import { openGlobalStore, openProjectStore } from "../../packages/store/src/index.ts";
 
 function seedProject(projectRoot: string, projectId: string): void {
   const globalStore = openGlobalStore();
@@ -139,6 +139,27 @@ async function main(): Promise<void> {
       requestId: "req_3",
       options: {},
     });
+    const projectStore = openProjectStore({ projectRoot: tmpRoot });
+    try {
+      projectStore.insertUsefulnessEvent({
+        projectId,
+        requestId: "req_reason_codes",
+        decisionKind: "packet_usefulness",
+        family: "context_packet",
+        toolName: "context_packet",
+        grade: "partial",
+        reasonCodes: [
+          "retrieval_level_issue_to_edit_localization",
+          "retrieval_strategy_entity_lookup",
+          "evidence_gate_follow_up_recommended",
+          "evidence_gap_edit_localization_advisory",
+          "recommended_followups_available",
+        ],
+        reason: "context_packet retrieval telemetry fixture",
+      });
+    } finally {
+      projectStore.close();
+    }
 
     // --- Unfiltered report returns aggregates + events ---
 
@@ -180,6 +201,30 @@ async function main(): Promise<void> {
         (row) => row.decisionKind === "wrapper_usefulness",
       )?.count;
       assert.equal(wrapperCount, 2, "two tool_plane wrapper events seeded (one per artifact call)");
+
+      const packetCount = result.byDecisionKind.find(
+        (row) => row.decisionKind === "packet_usefulness",
+      )?.count;
+      assert.equal(packetCount, 1, "one context_packet event seeded");
+
+      assert.ok(
+        result.byReasonCode.some((row) =>
+          row.reasonCode === "evidence_gate_follow_up_recommended" && row.count === 1
+        ),
+        "byReasonCode aggregates retrieval evidence-gate reason codes",
+      );
+      assert.ok(
+        result.byReasonCode.some((row) =>
+          row.reasonCode === "retrieval_strategy_entity_lookup" && row.count === 1
+        ),
+        "byReasonCode aggregates retrieval strategy reason codes",
+      );
+      assert.ok(
+        result.byReasonCode.some((row) =>
+          row.reasonCode === "evidence_gap_edit_localization_advisory" && row.count === 1
+        ),
+        "byReasonCode aggregates typed retrieval evidence-gap reason codes",
+      );
 
       // Events come back ordered by capturedAt DESC.
       for (let i = 1; i < result.events.length; i++) {
@@ -285,6 +330,10 @@ async function main(): Promise<void> {
         familySum,
         paged.eventsInWindow,
         "sum(byFamily.count) === eventsInWindow",
+      );
+      assert.ok(
+        paged.byReasonCode.some((row) => row.reasonCode === "evidence_gate_follow_up_recommended"),
+        "byReasonCode stays populated even when the event list is paged",
       );
     }
 

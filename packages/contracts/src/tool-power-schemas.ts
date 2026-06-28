@@ -14,6 +14,7 @@ import type {
   InvestigationCommonInput,
   SuggestResult,
 } from "./investigation.js";
+import type { OwaspAuditResult, OwaspCategoryId } from "./operators.js";
 import type { TenantLeakAuditResult } from "./operators.js";
 import type {
   HealthTrendResult,
@@ -36,6 +37,7 @@ import {
   InvestigationCommonInputSchema,
   SuggestResultSchema,
 } from "./investigation.js";
+import { OwaspAuditResultSchema, OwaspCategoryIdSchema } from "./operators.js";
 import { TenantLeakAuditResultSchema } from "./operators.js";
 import {
   HealthTrendResultSchema,
@@ -193,6 +195,36 @@ export const TenantLeakAuditToolOutputSchema = z.object({
   projectId: z.string().min(1),
   result: TenantLeakAuditResultSchema,
 }) satisfies z.ZodType<TenantLeakAuditToolOutput>;
+
+export interface OwaspAuditToolInput extends ProjectLocatorInput {
+  acknowledgeAdvisory: true;
+  freshen?: boolean;
+  categories?: OwaspCategoryId[];
+  includeFullResults?: boolean;
+  maxPerSection?: number;
+  maxFiles?: number;
+}
+
+export const OwaspAuditToolInputSchema = ProjectLocatorInputObjectSchema.extend({
+  acknowledgeAdvisory: z.literal(true),
+  freshen: z.boolean().optional(),
+  categories: z.array(OwaspCategoryIdSchema).min(1).optional(),
+  includeFullResults: z.boolean().optional(),
+  maxPerSection: z.number().int().positive().max(500).optional(),
+  maxFiles: z.number().int().positive().max(20000).optional(),
+}).strict() satisfies z.ZodType<OwaspAuditToolInput>;
+
+export interface OwaspAuditToolOutput {
+  toolName: "owasp_audit";
+  projectId: string;
+  result: OwaspAuditResult;
+}
+
+export const OwaspAuditToolOutputSchema = z.object({
+  toolName: z.literal("owasp_audit"),
+  projectId: z.string().min(1),
+  result: OwaspAuditResultSchema,
+}) satisfies z.ZodType<OwaspAuditToolOutput>;
 
 export interface SessionHandoffToolInput extends ProjectLocatorInput {
   limit?: number;

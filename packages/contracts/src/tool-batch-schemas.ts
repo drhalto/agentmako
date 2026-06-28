@@ -17,6 +17,7 @@ export const TOOL_BATCH_TOOL_NAMES = [
   "flow_map",
   "change_plan",
   "tenant_leak_audit",
+  "owasp_audit",
   "health_trend",
   "issues_next",
   "session_handoff",
@@ -102,6 +103,7 @@ export interface ToolBatchInput extends ProjectLocatorInput {
   ops: ToolBatchOperation[];
   continueOnError?: boolean;
   maxOps?: number;
+  maxConcurrency?: number;
   verbosity?: "full" | "compact";
 }
 
@@ -116,6 +118,7 @@ export const ToolBatchInputSchema = ProjectLocatorInputObjectSchema.extend({
   ops: z.array(ToolBatchOperationSchema).min(1).max(20),
   continueOnError: z.boolean().optional(),
   maxOps: z.number().int().min(1).max(20).optional(),
+  maxConcurrency: z.number().int().min(1).max(20).optional(),
   verbosity: z.enum(["full", "compact"]).optional(),
 }) satisfies z.ZodType<ToolBatchInput>;
 
@@ -157,6 +160,16 @@ export interface ToolBatchToolOutput {
     failedOps: number;
     rejectedOps: number;
     durationMs: number;
+    totalOpDurationMs: number;
+    slowestOp: {
+      label: string;
+      tool: ToolBatchToolName;
+      durationMs: number;
+      ok: boolean;
+    } | null;
+    executionMode: "parallel" | "sequential";
+    maxConcurrency: number;
+    concurrencyLimited: boolean;
   };
   warnings: string[];
 }
@@ -173,6 +186,16 @@ export const ToolBatchToolOutputSchema = z.object({
     failedOps: z.number().int().nonnegative(),
     rejectedOps: z.number().int().nonnegative(),
     durationMs: z.number().int().nonnegative(),
+    totalOpDurationMs: z.number().int().nonnegative(),
+    slowestOp: z.object({
+      label: z.string().min(1),
+      tool: ToolBatchToolNameSchema,
+      durationMs: z.number().int().nonnegative(),
+      ok: z.boolean(),
+    }).nullable(),
+    executionMode: z.enum(["parallel", "sequential"]),
+    maxConcurrency: z.number().int().min(1).max(20),
+    concurrencyLimited: z.boolean(),
   }),
   warnings: z.array(z.string().min(1)),
 }) satisfies z.ZodType<ToolBatchToolOutput>;

@@ -2,7 +2,7 @@ import { randomUUID } from "node:crypto";
 import { McpServer, type RegisteredTool } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
 import { ListRootsResultSchema, isInitializeRequest } from "@modelcontextprotocol/sdk/types.js";
-import type { AttachedProject } from "@mako-ai/contracts";
+import type { AttachedProject, JsonObject } from "@mako-ai/contracts";
 import { ACTION_TOOLS } from "@mako-ai/harness-tools";
 import {
   createMcpProgressReporter,
@@ -17,6 +17,7 @@ import {
   type ToolSearchCatalogEntry,
   coerceDeferredInput,
   getToolDefinition,
+  isMakoToolError,
   rankToolSearchEntries,
   withToolHintsSchema,
 } from "@mako-ai/tools";
@@ -72,6 +73,25 @@ const AuthPathMcpInputSchema = z.object({
 });
 
 type SendNotification = (notification: unknown) => Promise<void> | void;
+
+interface McpToolErrorOutput {
+  ok: false;
+  toolName: string;
+  requestId: string;
+  error: {
+    code: string;
+    message: string;
+    statusCode: number;
+    details?: JsonObject;
+  };
+  _hints: string[];
+}
+
+interface MakoToolErrorLike extends Error {
+  statusCode: number;
+  code: string;
+  details?: JsonObject;
+}
 
 function getProgressToken(meta: Record<string, unknown> | undefined): string | number | undefined {
   const token = meta?.progressToken;
@@ -141,6 +161,76 @@ function formatMcpInputKeys(keys: readonly string[]): string {
   const visible = keys.slice(0, 16).map((key) => `"${key}"`);
   const remaining = keys.length - visible.length;
   return remaining > 0 ? `${visible.join(", ")}, +${remaining} more` : visible.join(", ");
+}
+
+function isJsonObject(value: unknown): value is JsonObject {
+  return value != null && typeof value === "object" && !Array.isArray(value);
+}
+
+function isMakoToolErrorLike(error: unknown): error is MakoToolErrorLike {
+  if (isMakoToolError(error)) {
+    return true;
+  }
+
+  if (!(error instanceof Error)) {
+    return false;
+  }
+
+  const candidate = error as Error & {
+    statusCode?: unknown;
+    code?: unknown;
+    details?: unknown;
+  };
+  return (
+    typeof candidate.statusCode === "number" &&
+    typeof candidate.code === "string" &&
+    (candidate.details === undefined || isJsonObject(candidate.details))
+  );
+}
+
+function createMcpToolErrorHints(error: MakoToolErrorLike): string[] {
+  const hints: string[] = [];
+  const suggestedCommand = typeof error.details?.suggestedCommand === "string"
+    ? error.details.suggestedCommand
+    : undefined;
+
+  if (suggestedCommand) {
+    hints.push(`Run \`${suggestedCommand}\`, then retry the MCP tool call.`);
+  }
+  if (error.code === "missing_project_context") {
+    hints.push("Pass `projectId`/`projectRef`, or attach the workspace before retrying project-scoped tools.");
+  }
+  if (error.code === "invalid_tool_input") {
+    hints.push("Fix the tool arguments using `structuredContent.error.details` before retrying.");
+  }
+  if (error.details) {
+    hints.push("Inspect `structuredContent.error.details` for machine-readable recovery metadata.");
+  }
+
+  return hints.slice(0, 8);
+}
+
+function createMcpToolErrorOutput(
+  toolName: string,
+  requestId: string,
+  error: MakoToolErrorLike,
+): McpToolErrorOutput {
+  const errorPayload: McpToolErrorOutput["error"] = {
+    code: error.code,
+    message: error.message,
+    statusCode: error.statusCode,
+  };
+  if (error.details) {
+    errorPayload.details = error.details;
+  }
+
+  return {
+    ok: false,
+    toolName,
+    requestId,
+    error: errorPayload,
+    _hints: createMcpToolErrorHints(error),
+  };
 }
 
 export interface McpSession {
@@ -244,42 +334,58 @@ export function createMcpServer(
           extra,
           agentClient,
         });
-        const output = await api.callTool(
-          tool.name,
-          args,
-          {
-            requestId,
-            sessionProjectId: session?.activeProjectId,
-            meta,
-            getRoots: async () => {
-              try {
-                const response = await extra.sendRequest({ method: "roots/list" }, ListRootsResultSchema);
-                return response.roots
-                  .map((root) => rootUriToPath(root.uri))
-                  .filter((rootPath): rootPath is string => rootPath != null);
-              } catch {
-                return [];
-              }
+        try {
+          const output = await api.callTool(
+            tool.name,
+            args,
+            {
+              requestId,
+              sessionProjectId: session?.activeProjectId,
+              meta,
+              getRoots: async () => {
+                if (!server.server.getClientCapabilities()?.roots) {
+                  return [];
+                }
+                try {
+                  const response = await extra.sendRequest({ method: "roots/list" }, ListRootsResultSchema);
+                  return response.roots
+                    .map((root) => rootUriToPath(root.uri))
+                    .filter((rootPath): rootPath is string => rootPath != null);
+                } catch {
+                  return [];
+                }
+              },
+              onProjectResolved: async (project: AttachedProject) => {
+                if (session) {
+                  session.activeProjectId = project.projectId;
+                  await session.indexRefreshCoordinator?.setActiveProject(project).catch((error) => {
+                    console.error(
+                      `[mako-mcp] index watcher failed: ${
+                        error instanceof Error ? error.message : String(error)
+                      }`,
+                    );
+                  });
+                }
+              },
             },
-            onProjectResolved: async (project: AttachedProject) => {
-              if (session) {
-                session.activeProjectId = project.projectId;
-                await session.indexRefreshCoordinator?.setActiveProject(project).catch((error) => {
-                  console.error(
-                    `[mako-mcp] index watcher failed: ${
-                      error instanceof Error ? error.message : String(error)
-                    }`,
-                  );
-                });
-              }
-            },
-          },
-          { progressReporter },
-        );
-        return {
-          content: [{ type: "text", text: JSON.stringify(output, null, 2) }],
-          structuredContent: output as unknown as Record<string, unknown>,
-        };
+            { progressReporter },
+          );
+          return {
+            content: [{ type: "text", text: JSON.stringify(output, null, 2) }],
+            structuredContent: output as unknown as Record<string, unknown>,
+          };
+        } catch (error) {
+          if (!isMakoToolErrorLike(error)) {
+            throw error;
+          }
+
+          const output = createMcpToolErrorOutput(tool.name, requestId, error);
+          return {
+            content: [{ type: "text", text: JSON.stringify(output, null, 2) }],
+            structuredContent: output as unknown as Record<string, unknown>,
+            isError: true,
+          };
+        }
       },
     );
     trackAgentMetadataTool(registeredTool, toolInfo);

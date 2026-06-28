@@ -2,6 +2,7 @@ import type {
   ContextPacketGraphEdgeRelation,
   ContextPacketGraphSummary,
   ContextPacketGraphFileRelation,
+  ContextPacketGraphPathEvidence,
   ContextPacketIntent,
   ContextPacketReadableCandidate,
   ContextPacketSource,
@@ -13,6 +14,8 @@ import type {
 const MAX_GRAPH_FILES = 16;
 const MAX_GRAPH_EDGES = 32;
 const MAX_REASONS_PER_FILE = 4;
+const MAX_PATH_EVIDENCE_PER_FILE = 3;
+const MAX_GRAPH_PATH_LENGTH = 8;
 
 const CONTEXT_PACKET_SOURCES = new Set<ContextPacketSource>([
   "live_text_provider",
@@ -47,6 +50,7 @@ interface FileAccumulator {
   score: number;
   confidence: number;
   reasons: string[];
+  pathEvidence: Map<string, ContextPacketGraphPathEvidence>;
 }
 
 interface CandidateSignal {
@@ -86,6 +90,14 @@ function jsonRecord(value: unknown): JsonObject | undefined {
 
 function jsonArray(value: unknown): unknown[] {
   return Array.isArray(value) ? value : [];
+}
+
+function stringArray(value: unknown): string[] {
+  return jsonArray(value)
+    .map(stringValue)
+    .filter((entry): entry is string => Boolean(entry))
+    .map(normalizePath)
+    .filter(Boolean);
 }
 
 function stringValue(value: unknown): string | undefined {
@@ -160,6 +172,76 @@ function inferSignalRelation(
   }
 
   return { relation: "unknown" };
+}
+
+function pathEvidenceKey(evidence: ContextPacketGraphPathEvidence): string {
+  return [
+    evidence.anchorFile,
+    evidence.targetFile,
+    evidence.relation,
+    evidence.source,
+    evidence.strategy,
+    evidence.path.join(">"),
+  ].join("|");
+}
+
+function boundedGraphPath(path: readonly string[], targetFile: string): string[] {
+  const normalized = path.map(normalizePath).filter(Boolean);
+  if (normalized.length === 0) return [targetFile];
+  const targetIndex = normalized.lastIndexOf(targetFile);
+  const targetBounded = targetIndex >= 0
+    ? normalized.slice(0, targetIndex + 1)
+    : [...normalized, targetFile];
+  return targetBounded.slice(0, MAX_GRAPH_PATH_LENGTH);
+}
+
+function graphPathEvidence(args: {
+  signal: CandidateSignal;
+  relation: ContextPacketGraphFileRelation;
+  distance?: number;
+  anchorFiles: ReadonlySet<string>;
+}): ContextPacketGraphPathEvidence | undefined {
+  if (!args.signal.source || !args.signal.strategy) return undefined;
+
+  const targetFile = normalizePath(args.signal.filePath);
+  const metadata = args.signal.metadata;
+  const rawGraphPath = stringArray(metadata?.graphPath);
+  const seedPath = stringValue(metadata?.seedPath);
+  const path = rawGraphPath.length > 0
+    ? boundedGraphPath(rawGraphPath, targetFile)
+    : args.anchorFiles.has(targetFile)
+      ? [targetFile]
+      : [];
+  if (path.length === 0) return undefined;
+
+  const normalizedSeedPath = seedPath ? normalizePath(seedPath) : undefined;
+  const anchorFile = normalizedSeedPath && path.includes(normalizedSeedPath)
+    ? normalizedSeedPath
+    : path.find((filePath) => args.anchorFiles.has(filePath)) ?? path[0];
+  if (!anchorFile) return undefined;
+
+  const distance = args.distance != null
+    ? args.distance
+    : Math.max(0, path.length - 1);
+
+  return {
+    anchorFile,
+    targetFile,
+    relation: args.relation,
+    distance: Math.max(0, Math.round(distance)),
+    path,
+    source: args.signal.source,
+    strategy: args.signal.strategy,
+    reason: args.signal.whyIncluded ?? `Graph path from ${anchorFile} to ${targetFile}.`,
+  };
+}
+
+function addPathEvidence(
+  accumulator: FileAccumulator,
+  evidence: ContextPacketGraphPathEvidence | undefined,
+): void {
+  if (!evidence) return;
+  accumulator.pathEvidence.set(pathEvidenceKey(evidence), evidence);
 }
 
 function mergedRelation(relations: ReadonlySet<ContextPacketGraphFileRelation>): ContextPacketGraphFileRelation {
@@ -264,6 +346,7 @@ function updateAccumulator(
     score: Number.NEGATIVE_INFINITY,
     confidence: 0,
     reasons: [],
+    pathEvidence: new Map<string, ContextPacketGraphPathEvidence>(),
   };
   current.relations.add(relation.relation);
   if (relation.distance != null) current.distances.push(relation.distance);
@@ -272,6 +355,12 @@ function updateAccumulator(
   if (signal.score != null) current.score = Math.max(current.score, signal.score);
   if (signal.confidence != null) current.confidence = Math.max(current.confidence, signal.confidence);
   addReason(current.reasons, signal.whyIncluded);
+  addPathEvidence(current, graphPathEvidence({
+    signal: { ...signal, filePath },
+    relation: relation.relation,
+    distance: relation.distance,
+    anchorFiles,
+  }));
   accumulators.set(filePath, current);
 }
 
@@ -296,6 +385,13 @@ function buildFileSummaries(args: {
         : entry.distances.length > 0
           ? Math.min(...entry.distances)
           : undefined;
+      const pathEvidence = [...entry.pathEvidence.values()]
+        .sort((left, right) =>
+          left.distance - right.distance ||
+          left.anchorFile.localeCompare(right.anchorFile) ||
+          left.targetFile.localeCompare(right.targetFile) ||
+          left.source.localeCompare(right.source)
+        );
       return {
         filePath: entry.filePath,
         relation,
@@ -306,6 +402,12 @@ function buildFileSummaries(args: {
         score: Number((entry.score === Number.NEGATIVE_INFINITY ? 0 : entry.score).toFixed(4)),
         confidence: Number(entry.confidence.toFixed(4)),
         reasons: entry.reasons.slice(0, MAX_REASONS_PER_FILE),
+        ...(pathEvidence.length > 0
+          ? {
+              pathEvidenceCount: pathEvidence.length,
+              pathEvidence: pathEvidence.slice(0, MAX_PATH_EVIDENCE_PER_FILE),
+            }
+          : {}),
       } satisfies GraphFileSummary;
     })
     .sort((left: GraphFileSummary, right: GraphFileSummary) =>
@@ -393,6 +495,7 @@ export function buildContextPacketGraphSummary(args: {
   intent: ContextPacketIntent;
   candidates: readonly ContextPacketReadableCandidate[];
   graphProvidersRan: boolean;
+  providerWarnings?: readonly string[];
 }): ContextPacketGraphSummary {
   const anchorFileList = collectAnchorFiles({
     input: args.input,
@@ -422,6 +525,10 @@ export function buildContextPacketGraphSummary(args: {
     warnings.push("Graph providers did not run for this packet; graph edges are limited to returned provider metadata.");
   } else if (args.graphProvidersRan && allFiles.length > 1 && allEdges.length === 0) {
     warnings.push("No provider import-edge metadata connects the returned context files.");
+  }
+  for (const warning of args.providerWarnings ?? []) {
+    if (!warning.includes("import_graph_provider") && !warning.includes("repo_map_provider")) continue;
+    if (!warnings.includes(warning)) warnings.push(warning);
   }
 
   return {

@@ -239,6 +239,28 @@ export const ContextPacketGraphFileRelationSchema = z.enum([
 ]);
 export type ContextPacketGraphFileRelation = z.infer<typeof ContextPacketGraphFileRelationSchema>;
 
+export interface ContextPacketGraphPathEvidence {
+  anchorFile: string;
+  targetFile: string;
+  relation: ContextPacketGraphFileRelation;
+  distance: number;
+  path: string[];
+  source: ContextPacketSource;
+  strategy: ContextPacketStrategy;
+  reason: string;
+}
+
+export const ContextPacketGraphPathEvidenceSchema = z.object({
+  anchorFile: z.string().min(1),
+  targetFile: z.string().min(1),
+  relation: ContextPacketGraphFileRelationSchema,
+  distance: z.number().int().nonnegative(),
+  path: z.array(z.string().min(1)).min(1),
+  source: ContextPacketSourceSchema,
+  strategy: ContextPacketStrategySchema,
+  reason: z.string().min(1),
+}) satisfies z.ZodType<ContextPacketGraphPathEvidence>;
+
 export interface ContextPacketGraphFileSummary {
   filePath: string;
   relation: ContextPacketGraphFileRelation;
@@ -249,6 +271,8 @@ export interface ContextPacketGraphFileSummary {
   score: number;
   confidence: number;
   reasons: string[];
+  pathEvidenceCount?: number;
+  pathEvidence?: ContextPacketGraphPathEvidence[];
 }
 
 export const ContextPacketGraphFileSummarySchema = z.object({
@@ -261,6 +285,8 @@ export const ContextPacketGraphFileSummarySchema = z.object({
   score: z.number(),
   confidence: z.number().min(0).max(1),
   reasons: z.array(z.string().min(1)),
+  pathEvidenceCount: z.number().int().nonnegative().optional(),
+  pathEvidence: z.array(ContextPacketGraphPathEvidenceSchema).optional(),
 }) satisfies z.ZodType<ContextPacketGraphFileSummary>;
 
 export const ContextPacketGraphEdgeRelationSchema = z.enum([
@@ -453,8 +479,27 @@ export const ContextPacketExpandableToolSchema = z.object({
   readOnly: z.boolean(),
 }) satisfies z.ZodType<ContextPacketExpandableTool>;
 
+export interface ContextPacketOmittedRequestedAnchor {
+  kind: ContextPacketReadableCandidate["kind"];
+  value: string;
+  reason: "budget" | "selection_limit";
+  candidateId: string;
+  score: number;
+  path?: string;
+}
+
+export const ContextPacketOmittedRequestedAnchorSchema = z.object({
+  kind: ContextPacketReadableCandidateSchema.shape.kind,
+  value: z.string().min(1),
+  reason: z.enum(["budget", "selection_limit"]),
+  candidateId: z.string().min(1),
+  score: z.number(),
+  path: z.string().min(1).optional(),
+}) satisfies z.ZodType<ContextPacketOmittedRequestedAnchor>;
+
 export interface ContextPacketLimits {
   budgetTokens: number;
+  returnedTokenEstimate: number;
   tokenEstimateMethod: "char_div_4";
   maxPrimaryContext: number;
   maxRelatedContext: number;
@@ -464,7 +509,13 @@ export interface ContextPacketLimits {
   providersSkippedDetail: ContextPacketProviderSkipDetail[];
   providersFailed: string[];
   candidatesConsidered: number;
+  rankedCandidateCount: number;
   candidatesReturned: number;
+  selectionLimitHit: boolean;
+  candidatesOmittedByLimit: number;
+  requestedAnchorsOmitted: number;
+  omittedRequestedAnchors: ContextPacketOmittedRequestedAnchor[];
+  supportingSignalsOmitted: number;
 }
 
 export interface ContextPacketProviderRunDetail {
@@ -495,6 +546,7 @@ export const ContextPacketProviderSkipDetailSchema = z.object({
 
 export const ContextPacketLimitsSchema = z.object({
   budgetTokens: z.number().int().positive(),
+  returnedTokenEstimate: z.number().int().nonnegative(),
   tokenEstimateMethod: z.literal("char_div_4"),
   maxPrimaryContext: z.number().int().nonnegative(),
   maxRelatedContext: z.number().int().nonnegative(),
@@ -504,7 +556,13 @@ export const ContextPacketLimitsSchema = z.object({
   providersSkippedDetail: z.array(ContextPacketProviderSkipDetailSchema),
   providersFailed: z.array(z.string().min(1)),
   candidatesConsidered: z.number().int().nonnegative(),
+  rankedCandidateCount: z.number().int().nonnegative(),
   candidatesReturned: z.number().int().nonnegative(),
+  selectionLimitHit: z.boolean(),
+  candidatesOmittedByLimit: z.number().int().nonnegative(),
+  requestedAnchorsOmitted: z.number().int().nonnegative(),
+  omittedRequestedAnchors: z.array(ContextPacketOmittedRequestedAnchorSchema),
+  supportingSignalsOmitted: z.number().int().nonnegative(),
 }) satisfies z.ZodType<ContextPacketLimits>;
 
 export interface ContextPacketRetrievalSlowestProvider {
@@ -523,33 +581,144 @@ export const ContextPacketRetrievalSlowestProviderSchema = z.object({
 
 export interface ContextPacketLiveTextMiss {
   query: string;
+  queryKind?: "quoted_text" | "symbol";
   scope: "project" | "file";
   scopePath?: string;
 }
 
 export const ContextPacketLiveTextMissSchema = z.object({
   query: z.string().min(1),
+  queryKind: z.enum(["quoted_text", "symbol"]).optional(),
   scope: z.enum(["project", "file"]),
   scopePath: z.string().min(1).optional(),
 }) satisfies z.ZodType<ContextPacketLiveTextMiss>;
 
+export const ContextPacketRetrievalPlanLevelSchema = z.enum([
+  "code_understanding",
+  "issue_to_edit_localization",
+  "broader_context_retrieval",
+]);
+export type ContextPacketRetrievalPlanLevel = z.infer<typeof ContextPacketRetrievalPlanLevelSchema>;
+
+export const ContextPacketRetrievalPlanStrategySchema = z.enum([
+  "entity_lookup",
+  "graph_expansion",
+  "literal_search",
+  "hybrid",
+]);
+export type ContextPacketRetrievalPlanStrategy = z.infer<typeof ContextPacketRetrievalPlanStrategySchema>;
+
+export const ContextPacketRetrievalPlanEvidenceGateStatusSchema = z.enum([
+  "satisfied",
+  "follow_up_recommended",
+  "follow_up_required",
+]);
+export type ContextPacketRetrievalPlanEvidenceGateStatus = z.infer<typeof ContextPacketRetrievalPlanEvidenceGateStatusSchema>;
+
+export interface ContextPacketRetrievalPlanEvidenceGate {
+  status: ContextPacketRetrievalPlanEvidenceGateStatus;
+  canAnswerFromPacket: boolean;
+  canEditFromPacket: boolean;
+  blockingReasons: string[];
+  advisoryReasons: string[];
+}
+
+export const ContextPacketRetrievalPlanEvidenceGateSchema = z.object({
+  status: ContextPacketRetrievalPlanEvidenceGateStatusSchema,
+  canAnswerFromPacket: z.boolean(),
+  canEditFromPacket: z.boolean(),
+  blockingReasons: z.array(z.string().min(1)),
+  advisoryReasons: z.array(z.string().min(1)),
+}) satisfies z.ZodType<ContextPacketRetrievalPlanEvidenceGate>;
+
+export const ContextPacketRetrievalEvidenceGapKindSchema = z.enum([
+  "request_coverage",
+  "graph_evidence",
+  "literal_evidence",
+  "edit_localization",
+  "provider_recall",
+  "context_budget",
+  "exact_line_verification",
+]);
+export type ContextPacketRetrievalEvidenceGapKind = z.infer<
+  typeof ContextPacketRetrievalEvidenceGapKindSchema
+>;
+
+export const ContextPacketRetrievalEvidenceGapSeveritySchema = z.enum([
+  "blocking",
+  "advisory",
+]);
+export type ContextPacketRetrievalEvidenceGapSeverity = z.infer<
+  typeof ContextPacketRetrievalEvidenceGapSeveritySchema
+>;
+
+export interface ContextPacketRetrievalEvidenceGap {
+  kind: ContextPacketRetrievalEvidenceGapKind;
+  severity: ContextPacketRetrievalEvidenceGapSeverity;
+  message: string;
+  recommendedTools: ToolName[];
+  anchors?: ContextPacketOmittedRequestedAnchor[];
+}
+
+export const ContextPacketRetrievalEvidenceGapSchema = z.object({
+  kind: ContextPacketRetrievalEvidenceGapKindSchema,
+  severity: ContextPacketRetrievalEvidenceGapSeveritySchema,
+  message: z.string().min(1),
+  recommendedTools: z.array(ToolNameSchema),
+  anchors: z.array(ContextPacketOmittedRequestedAnchorSchema).optional(),
+}) satisfies z.ZodType<ContextPacketRetrievalEvidenceGap>;
+
+export interface ContextPacketRetrievalPlan {
+  level: ContextPacketRetrievalPlanLevel;
+  strategy: ContextPacketRetrievalPlanStrategy;
+  confidence: number;
+  signals: string[];
+  evidenceGate: ContextPacketRetrievalPlanEvidenceGate;
+  evidenceGaps: ContextPacketRetrievalEvidenceGap[];
+  requiredEvidence: string[];
+  recommendedTools: ToolName[];
+  recommendedFollowUps: ContextPacketExpandableTool[];
+  nextStep: string;
+}
+
+export const ContextPacketRetrievalPlanSchema = z.object({
+  level: ContextPacketRetrievalPlanLevelSchema,
+  strategy: ContextPacketRetrievalPlanStrategySchema,
+  confidence: z.number().min(0).max(1),
+  signals: z.array(z.string().min(1)),
+  evidenceGate: ContextPacketRetrievalPlanEvidenceGateSchema,
+  evidenceGaps: z.array(ContextPacketRetrievalEvidenceGapSchema),
+  requiredEvidence: z.array(z.string().min(1)),
+  recommendedTools: z.array(ToolNameSchema),
+  recommendedFollowUps: z.array(ContextPacketExpandableToolSchema),
+  nextStep: z.string().min(1),
+}) satisfies z.ZodType<ContextPacketRetrievalPlan>;
+
 export interface ContextPacketRetrievalDiagnostics {
+  retrievalPlan: ContextPacketRetrievalPlan;
   providerRunCount: number;
   providerCandidateCount: number;
+  providerExecutionMode: "serial";
+  totalProviderDurationMs: number;
   zeroCandidateProviders: string[];
   failedProviders: string[];
   adaptiveSkippedProviders: string[];
+  providersSkippedDetail: ContextPacketProviderSkipDetail[];
   liveTextMisses: ContextPacketLiveTextMiss[];
   slowestProvider?: ContextPacketRetrievalSlowestProvider;
   recommendations: string[];
 }
 
 export const ContextPacketRetrievalDiagnosticsSchema = z.object({
+  retrievalPlan: ContextPacketRetrievalPlanSchema,
   providerRunCount: z.number().int().nonnegative(),
   providerCandidateCount: z.number().int().nonnegative(),
+  providerExecutionMode: z.literal("serial"),
+  totalProviderDurationMs: z.number().nonnegative(),
   zeroCandidateProviders: z.array(z.string().min(1)),
   failedProviders: z.array(z.string().min(1)),
   adaptiveSkippedProviders: z.array(z.string().min(1)),
+  providersSkippedDetail: z.array(ContextPacketProviderSkipDetailSchema),
   liveTextMisses: z.array(ContextPacketLiveTextMissSchema),
   slowestProvider: ContextPacketRetrievalSlowestProviderSchema.optional(),
   recommendations: z.array(z.string().min(1)),

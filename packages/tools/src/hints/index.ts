@@ -9,6 +9,7 @@ import type {
   ImportsDepsToolOutput,
   ImportsHotspotsToolOutput,
   ImportsImpactToolOutput,
+  MakoHelpToolOutput,
   ReefScoutToolOutput,
   SymbolsOfToolOutput,
   ToolAnnotations,
@@ -28,6 +29,7 @@ import {
   importsHotspotsHints,
   importsImpactHints,
 } from "./imports.js";
+import { makoHelpHints } from "./mako-help.js";
 import { reefScoutHints } from "./reef.js";
 import { exportsOfHints, symbolsOfHints } from "./symbols.js";
 
@@ -43,6 +45,7 @@ export {
   importsDepsHints,
   importsHotspotsHints,
   importsImpactHints,
+  makoHelpHints,
   reefScoutHints,
   symbolsOfHints,
 };
@@ -63,6 +66,10 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 function stringArray(value: unknown): string[] {
   if (!Array.isArray(value)) return [];
   return value.filter((entry): entry is string => typeof entry === "string" && entry.trim().length > 0);
+}
+
+function numberValue(value: unknown): number | null {
+  return typeof value === "number" && Number.isFinite(value) ? value : null;
 }
 
 function freshnessState(value: unknown): string | null {
@@ -117,6 +124,28 @@ function commonOutputHints(toolName: string, output: Record<string, unknown>): s
     if (rejected + failed > 0) {
       addUnique(hints, `${rejected + failed} batch op(s) did not succeed; inspect per-op results before continuing.`);
     }
+    const executedOps = numberValue(summary?.executedOps) ?? 0;
+    const maxConcurrency = numberValue(summary?.maxConcurrency) ?? 0;
+    if (summary?.concurrencyLimited === true && maxConcurrency > 0) {
+      addUnique(hints, `Batch concurrency was capped at ${maxConcurrency}; increase maxConcurrency only if shared-store pressure is acceptable.`);
+    }
+    const durationMs = numberValue(summary?.durationMs) ?? 0;
+    const totalOpDurationMs = numberValue(summary?.totalOpDurationMs) ?? 0;
+    if (
+      summary?.executionMode === "parallel" &&
+      executedOps > 1 &&
+      durationMs > 0 &&
+      totalOpDurationMs >= durationMs * 1.5
+    ) {
+      addUnique(hints, `Parallel batch saved about ${Math.max(0, totalOpDurationMs - durationMs)}ms versus sequential op time.`);
+    }
+    const slowestOp = isRecord(summary?.slowestOp) ? summary.slowestOp : null;
+    const slowestDurationMs = numberValue(slowestOp?.durationMs) ?? 0;
+    const slowestLabel = typeof slowestOp?.label === "string" ? slowestOp.label : "";
+    const slowestTool = typeof slowestOp?.tool === "string" ? slowestOp.tool : "";
+    if (slowestDurationMs >= 250 && slowestLabel && slowestTool) {
+      addUnique(hints, `Slowest batch op was ${slowestLabel} (${slowestTool}) at ${slowestDurationMs}ms; focus anchors or narrower args may reduce latency.`);
+    }
   }
 
   return hints;
@@ -146,6 +175,8 @@ function familyHints(toolName: string, output: Record<string, unknown>): string[
       return dbTableSchemaHints(output as unknown as DbTableSchemaToolOutput);
     case "context_packet":
       return contextPacketHints(output as unknown as ContextPacketToolOutput);
+    case "mako_help":
+      return makoHelpHints(output as unknown as MakoHelpToolOutput);
     case "reef_scout":
       return reefScoutHints(output as unknown as ReefScoutToolOutput);
     case "route_trace":
@@ -174,17 +205,19 @@ export function attachToolHints(
   input: AttachToolHintsInput,
 ): Record<string, unknown> & { _hints: string[] } {
   const baseHints = isRecord(input.output) ? stringArray(input.output._hints) : [];
-  const hints = [...baseHints];
+  const hints: string[] = [];
   if (isRecord(input.output)) {
     for (const hint of familyHints(input.toolName, input.output)) addUnique(hints, hint);
     for (const hint of commonOutputHints(input.toolName, input.output)) addUnique(hints, hint);
     for (const hint of mutationHints(input.toolName, input.output, input.annotations)) addUnique(hints, hint);
+    for (const hint of baseHints) addUnique(hints, hint);
     return {
       ...input.output,
       _hints: hints.slice(0, MAX_HINTS),
     };
   }
 
+  for (const hint of baseHints) addUnique(hints, hint);
   return {
     value: input.output,
     _hints: hints.slice(0, MAX_HINTS),

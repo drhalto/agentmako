@@ -35,6 +35,7 @@ export interface ProviderContext {
   enabledProviders?: ReadonlySet<ContextPacketProviderName>;
   cachedGraphSeeds?: GraphSeed[];
   cachedGraphSeedWarnings?: string[];
+  cachedProviderWarnings?: string[];
   cachedExactSymbolHits?: Map<string, SymbolSeedHit[]>;
 }
 
@@ -80,6 +81,13 @@ function unique(values: Iterable<string>): string[] {
 
 function metadata(value: JsonObject): JsonObject {
   return value;
+}
+
+function addProviderWarning(ctx: ProviderContext, warning: string): void {
+  ctx.cachedProviderWarnings ??= [];
+  if (!ctx.cachedProviderWarnings.includes(warning)) {
+    ctx.cachedProviderWarnings.push(warning);
+  }
 }
 
 function objectType(value: string | undefined): ContextPacketDatabaseObject["objectType"] {
@@ -428,6 +436,9 @@ function graphSeeds(ctx: ProviderContext): GraphSeed[] {
     ...(ctx.input.focusRoutes ?? []).map((term) => `focus:${term}`),
     ...ctx.intent.entities.routes.map((term) => `intent:${term}`),
   ]);
+  if (routeTerms.length > 12) {
+    warnings.push(`import_graph_provider: route seed resolution capped at 12 of ${routeTerms.length} term(s).`);
+  }
   for (const term of routeTerms.slice(0, 12)) {
     const [sourcePrefix, ...termParts] = term.split(":");
     const routeTerm = termParts.join(":");
@@ -452,6 +463,9 @@ function graphSeeds(ctx: ProviderContext): GraphSeed[] {
     ...(ctx.input.focusSymbols ?? []).map((term) => `focus:${term}`),
     ...ctx.intent.entities.symbols.map((term) => `intent:${term}`),
   ]);
+  if (symbolTerms.length > 12) {
+    warnings.push(`import_graph_provider: symbol seed resolution capped at 12 of ${symbolTerms.length} term(s).`);
+  }
   for (const term of symbolTerms.slice(0, 12)) {
     const [sourcePrefix, ...termParts] = term.split(":");
     const symbolTerm = termParts.join(":");
@@ -476,6 +490,11 @@ function graphSeeds(ctx: ProviderContext): GraphSeed[] {
     ...(ctx.input.focusDatabaseObjects ?? []).map((term) => `focus:${term}`),
     ...ctx.intent.entities.databaseObjects.map((term) => `intent:${term}`),
   ]);
+  if (databaseObjectTerms.length > 12) {
+    warnings.push(
+      `import_graph_provider: database-object seed resolution capped at 12 of ${databaseObjectTerms.length} term(s).`,
+    );
+  }
   for (const term of databaseObjectTerms.slice(0, 12)) {
     const [sourcePrefix, ...termParts] = term.split(":");
     const objectTerm = termParts.join(":");
@@ -535,6 +554,13 @@ interface ImportGraphQueueItem {
   graphPath: string[];
 }
 
+interface ImportGraphFrontier {
+  seedPath: string;
+  direction: ImportGraphDirection;
+  queue: ImportGraphQueueItem[];
+  visited: Set<string>;
+}
+
 function uniqueInternalEdges(edges: readonly FileImportLink[]): FileImportLink[] {
   const seen = new Set<string>();
   const out: FileImportLink[] = [];
@@ -578,31 +604,31 @@ function importGraphWhy(args: {
 
 function walkImportGraph(args: {
   ctx: ProviderContext;
-  seedPath: string;
-  direction: ImportGraphDirection;
+  frontier: ImportGraphFrontier;
   candidates: ContextPacketCandidateSeed[];
-}): void {
-  const visited = new Set<string>([args.seedPath]);
-  const queue: ImportGraphQueueItem[] = [{
-    filePath: args.seedPath,
-    depth: 0,
-    graphPath: [args.seedPath],
-  }];
-
-  while (queue.length > 0 && args.candidates.length < IMPORT_GRAPH_CANDIDATE_LIMIT) {
-    const current = queue.shift() as ImportGraphQueueItem;
+}): boolean {
+  while (args.frontier.queue.length > 0 && args.candidates.length < IMPORT_GRAPH_CANDIDATE_LIMIT) {
+    const current = args.frontier.queue.shift() as ImportGraphQueueItem;
     if (current.depth >= IMPORT_GRAPH_MAX_DEPTH) continue;
 
-    const edges = uniqueInternalEdges(
-      args.direction === "outbound"
+    const allEdges = uniqueInternalEdges(
+      args.frontier.direction === "outbound"
         ? args.ctx.projectStore.listImportsForFile(current.filePath)
         : args.ctx.projectStore.listDependentsForFile(current.filePath),
-    ).slice(0, IMPORT_GRAPH_EDGE_LIMIT_PER_NODE);
+    );
+    if (allEdges.length > IMPORT_GRAPH_EDGE_LIMIT_PER_NODE) {
+      addProviderWarning(
+        args.ctx,
+        `import_graph_provider: ${args.frontier.direction} traversal from ${current.filePath} capped at ${IMPORT_GRAPH_EDGE_LIMIT_PER_NODE} of ${allEdges.length} edge(s).`,
+      );
+    }
+    const edges = allEdges.slice(0, IMPORT_GRAPH_EDGE_LIMIT_PER_NODE);
+    let emitted = false;
 
     for (const edge of edges) {
-      const candidatePath = args.direction === "outbound" ? edge.targetPath : edge.sourcePath;
-      if (visited.has(candidatePath)) continue;
-      visited.add(candidatePath);
+      const candidatePath = args.frontier.direction === "outbound" ? edge.targetPath : edge.sourcePath;
+      if (args.frontier.visited.has(candidatePath)) continue;
+      args.frontier.visited.add(candidatePath);
 
       const depth = current.depth + 1;
       const graphPath = [...current.graphPath, candidatePath];
@@ -612,45 +638,93 @@ function walkImportGraph(args: {
         source: "import_graph_provider",
         strategy: "deterministic_graph",
         whyIncluded: importGraphWhy({
-          seedPath: args.seedPath,
+          seedPath: args.frontier.seedPath,
           currentPath: current.filePath,
-          direction: args.direction,
+          direction: args.frontier.direction,
           depth,
           specifier: edge.specifier,
         }),
-        confidence: importGraphConfidence(args.direction, depth),
-        baseScore: importGraphBaseScore(args.direction, depth),
+        confidence: importGraphConfidence(args.frontier.direction, depth),
+        baseScore: importGraphBaseScore(args.frontier.direction, depth),
         metadata: metadata({
-          seedPath: args.seedPath,
-          graphSeedSources: graphSeedSourcesForPath(args.ctx, args.seedPath),
+          seedPath: args.frontier.seedPath,
+          graphSeedSources: graphSeedSourcesForPath(args.ctx, args.frontier.seedPath),
           from: edge.sourcePath,
           target: edge.targetPath,
           specifier: edge.specifier,
-          direction: args.direction,
+          importKind: edge.importKind,
+          isTypeOnly: edge.isTypeOnly,
+          ...(edge.line != null ? { line: edge.line } : {}),
+          direction: args.frontier.direction,
           graphDepth: depth,
           graphPath,
+          graphTraversalMode: "round_robin_frontier",
         }),
       });
+      emitted = true;
 
       if (depth < IMPORT_GRAPH_MAX_DEPTH) {
-        queue.push({ filePath: candidatePath, depth, graphPath });
+        args.frontier.queue.push({ filePath: candidatePath, depth, graphPath });
       }
 
       if (args.candidates.length >= IMPORT_GRAPH_CANDIDATE_LIMIT) break;
     }
+
+    if (emitted) return true;
   }
+
+  return false;
+}
+
+function importGraphFrontier(seedPath: string, direction: ImportGraphDirection): ImportGraphFrontier {
+  return {
+    seedPath,
+    direction,
+    queue: [{
+      filePath: seedPath,
+      depth: 0,
+      graphPath: [seedPath],
+    }],
+    visited: new Set<string>([seedPath]),
+  };
 }
 
 function importGraphProvider(ctx: ProviderContext): ContextPacketCandidateSeed[] {
   const seedPaths = graphSeedPaths(ctx);
   const candidates: ContextPacketCandidateSeed[] = [];
+  const frontiers: ImportGraphFrontier[] = [];
+
+  if (seedPaths.length > IMPORT_GRAPH_SEED_LIMIT) {
+    addProviderWarning(
+      ctx,
+      `import_graph_provider: graph seed count capped at ${IMPORT_GRAPH_SEED_LIMIT} of ${seedPaths.length} seed file(s).`,
+    );
+  }
 
   for (const filePath of seedPaths.slice(0, IMPORT_GRAPH_SEED_LIMIT)) {
     const file = ctx.projectStore.findFile(filePath);
     if (!file) continue;
-    walkImportGraph({ ctx, seedPath: file.path, direction: "outbound", candidates });
-    walkImportGraph({ ctx, seedPath: file.path, direction: "inbound", candidates });
-    if (candidates.length >= IMPORT_GRAPH_CANDIDATE_LIMIT) break;
+    frontiers.push(importGraphFrontier(file.path, "outbound"));
+    frontiers.push(importGraphFrontier(file.path, "inbound"));
+  }
+
+  let cursor = 0;
+  while (frontiers.length > 0 && candidates.length < IMPORT_GRAPH_CANDIDATE_LIMIT) {
+    if (cursor >= frontiers.length) cursor = 0;
+    const frontier = frontiers[cursor] as ImportGraphFrontier;
+    walkImportGraph({ ctx, frontier, candidates });
+    if (frontier.queue.length === 0) {
+      frontiers.splice(cursor, 1);
+    } else {
+      cursor += 1;
+    }
+  }
+
+  if (candidates.length >= IMPORT_GRAPH_CANDIDATE_LIMIT && frontiers.length > 0) {
+    addProviderWarning(
+      ctx,
+      `import_graph_provider: candidate count capped at ${IMPORT_GRAPH_CANDIDATE_LIMIT}; reachable graph files may be omitted.`,
+    );
   }
 
   return candidates;
@@ -821,6 +895,10 @@ export function collectContextPacketProviders(ctx: ProviderContext): ContextPack
     providersRunDetail,
     providersSkipped,
     providersFailed,
-    warnings: unique([...warnings, ...(ctx.cachedGraphSeedWarnings ?? [])]),
+    warnings: unique([
+      ...warnings,
+      ...(ctx.cachedGraphSeedWarnings ?? []),
+      ...(ctx.cachedProviderWarnings ?? []),
+    ]),
   };
 }

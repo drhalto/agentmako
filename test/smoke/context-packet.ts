@@ -5,11 +5,20 @@ import os from "node:os";
 import path from "node:path";
 import {
   ContextPacketToolOutputSchema,
+  ToolBatchToolOutputSchema,
   type AuthPathToolOutput,
   type ContextPacketToolOutput,
+  type JsonObject,
   type ProjectFinding,
+  type ToolBatchToolOutput,
 } from "../../packages/contracts/src/index.ts";
 import { openGlobalStore, openProjectStore } from "../../packages/store/src/index.ts";
+import { assessContextPacketEvidenceQuality } from "../../packages/tools/src/context-packet/evidence-quality.ts";
+import { detectContextPacketIntent } from "../../packages/tools/src/context-packet/intent.ts";
+import { rankContextCandidates } from "../../packages/tools/src/context-packet/ranking.ts";
+import { buildContextPacketRequestCoverage } from "../../packages/tools/src/context-packet/request-coverage.ts";
+import { buildContextPacketRetrievalDiagnostics } from "../../packages/tools/src/context-packet/retrieval-diagnostics.ts";
+import type { ContextPacketCandidateSeed } from "../../packages/tools/src/context-packet/types.ts";
 import { createHotIndexCache } from "../../packages/tools/src/hot-index/index.ts";
 import { TOOL_DEFINITIONS, invokeTool } from "../../packages/tools/src/registry.ts";
 
@@ -31,6 +40,689 @@ function assertExpandableToolsHaveValidArgs(packet: ContextPacketToolOutput, lab
       }`,
     );
   }
+
+  const followUps = packet.retrievalDiagnostics.retrievalPlan.recommendedFollowUps;
+  assert.deepEqual(
+    followUps.map((tool) => tool.toolName),
+    packet.retrievalDiagnostics.retrievalPlan.recommendedTools,
+    `${label}: retrieval-plan executable follow-ups should mirror recommended tool order`,
+  );
+  for (const tool of followUps) {
+    const schema = TOOL_INPUT_SCHEMAS.get(tool.toolName);
+    assert.ok(schema, `${label}: recommended follow-up ${tool.toolName} should be registered`);
+    const result = schema.safeParse(tool.suggestedArgs);
+    assert.equal(
+      result.success,
+      true,
+      `${label}: ${tool.toolName} recommendedFollowUps suggestedArgs should satisfy its input schema${
+        result.success ? "" : `: ${result.error.message}`
+      }`,
+    );
+    assert.ok(
+      packet.expandableTools.some((expandableTool) =>
+        expandableTool.toolName === tool.toolName &&
+        JSON.stringify(expandableTool.suggestedArgs) === JSON.stringify(tool.suggestedArgs)
+      ),
+      `${label}: recommended follow-up ${tool.toolName} should reference a generated expandableTool entry`,
+    );
+  }
+}
+
+function batchExpansionOps(packet: ContextPacketToolOutput, label: string): Array<Record<string, unknown>> {
+  const batchTool = packet.expandableTools.find((tool) => tool.toolName === "tool_batch");
+  assert.ok(batchTool, `${label}: expected a tool_batch expansion`);
+  const args = batchTool.suggestedArgs as { verbosity?: unknown; continueOnError?: unknown; maxConcurrency?: unknown; ops?: unknown };
+  assert.equal(args.verbosity, "compact", `${label}: tool_batch should use compact summaries`);
+  assert.equal(args.continueOnError, true, `${label}: tool_batch should continue on independent op errors`);
+  assert.equal(typeof args.maxConcurrency, "number", `${label}: tool_batch should include a bounded concurrency cap`);
+  assert.ok(Array.isArray(args.ops), `${label}: tool_batch should include ops`);
+  assert.equal(
+    args.maxConcurrency,
+    Math.min(8, Math.max(1, args.ops.length)),
+    `${label}: tool_batch maxConcurrency should be bounded by generated op count`,
+  );
+  return args.ops as Array<Record<string, unknown>>;
+}
+
+async function assertGeneratedBatchExpansionExecutes(
+  packet: ContextPacketToolOutput,
+  label: string,
+  hotIndexCache: ReturnType<typeof createHotIndexCache>,
+): Promise<void> {
+  const batchTool = packet.expandableTools.find((tool) => tool.toolName === "tool_batch");
+  assert.ok(batchTool, `${label}: expected a tool_batch expansion`);
+  const expectedOps = batchExpansionOps(packet, label);
+  const output = await invokeTool(
+    "tool_batch",
+    batchTool.suggestedArgs,
+    {
+      hotIndexCache,
+      requestContext: { requestId: `req_generated_batch_${label.replace(/[^a-z0-9]+/gi, "_").toLowerCase()}` },
+    },
+  ) as ToolBatchToolOutput;
+
+  ToolBatchToolOutputSchema.parse(output);
+  assert.equal(output.summary.requestedOps, expectedOps.length, `${label}: generated batch should request every op`);
+  assert.equal(output.summary.executedOps, expectedOps.length, `${label}: generated batch should execute every op`);
+  assert.equal(output.summary.succeededOps, expectedOps.length, `${label}: generated batch should succeed every op`);
+  assert.equal(output.summary.failedOps, 0, `${label}: generated batch should not fail ops`);
+  assert.equal(output.summary.rejectedOps, 0, `${label}: generated batch should not reject ops`);
+  assert.equal(output.summary.executionMode, "parallel", `${label}: generated batch should use parallel execution`);
+  assert.equal(
+    output.summary.maxConcurrency,
+    Math.min(8, Math.max(1, expectedOps.length)),
+    `${label}: generated batch should report the suggested concurrency cap`,
+  );
+  assert.equal(
+    output.summary.concurrencyLimited,
+    expectedOps.length > output.summary.maxConcurrency,
+    `${label}: generated batch should report whether concurrency was limited`,
+  );
+  assert.deepEqual(
+    output.results.map((result) => result.label),
+    expectedOps.map((op) => op.label),
+    `${label}: generated batch results should preserve suggested op order`,
+  );
+  assert.equal(
+    output.results.every((result) => result.ok === true),
+    true,
+    `${label}: every generated batch op should be ok`,
+  );
+  assert.equal(
+    output.results.every((result) =>
+      result.resultSummary != null &&
+      typeof result.resultSummary === "object" &&
+      !Array.isArray(result.resultSummary)
+    ),
+    true,
+    `${label}: generated batch ops should return compact summaries`,
+  );
+}
+
+function estimateReadableCandidateTokens(candidate: ContextPacketToolOutput["primaryContext"][number]): number {
+  return Math.max(1, Math.ceil(JSON.stringify(candidate).length / 4));
+}
+
+function returnedContextTokenEstimate(ranked: ReturnType<typeof rankContextCandidates>): number {
+  return [...ranked.primaryContext, ...ranked.relatedContext]
+    .reduce((total, candidate) => total + estimateReadableCandidateTokens(candidate), 0);
+}
+
+function assertRankingBudgetChargesFinalMergedPayload(): void {
+  const primarySeed: ContextPacketCandidateSeed = {
+    kind: "file",
+    path: "app/budget/first.ts",
+    lineStart: 1,
+    lineEnd: 1,
+    source: "live_text_provider",
+    strategy: "exact_match",
+    whyIncluded: "primary literal match",
+    confidence: 0.95,
+    baseScore: 200,
+  };
+  const supportingSeed: ContextPacketCandidateSeed = {
+    kind: "file",
+    path: primarySeed.path,
+    lineStart: primarySeed.lineStart,
+    lineEnd: primarySeed.lineEnd,
+    source: "import_graph_provider",
+    strategy: "deterministic_graph",
+    whyIncluded: "supporting import graph signal",
+    confidence: 0.6,
+    metadata: {
+      graphDepth: 1,
+      seedPath: "app/budget/anchor.ts",
+    },
+  };
+  const secondSeed: ContextPacketCandidateSeed = {
+    kind: "file",
+    path: "app/budget/second.ts",
+    lineStart: 1,
+    lineEnd: 1,
+    source: "live_text_provider",
+    strategy: "exact_match",
+    whyIncluded: "second literal match",
+    confidence: 0.9,
+    baseScore: 80,
+  };
+
+  const rankWithBudget = (budgetTokens: number) =>
+    rankContextCandidates(
+      [primarySeed, supportingSeed, secondSeed],
+      {
+        maxPrimaryContext: 4,
+        maxRelatedContext: 4,
+        budgetTokens,
+        freshnessPolicy: "report",
+        freshnessByPath: new Map(),
+        focusFiles: new Set(),
+        changedFiles: new Set(),
+        focusSymbols: new Set(),
+        focusRoutes: new Set(),
+        focusDatabaseObjects: new Set(),
+        request: "budget final merged payload",
+      },
+    );
+
+  const constrained = rankWithBudget(190);
+  assert.deepEqual(
+    constrained.primaryContext.map((candidate) => candidate.path),
+    ["app/budget/first.ts", "app/budget/second.ts"],
+    "ranking budget should prefer distinct compact context before optional supporting-signal metadata",
+  );
+  assert.ok(
+    returnedContextTokenEstimate(constrained) <= 190,
+    "ranking budget should charge the final returned candidate payload",
+  );
+  assert.ok(
+    constrained.returnedTokenEstimate <= 190,
+    "ranking result should expose the final returned token estimate",
+  );
+  assert.equal(
+    constrained.supportingSignalsOmitted,
+    1,
+    "ranking result should report supporting signals omitted by budget compaction",
+  );
+  assert.equal(
+    Array.isArray(constrained.primaryContext[0]?.metadata?.supportingSignals),
+    false,
+    "supporting signals should be omitted when they would make final context exceed budget",
+  );
+
+  const roomy = rankWithBudget(220);
+  assert.deepEqual(
+    roomy.primaryContext.map((candidate) => candidate.path),
+    ["app/budget/first.ts", "app/budget/second.ts"],
+  );
+  assert.ok(
+    returnedContextTokenEstimate(roomy) <= 220,
+    "roomy ranking budget should still fit the final enriched payload",
+  );
+  assert.ok(roomy.returnedTokenEstimate <= 220);
+  assert.equal(roomy.supportingSignalsOmitted, 0);
+  assert.equal(
+    Array.isArray(roomy.primaryContext[0]?.metadata?.supportingSignals),
+    true,
+    "supporting signals should be retained when final budget has room",
+  );
+
+  const crowded = rankContextCandidates(
+    [
+      primarySeed,
+      supportingSeed,
+      secondSeed,
+      {
+        kind: "file",
+        path: "app/budget/third.ts",
+        lineStart: 1,
+        lineEnd: 1,
+        source: "live_text_provider",
+        strategy: "exact_match",
+        whyIncluded: "third literal match",
+        confidence: 0.88,
+        baseScore: 60,
+      },
+    ],
+    {
+      maxPrimaryContext: 4,
+      maxRelatedContext: 4,
+      budgetTokens: 120,
+      freshnessPolicy: "report",
+      freshnessByPath: new Map(),
+      focusFiles: new Set(),
+      changedFiles: new Set(),
+      focusSymbols: new Set(),
+      focusRoutes: new Set(),
+      focusDatabaseObjects: new Set(),
+      request: "budget final merged payload",
+    },
+  );
+  assert.equal(crowded.candidatesReturned, 2);
+  assert.equal(crowded.budgetExhausted, true);
+  assert.ok(crowded.returnedTokenEstimate <= 120);
+  assert.equal(crowded.supportingSignalsOmitted, 1);
+  assert.deepEqual(
+    crowded.primaryContext.map((candidate) => candidate.path),
+    ["app/budget/first.ts", "app/budget/second.ts"],
+    "ranking budget should truncate lower-ranked compact candidates once the final budget is full",
+  );
+
+  const tinyBudget = rankWithBudget(1);
+  assert.equal(
+    tinyBudget.candidatesReturned,
+    1,
+    "ranking should still return one best candidate when every candidate exceeds budget",
+  );
+  assert.equal(
+    tinyBudget.budgetExhausted,
+    true,
+    "ranking should report budget exhaustion when the first returned candidate exceeds budget",
+  );
+  assert.ok(
+    tinyBudget.returnedTokenEstimate > 1,
+    "tiny-budget ranking should expose that returned context exceeded the requested budget",
+  );
+
+  const countLimited = rankContextCandidates(
+    [
+      primarySeed,
+      supportingSeed,
+      secondSeed,
+      {
+        kind: "file",
+        path: "app/budget/third.ts",
+        lineStart: 1,
+        lineEnd: 1,
+        source: "live_text_provider",
+        strategy: "exact_match",
+        whyIncluded: "third literal match",
+        confidence: 0.88,
+        baseScore: 60,
+      },
+    ],
+    {
+      maxPrimaryContext: 1,
+      maxRelatedContext: 1,
+      budgetTokens: 1_000,
+      freshnessPolicy: "report",
+      freshnessByPath: new Map(),
+      focusFiles: new Set(),
+      changedFiles: new Set(),
+      focusSymbols: new Set(),
+      focusRoutes: new Set(),
+      focusDatabaseObjects: new Set(),
+      request: "selection limit final payload",
+    },
+  );
+  assert.equal(countLimited.budgetExhausted, false);
+  assert.equal(countLimited.selectionLimitHit, true);
+  assert.equal(countLimited.rankedCandidateCount, 3);
+  assert.equal(countLimited.candidatesOmittedByLimit, 1);
+  assert.equal(countLimited.candidatesReturned, 2);
+}
+
+function assertSupportingSignalsPreserveLiveQueryKind(): void {
+  const indexedSeed: ContextPacketCandidateSeed = {
+    kind: "symbol",
+    path: "src/auth.ts",
+    lineStart: 2,
+    lineEnd: 2,
+    symbolName: "getSession",
+    source: "symbol_provider",
+    strategy: "symbol_reference",
+    whyIncluded: "indexed symbol reference",
+    confidence: 0.95,
+    rankScoreOverride: 500,
+  };
+  const liveSeed: ContextPacketCandidateSeed = {
+    kind: "symbol",
+    path: indexedSeed.path,
+    lineStart: indexedSeed.lineStart,
+    lineEnd: indexedSeed.lineEnd,
+    symbolName: indexedSeed.symbolName,
+    source: "live_text_provider",
+    strategy: "exact_match",
+    whyIncluded: "live symbol match",
+    confidence: 0.4,
+    rankScoreOverride: 10,
+    metadata: {
+      query: "getSession",
+      queryKind: "symbol",
+      overlay: "live_filesystem",
+    },
+  };
+
+  const ranked = rankContextCandidates(
+    [indexedSeed, liveSeed],
+    {
+      maxPrimaryContext: 4,
+      maxRelatedContext: 4,
+      budgetTokens: 1_000,
+      freshnessPolicy: "report",
+      freshnessByPath: new Map(),
+      focusFiles: new Set(["src/auth.ts"]),
+      changedFiles: new Set(),
+      focusSymbols: new Set(["getSession"]),
+      focusRoutes: new Set(),
+      focusDatabaseObjects: new Set(),
+      request: "inspect getSession",
+    },
+  );
+
+  const supportingSignals = ranked.primaryContext[0]?.metadata?.supportingSignals;
+  assert.ok(Array.isArray(supportingSignals), "merged context should retain supporting signals");
+  const liveSignal = supportingSignals.find((signal): signal is JsonObject =>
+    typeof signal === "object" &&
+    signal != null &&
+    !Array.isArray(signal) &&
+    signal.source === "live_text_provider"
+  );
+  assert.ok(liveSignal, "merged context should include the live text signal");
+  assert.equal(
+    typeof liveSignal.metadata === "object" &&
+      liveSignal.metadata != null &&
+      !Array.isArray(liveSignal.metadata)
+      ? liveSignal.metadata.queryKind
+      : undefined,
+    "symbol",
+    "live supporting-signal metadata should preserve queryKind",
+  );
+  assert.equal(
+    typeof liveSignal.metadata === "object" &&
+      liveSignal.metadata != null &&
+      !Array.isArray(liveSignal.metadata)
+      ? liveSignal.metadata.query
+      : undefined,
+    "getSession",
+    "live supporting-signal metadata should preserve query",
+  );
+}
+
+function assertRankingPreservesExplicitFileAnchors(): void {
+  const changedSeed: ContextPacketCandidateSeed = {
+    kind: "file",
+    path: "app/anchors/changed.ts",
+    source: "file_provider",
+    strategy: "exact_match",
+    whyIncluded: "changedFiles named this file",
+    confidence: 0.4,
+  };
+  const focusSeed: ContextPacketCandidateSeed = {
+    kind: "file",
+    path: "app/anchors/focus.ts",
+    source: "file_provider",
+    strategy: "exact_match",
+    whyIncluded: "focusFiles named this file",
+    confidence: 0.4,
+  };
+  const noisySeed: ContextPacketCandidateSeed = {
+    kind: "file",
+    path: "app/anchors/noisy.ts",
+    source: "live_text_provider",
+    strategy: "exact_match",
+    whyIncluded: "unrelated high-score literal match",
+    confidence: 0.99,
+    baseScore: 1_000,
+  };
+
+  const ranked = rankContextCandidates(
+    [noisySeed, focusSeed, changedSeed],
+    {
+      maxPrimaryContext: 1,
+      maxRelatedContext: 1,
+      budgetTokens: 1_000,
+      freshnessPolicy: "report",
+      freshnessByPath: new Map(),
+      focusFiles: new Set(["app/anchors/focus.ts"]),
+      changedFiles: new Set(["app/anchors/changed.ts"]),
+      focusSymbols: new Set(),
+      focusRoutes: new Set(),
+      focusDatabaseObjects: new Set(),
+      request: "explicit file anchors should stay visible",
+    },
+  );
+
+  assert.deepEqual(
+    ranked.primaryContext.map((candidate) => candidate.path),
+    ["app/anchors/changed.ts"],
+    "changedFiles anchors should fill primary context before non-anchor high-score candidates",
+  );
+  assert.deepEqual(
+    ranked.relatedContext.map((candidate) => candidate.path),
+    ["app/anchors/focus.ts"],
+    "focusFiles anchors should fill related context before non-anchor high-score candidates",
+  );
+  assert.equal(ranked.selectionLimitHit, true);
+  assert.equal(ranked.candidatesOmittedByLimit, 1);
+  assert.equal(ranked.requestedAnchorsOmitted, 0);
+  assert.deepEqual(ranked.omittedRequestedAnchors, []);
+}
+
+function assertRankingPreservesExplicitNonFileAnchors(): void {
+  const symbolSeed: ContextPacketCandidateSeed = {
+    kind: "symbol",
+    path: "lib/auth/session.ts",
+    symbolName: "getSession",
+    source: "symbol_provider",
+    strategy: "symbol_reference",
+    whyIncluded: "focusSymbols named this symbol",
+    confidence: 0.4,
+  };
+  const routeSeed: ContextPacketCandidateSeed = {
+    kind: "route",
+    path: "app/api/auth/callback/route.ts",
+    routeKey: "GET /api/auth/callback",
+    source: "route_provider",
+    strategy: "exact_match",
+    whyIncluded: "focusRoutes named this route",
+    confidence: 0.4,
+    metadata: {
+      pattern: "/api/auth/callback",
+    },
+  };
+  const databaseSeed: ContextPacketCandidateSeed = {
+    kind: "database_object",
+    databaseObjectName: "public.user_profiles",
+    source: "schema_provider",
+    strategy: "schema_usage",
+    whyIncluded: "focusDatabaseObjects named this table",
+    confidence: 0.4,
+  };
+  const noisySeed: ContextPacketCandidateSeed = {
+    kind: "file",
+    path: "app/anchors/noisy.ts",
+    source: "live_text_provider",
+    strategy: "exact_match",
+    whyIncluded: "unrelated high-score literal match",
+    confidence: 0.99,
+    baseScore: 1_000,
+  };
+
+  const ranked = rankContextCandidates(
+    [noisySeed, databaseSeed, routeSeed, symbolSeed],
+    {
+      maxPrimaryContext: 2,
+      maxRelatedContext: 1,
+      budgetTokens: 1_000,
+      freshnessPolicy: "report",
+      freshnessByPath: new Map(),
+      focusFiles: new Set(),
+      changedFiles: new Set(),
+      focusSymbols: new Set(["getsession"]),
+      focusRoutes: new Set(["/api/auth/callback"]),
+      focusDatabaseObjects: new Set(["public.user_profiles"]),
+      request: "explicit non-file anchors should stay visible",
+    },
+  );
+
+  assert.deepEqual(
+    [...ranked.primaryContext, ...ranked.relatedContext].map((candidate) => candidate.kind),
+    ["symbol", "route", "database_object"],
+    "explicit symbol, route, and database anchors should survive count pressure before noisy non-anchors",
+  );
+  assert.equal(ranked.selectionLimitHit, true);
+  assert.equal(ranked.candidatesOmittedByLimit, 1);
+  assert.equal(ranked.requestedAnchorsOmitted, 0);
+  assert.deepEqual(ranked.omittedRequestedAnchors, []);
+
+  const limitedRanked = rankContextCandidates(
+    [noisySeed, databaseSeed, routeSeed, symbolSeed],
+    {
+      maxPrimaryContext: 1,
+      maxRelatedContext: 1,
+      budgetTokens: 1_000,
+      freshnessPolicy: "report",
+      freshnessByPath: new Map(),
+      focusFiles: new Set(),
+      changedFiles: new Set(),
+      focusSymbols: new Set(["getsession"]),
+      focusRoutes: new Set(["/api/auth/callback"]),
+      focusDatabaseObjects: new Set(["public.user_profiles"]),
+      request: "explicit non-file anchors should report omitted requested anchors",
+    },
+  );
+  assert.deepEqual(
+    [...limitedRanked.primaryContext, ...limitedRanked.relatedContext].map((candidate) => candidate.kind),
+    ["symbol", "route"],
+    "explicit non-file anchors should retain priority order when limits are tighter than requested anchors",
+  );
+  assert.equal(limitedRanked.selectionLimitHit, true);
+  assert.equal(limitedRanked.candidatesOmittedByLimit, 2);
+  assert.equal(limitedRanked.requestedAnchorsOmitted, 1);
+  assert.deepEqual(
+    limitedRanked.omittedRequestedAnchors.map((anchor) => ({
+      kind: anchor.kind,
+      value: anchor.value,
+      reason: anchor.reason,
+    })),
+    [{
+      kind: "database_object",
+      value: "public.user_profiles",
+      reason: "selection_limit",
+    }],
+    "ranking should report requested anchors that were ranked but squeezed out by count limits",
+  );
+}
+
+function assertRequestCoverageTracksLiveQueryKind(): void {
+  const coverage = buildContextPacketRequestCoverage({
+    input: {
+      request: 'verify "SharedCoverageNeedle"',
+    },
+    intent: {
+      primaryFamily: "unknown",
+      families: [],
+      entities: {
+        files: [],
+        symbols: [],
+        routes: [],
+        databaseObjects: [],
+        quotedText: ["SharedCoverageNeedle"],
+        keywords: [],
+      },
+    },
+    candidates: [],
+    liveTextMisses: [],
+    liveTextCheckedQueries: [{ query: "SharedCoverageNeedle", queryKind: "symbol" }],
+    liveTextRan: true,
+  });
+
+  assert.ok(
+    coverage.items.some((item) =>
+      item.kind === "quoted_text" &&
+      item.value === "SharedCoverageNeedle" &&
+      item.status === "not_checked"
+    ),
+    "symbol live checks should not satisfy quoted-literal checked coverage for the same text",
+  );
+}
+
+function assertRequestCoverageReadsLiveSupportingSignals(): void {
+  const coverage = buildContextPacketRequestCoverage({
+    input: {
+      request: 'verify "MergedLiteralNeedle"',
+    },
+    intent: {
+      primaryFamily: "unknown",
+      families: [],
+      entities: {
+        files: [],
+        symbols: [],
+        routes: [],
+        databaseObjects: [],
+        quotedText: ["MergedLiteralNeedle", "SymbolOnlyNeedle"],
+        keywords: [],
+      },
+    },
+    candidates: [{
+      id: "file:src/example.ts:1",
+      kind: "file",
+      path: "src/example.ts",
+      lineStart: 1,
+      lineEnd: 1,
+      source: "file_provider",
+      strategy: "exact_match",
+      whyIncluded: "indexed file won ranking merge",
+      confidence: 0.8,
+      score: 120,
+      metadata: {
+        supportingSignals: [{
+          source: "live_text_provider",
+          strategy: "exact_match",
+          path: "src/example.ts",
+          lineStart: 1,
+          whyIncluded: "live literal supporting signal",
+          confidence: 0.9,
+          score: 90,
+          metadata: {
+            query: "MergedLiteralNeedle",
+            queryKind: "quoted_text",
+          },
+        }, {
+          source: "live_text_provider",
+          strategy: "exact_match",
+          path: "src/example.ts",
+          lineStart: 2,
+          symbolName: "SymbolOnlyNeedle",
+          whyIncluded: "live symbol supporting signal",
+          confidence: 0.9,
+          score: 80,
+          metadata: {
+            query: "SymbolOnlyNeedle",
+            queryKind: "symbol",
+          },
+        }],
+      },
+    }],
+    liveTextMisses: [],
+    liveTextCheckedQueries: [
+      { query: "MergedLiteralNeedle", queryKind: "quoted_text" },
+      { query: "SymbolOnlyNeedle", queryKind: "symbol" },
+    ],
+    liveTextRan: true,
+  });
+
+  assert.ok(
+    coverage.items.some((item) =>
+      item.kind === "quoted_text" &&
+      item.value === "MergedLiteralNeedle" &&
+      item.status === "covered" &&
+      item.matchedBy.some((ref) => ref.startsWith("live_text_provider:"))
+    ),
+    "quoted literals verified as merged live supporting signals should satisfy request coverage",
+  );
+  assert.ok(
+    coverage.items.some((item) =>
+      item.kind === "quoted_text" &&
+      item.value === "SymbolOnlyNeedle" &&
+      item.status === "not_checked"
+    ),
+    "live symbol supporting signals should not satisfy quoted-literal coverage for the same text",
+  );
+}
+
+function assertIntentExpandsCompoundRepoTerms(): void {
+  const intent = detectContextPacketIntent({
+    request: "debug getTenantDashboardRole access regression in app/dashboard/UserRolePanel.tsx",
+    focusSymbols: ["getTenantDashboardRole"],
+  });
+
+  assert.equal(intent.primaryFamily, "debug_auth_state");
+  assert.deepEqual(
+    intent.entities.files,
+    ["app/dashboard/UserRolePanel.tsx"],
+    "intent detection should preserve full .tsx file paths instead of truncating to .ts",
+  );
+  assert.deepEqual(
+    ["tenant", "dashboard", "role", "access"].every((keyword) => intent.entities.keywords.includes(keyword)),
+    true,
+    "intent detection should expand compound identifiers and paths into retrieval keywords",
+  );
+  assert.equal(
+    intent.entities.keywords.includes("get"),
+    false,
+    "intent detection should not keep generic method-prefix keywords from compound identifiers",
+  );
 }
 
 function writeFixtureFile(projectRoot: string, relPath: string, content: string): string {
@@ -140,6 +832,117 @@ function seedProject(projectRoot: string, projectId: string): void {
       "}",
     ].join("\n"),
   }));
+  const fairnessHubImports = Array.from({ length: 8 }, (_, index) => ({
+    targetPath: `app/fairness/deps/dep-${index}.ts`,
+    specifier: `./deps/dep-${index}`,
+  }));
+  const fairnessHubDependents = Array.from({ length: 8 }, (_, index) => ({
+    relPath: `app/fairness/consumers/consumer-${index}.ts`,
+    symbolName: `fairnessConsumer${index}`,
+    content: [
+      "import { fairnessHub } from '../hub';",
+      `export function fairnessConsumer${index}() {`,
+      "  return fairnessHub();",
+      "}",
+    ].join("\n"),
+    imports: [{ targetPath: "app/fairness/hub.ts", specifier: "../hub" }],
+  }));
+  const fairnessDependencyFiles = Array.from({ length: 8 }, (_, depIndex) => ({
+    relPath: `app/fairness/deps/dep-${depIndex}.ts`,
+    symbolName: `fairnessDep${depIndex}`,
+    content: [
+      ...Array.from({ length: 8 }, (_, leafIndex) =>
+        `import { fairnessLeaf${depIndex}_${leafIndex} } from '../leaves/leaf-${depIndex}-${leafIndex}';`
+      ),
+      `export function fairnessDep${depIndex}() {`,
+      `  return ${Array.from({ length: 8 }, (_, leafIndex) => `fairnessLeaf${depIndex}_${leafIndex}()`).join(" + ")};`,
+      "}",
+    ].join("\n"),
+    imports: Array.from({ length: 8 }, (_, leafIndex) => ({
+      targetPath: `app/fairness/leaves/leaf-${depIndex}-${leafIndex}.ts`,
+      specifier: `../leaves/leaf-${depIndex}-${leafIndex}`,
+    })),
+  }));
+  const fairnessLeafFiles = Array.from({ length: 8 }, (_, depIndex) =>
+    Array.from({ length: 8 }, (_, leafIndex) => ({
+      relPath: `app/fairness/leaves/leaf-${depIndex}-${leafIndex}.ts`,
+      symbolName: `fairnessLeaf${depIndex}_${leafIndex}`,
+      content: [
+        `export function fairnessLeaf${depIndex}_${leafIndex}() {`,
+        `  return ${depIndex * 10 + leafIndex};`,
+        "}",
+      ].join("\n"),
+      imports: [],
+    }))
+  ).flat();
+  const wideGraphFiles = [
+    {
+      relPath: "app/fairness/wide.ts",
+      symbolName: "fairnessWide",
+      content: [
+        ...Array.from({ length: 12 }, (_, index) =>
+          `import { fairnessWideDep${index} } from './wide/dep-${index}';`
+        ),
+        "export function fairnessWide() {",
+        `  return ${Array.from({ length: 12 }, (_, index) => `fairnessWideDep${index}()`).join(" + ")};`,
+        "}",
+      ].join("\n"),
+      imports: Array.from({ length: 12 }, (_, index) => ({
+        targetPath: `app/fairness/wide/dep-${index}.ts`,
+        specifier: `./wide/dep-${index}`,
+      })),
+    },
+    ...Array.from({ length: 12 }, (_, index) => ({
+      relPath: `app/fairness/wide/dep-${index}.ts`,
+      symbolName: `fairnessWideDep${index}`,
+      content: [
+        `export function fairnessWideDep${index}() {`,
+        `  return ${index};`,
+        "}",
+      ].join("\n"),
+      imports: [],
+    })),
+  ];
+  const graphFairnessFiles = [
+    {
+      relPath: "app/fairness/hub.ts",
+      symbolName: "fairnessHub",
+      content: [
+        ...fairnessHubImports.map((edge, index) =>
+          `import { fairnessDep${index} } from '${edge.specifier}';`
+        ),
+        "export function fairnessHub() {",
+        `  return ${Array.from({ length: 8 }, (_, index) => `fairnessDep${index}()`).join(" + ")};`,
+        "}",
+      ].join("\n"),
+      imports: fairnessHubImports,
+    },
+    ...fairnessDependencyFiles,
+    ...fairnessLeafFiles,
+    ...fairnessHubDependents,
+    {
+      relPath: "app/fairness/target.ts",
+      symbolName: "fairnessTarget",
+      content: [
+        "import { fairnessTargetLeaf } from './target-leaf';",
+        "export function fairnessTarget() {",
+        "  return fairnessTargetLeaf();",
+        "}",
+      ].join("\n"),
+      imports: [{ targetPath: "app/fairness/target-leaf.ts", specifier: "./target-leaf" }],
+    },
+    {
+      relPath: "app/fairness/target-leaf.ts",
+      symbolName: "fairnessTargetLeaf",
+      content: [
+        "export function fairnessTargetLeaf() {",
+        "  return 999;",
+        "}",
+      ].join("\n"),
+      imports: [],
+    },
+    ...wideGraphFiles,
+  ];
 
   writeFixtureFile(projectRoot, "app/api/auth/callback/route.ts", routeContent);
   writeFixtureFile(projectRoot, "app/dashboard/layout.tsx", dashboardLayoutContent);
@@ -151,6 +954,9 @@ function seedProject(projectRoot: string, projectId: string): void {
   writeFixtureFile(projectRoot, "components/ui/button.tsx", centralButtonContent);
   for (const consumer of generatedButtonConsumers) {
     writeFixtureFile(projectRoot, consumer.relPath, consumer.content);
+  }
+  for (const file of graphFairnessFiles) {
+    writeFixtureFile(projectRoot, file.relPath, file.content);
   }
   writeFixtureFile(projectRoot, "AGENTS.md", "Auth changes must preserve session and user type contracts.");
 
@@ -264,6 +1070,20 @@ function seedProject(projectRoot: string, projectId: string): void {
           "tsx",
           [{ name: consumer.symbolName, kind: "function", exportName: consumer.symbolName, lineStart: 2, lineEnd: 4 }],
           [{ targetPath: "components/ui/button.tsx", specifier: "../../components/ui/button" }],
+        )),
+        ...graphFairnessFiles.map((file) => fileRecord(
+          projectRoot,
+          file.relPath,
+          file.content,
+          "typescript",
+          [{
+            name: file.symbolName,
+            kind: "function",
+            exportName: file.symbolName,
+            lineStart: file.imports.length + 1,
+            lineEnd: file.content.split("\n").length,
+          }],
+          file.imports,
         )),
       ],
       schemaObjects: [{
@@ -395,6 +1215,14 @@ function seedProject(projectRoot: string, projectId: string): void {
 }
 
 async function main(): Promise<void> {
+  assertRankingBudgetChargesFinalMergedPayload();
+  assertSupportingSignalsPreserveLiveQueryKind();
+  assertRankingPreservesExplicitFileAnchors();
+  assertRankingPreservesExplicitNonFileAnchors();
+  assertRequestCoverageTracksLiveQueryKind();
+  assertRequestCoverageReadsLiveSupportingSignals();
+  assertIntentExpandsCompoundRepoTerms();
+
   const tmp = mkdtempSync(path.join(os.tmpdir(), "mako-context-packet-"));
   const stateHome = path.join(tmp, "state");
   const projectRoot = path.join(tmp, "project");
@@ -427,7 +1255,15 @@ async function main(): Promise<void> {
     assert.equal(packet.projectId, projectId);
     assert.equal(packet.mode, "explore");
     assert.equal(packet.modePolicy.includeRisks, true);
-    assert.deepEqual(packet.limits.providersSkipped, []);
+    assert.deepEqual(packet.limits.providersSkipped, ["repo_map_provider"]);
+    assert.ok(
+      packet.retrievalDiagnostics.providersSkippedDetail.some((detail) =>
+        detail.provider === "repo_map_provider" &&
+        detail.adaptive &&
+        detail.reason.includes("focus/changed file anchors")
+      ),
+      "focused auth debugging should explain adaptive repo-map pruning",
+    );
     assert.equal(packet.intent.primaryFamily, "debug_auth_state");
     assert.ok(packet.intent.families.some((entry) => entry.family === "debug_route"));
     assert.ok(packet.intent.families.some((entry) => entry.family === "debug_type_contract"));
@@ -513,18 +1349,346 @@ async function main(): Promise<void> {
     assert.equal(packet.evidenceQuality.requestCoverage.status, "complete");
     assert.equal(packet.evidenceQuality.requestCoverage.unresolvedCount, 0);
     assert.equal(packet.evidenceQuality.graph.status, "not_requested");
+    assert.equal(typeof packet.limits.returnedTokenEstimate, "number");
+    assert.equal(typeof packet.limits.rankedCandidateCount, "number");
+    assert.equal(typeof packet.limits.selectionLimitHit, "boolean");
+    assert.equal(typeof packet.limits.candidatesOmittedByLimit, "number");
+    assert.equal(typeof packet.limits.requestedAnchorsOmitted, "number");
+    assert.equal(Array.isArray(packet.limits.omittedRequestedAnchors), true);
+    assert.equal(typeof packet.limits.supportingSignalsOmitted, "number");
+    assert.ok(packet.limits.returnedTokenEstimate > 0);
     assert.ok(
       packet.evidenceQuality.reasons.some((reason) => reason.includes("primary")),
       "evidence quality should explain context coverage",
+    );
+    const packetIndexFreshness = packet.indexFreshness;
+    assert.ok(packetIndexFreshness, "primary packet should include index freshness for evidence-quality scoring");
+    const assessPacketQuality = (overrides: {
+      budgetExhausted?: boolean;
+      selectionLimitHit?: boolean;
+      requestedAnchorsOmitted?: number;
+      supportingSignalsOmitted?: number;
+    }) => assessContextPacketEvidenceQuality({
+      request: packet.request,
+      primaryContext: packet.primaryContext,
+      relatedContext: packet.relatedContext,
+      graphSummary: packet.graphSummary,
+      freshnessGate: packet.freshnessGate,
+      indexFreshness: packetIndexFreshness,
+      providersFailed: [],
+      budgetExhausted: overrides.budgetExhausted ?? false,
+      selectionLimitHit: overrides.selectionLimitHit ?? false,
+      requestedAnchorsOmitted: overrides.requestedAnchorsOmitted ?? 0,
+      supportingSignalsOmitted: overrides.supportingSignalsOmitted ?? 0,
+      changedFilesMissingOverlayCount: 0,
+      requestCoverage: packet.requestCoverage,
+    });
+    const untruncatedQuality = assessPacketQuality({});
+    const omittedAnchorQuality = assessPacketQuality({
+      selectionLimitHit: true,
+      requestedAnchorsOmitted: 1,
+    });
+    assert.equal(
+      omittedAnchorQuality.label,
+      "partial",
+      "evidence quality should downgrade packet quality when requested anchors were omitted",
+    );
+    assert.ok(
+      omittedAnchorQuality.score < untruncatedQuality.score,
+      "omitted requested anchors should reduce evidence quality score",
+    );
+    assert.ok(
+      omittedAnchorQuality.reasons.some((reason) =>
+        reason.includes("requested anchor") && reason.includes("omitted")
+      ),
+      "evidence quality should explain omitted requested anchors",
+    );
+    assert.ok(
+      omittedAnchorQuality.recommendedAction.includes("omitted requested anchors"),
+      "evidence quality should steer omitted-anchor packets toward anchor-specific follow-ups",
+    );
+    const selectionLimitedQuality = assessPacketQuality({ selectionLimitHit: true });
+    assert.ok(
+      selectionLimitedQuality.score < untruncatedQuality.score,
+      "selection-limit truncation should reduce evidence quality score",
+    );
+    assert.ok(
+      selectionLimitedQuality.recommendedAction.includes("maxPrimaryContext/maxRelatedContext"),
+      "evidence quality should steer selection-limit truncation toward inspecting omitted ranked candidates",
+    );
+    const compactedSignalQuality = assessPacketQuality({ supportingSignalsOmitted: 2 });
+    assert.ok(
+      compactedSignalQuality.reasons.some((reason) =>
+        reason.includes("supporting provider signal") && reason.includes("omitted")
+      ),
+      "evidence quality should explain compacted supporting signals",
+    );
+    assert.ok(
+      compactedSignalQuality.recommendedAction.includes("full provenance"),
+      "evidence quality should steer compacted supporting signals toward provenance follow-ups",
     );
     assert.ok(packet.retrievalDiagnostics.providerRunCount > 0, "retrieval diagnostics should count provider runs");
     assert.ok(
       packet.retrievalDiagnostics.providerCandidateCount >= packet.limits.candidatesConsidered,
       "retrieval diagnostics should summarize provider candidate volume",
     );
+    assert.equal(
+      packet.retrievalDiagnostics.providerExecutionMode,
+      "serial",
+      "retrieval diagnostics should expose provider execution mode for latency interpretation",
+    );
+    assert.equal(
+      packet.retrievalDiagnostics.totalProviderDurationMs,
+      packet.limits.providersRunDetail.reduce((sum, detail) => sum + detail.durationMs, 0),
+      "retrieval diagnostics should aggregate provider duration",
+    );
+    assert.ok(
+      !packet.retrievalDiagnostics.slowestProvider ||
+        packet.retrievalDiagnostics.slowestProvider.durationMs === Math.max(
+          ...packet.limits.providersRunDetail.map((detail) => detail.durationMs),
+        ),
+      "retrieval diagnostics should expose the slowest provider",
+    );
+    assert.equal(
+      packet.retrievalDiagnostics.retrievalPlan.level,
+      "issue_to_edit_localization",
+      "focused auth debugging should be classified as an edit-localization retrieval task",
+    );
+    assert.equal(
+      packet.retrievalDiagnostics.retrievalPlan.strategy,
+      "entity_lookup",
+      "focused auth debugging should prefer entity lookup before broader graph expansion",
+    );
+    assert.ok(
+      packet.retrievalDiagnostics.retrievalPlan.signals.includes("focus_files:1"),
+      "retrieval plan should expose focus-file routing signals",
+    );
+    assert.ok(
+      packet.retrievalDiagnostics.retrievalPlan.requiredEvidence.some((item) => item.includes("target file")),
+      "edit-localization retrieval plan should name the target-file evidence requirement",
+    );
+    assert.equal(
+      packet.retrievalDiagnostics.retrievalPlan.evidenceGate.status,
+      "follow_up_recommended",
+      "edit-localization packets with generated follow-ups should recommend follow-up before edit claims",
+    );
+    assert.ok(
+      packet.retrievalDiagnostics.retrievalPlan.evidenceGaps.some((gap) =>
+        gap.kind === "edit_localization" &&
+        gap.severity === "advisory" &&
+        gap.recommendedTools.includes("tool_batch")
+      ),
+      "edit-localization retrieval plan should expose the follow-up reason as a typed evidence gap",
+    );
+    assert.equal(packet.retrievalDiagnostics.retrievalPlan.evidenceGate.canAnswerFromPacket, true);
+    assert.equal(packet.retrievalDiagnostics.retrievalPlan.evidenceGate.canEditFromPacket, false);
+    assert.deepEqual(
+      packet.retrievalDiagnostics.retrievalPlan.recommendedTools.slice(0, 2),
+      ["tool_batch", "live_text_search"],
+      "edit-localization retrieval plan should name available follow-up tools from the generated expansions",
+    );
+    assert.deepEqual(
+      packet.retrievalDiagnostics.retrievalPlan.recommendedFollowUps.slice(0, 2).map((tool) => tool.toolName),
+      ["tool_batch", "live_text_search"],
+      "edit-localization retrieval plan should include executable follow-ups in recommended order",
+    );
     assert.ok(
       packet.retrievalDiagnostics.recommendations.length > 0,
       "retrieval diagnostics should include at least one recommendation",
+    );
+    assert.ok(
+      packet.retrievalDiagnostics.recommendations.some((recommendation) =>
+        recommendation.includes("tool_batch expansion")
+      ),
+      "retrieval diagnostics should mention the compact batch expansion when it is available",
+    );
+    const untruncatedDiagnostics = buildContextPacketRetrievalDiagnostics({
+      mode: packet.mode,
+      intent: packet.intent,
+      requestCoverage: packet.requestCoverage,
+      graphQuality: packet.evidenceQuality.graph,
+      changedFileCount: 0,
+      focusFileCount: 1,
+      expandableTools: packet.expandableTools,
+      providerRunDetails: packet.limits.providersRunDetail,
+      providersFailed: [],
+      providersSkippedDetail: packet.limits.providersSkippedDetail,
+      liveTextMisses: [],
+      totalContextCount: packet.primaryContext.length + packet.relatedContext.length,
+      budgetExhausted: false,
+      selectionLimitHit: false,
+      candidatesOmittedByLimit: 0,
+      requestedAnchorsOmitted: 0,
+      supportingSignalsOmitted: 0,
+    });
+    const compactedSignalDiagnostics = buildContextPacketRetrievalDiagnostics({
+      mode: packet.mode,
+      intent: packet.intent,
+      requestCoverage: packet.requestCoverage,
+      graphQuality: packet.evidenceQuality.graph,
+      changedFileCount: 0,
+      focusFileCount: 1,
+      expandableTools: packet.expandableTools,
+      providerRunDetails: packet.limits.providersRunDetail,
+      providersFailed: [],
+      providersSkippedDetail: packet.limits.providersSkippedDetail,
+      liveTextMisses: [],
+      totalContextCount: packet.primaryContext.length + packet.relatedContext.length,
+      budgetExhausted: false,
+      selectionLimitHit: false,
+      candidatesOmittedByLimit: 0,
+      requestedAnchorsOmitted: 0,
+      supportingSignalsOmitted: 2,
+    });
+    assert.ok(
+      compactedSignalDiagnostics.retrievalPlan.signals.includes("supporting_signals_omitted:2"),
+      "retrieval diagnostics should expose supporting-signal budget compaction as a planning signal",
+    );
+    assert.ok(
+      compactedSignalDiagnostics.retrievalPlan.evidenceGaps.some((gap) =>
+        gap.kind === "context_budget" &&
+        gap.severity === "advisory" &&
+        gap.message.includes("supporting signal")
+      ),
+      "retrieval diagnostics should expose omitted supporting signals as a typed budget evidence gap",
+    );
+    assert.ok(
+      compactedSignalDiagnostics.recommendations.some((recommendation) =>
+        recommendation.includes("supporting provider signals")
+      ),
+      "retrieval diagnostics should recommend follow-ups when supporting signals were compacted",
+    );
+    assert.ok(
+      compactedSignalDiagnostics.retrievalPlan.evidenceGate.advisoryReasons.some((reason) =>
+        reason.includes("supporting signal")
+      ),
+      "supporting-signal compaction should keep the evidence gate advisory instead of silently satisfied",
+    );
+    assert.ok(
+      compactedSignalDiagnostics.retrievalPlan.nextStep.includes("full provenance"),
+      "supporting-signal compaction should steer the next step toward provenance follow-ups",
+    );
+    assert.ok(
+      compactedSignalDiagnostics.retrievalPlan.confidence < untruncatedDiagnostics.retrievalPlan.confidence,
+      "supporting-signal compaction should reduce retrieval-plan confidence",
+    );
+    const budgetLimitedDiagnostics = buildContextPacketRetrievalDiagnostics({
+      mode: packet.mode,
+      intent: packet.intent,
+      requestCoverage: packet.requestCoverage,
+      graphQuality: packet.evidenceQuality.graph,
+      changedFileCount: 0,
+      focusFileCount: 1,
+      expandableTools: packet.expandableTools,
+      providerRunDetails: packet.limits.providersRunDetail,
+      providersFailed: [],
+      providersSkippedDetail: packet.limits.providersSkippedDetail,
+      liveTextMisses: [],
+      totalContextCount: packet.primaryContext.length + packet.relatedContext.length,
+      budgetExhausted: true,
+      selectionLimitHit: false,
+      candidatesOmittedByLimit: 0,
+      requestedAnchorsOmitted: 0,
+      supportingSignalsOmitted: 0,
+    });
+    assert.ok(
+      budgetLimitedDiagnostics.retrievalPlan.signals.includes("budget_exhausted"),
+      "retrieval diagnostics should expose token-budget truncation as a planning signal",
+    );
+    assert.ok(
+      budgetLimitedDiagnostics.retrievalPlan.evidenceGate.advisoryReasons.some((reason) =>
+        reason.includes("budget-truncated")
+      ),
+      "budget truncation should keep the evidence gate advisory instead of silently satisfied",
+    );
+    assert.ok(
+      budgetLimitedDiagnostics.retrievalPlan.nextStep.includes("budgetTokens"),
+      "budget truncation should steer the next step toward increasing budget or narrowing the request",
+    );
+    assert.ok(
+      budgetLimitedDiagnostics.retrievalPlan.confidence < untruncatedDiagnostics.retrievalPlan.confidence,
+      "budget truncation should reduce retrieval-plan confidence",
+    );
+    const countLimitedDiagnostics = buildContextPacketRetrievalDiagnostics({
+      mode: packet.mode,
+      intent: packet.intent,
+      requestCoverage: packet.requestCoverage,
+      graphQuality: packet.evidenceQuality.graph,
+      changedFileCount: 0,
+      focusFileCount: 1,
+      expandableTools: packet.expandableTools,
+      providerRunDetails: packet.limits.providersRunDetail,
+      providersFailed: [],
+      providersSkippedDetail: packet.limits.providersSkippedDetail,
+      liveTextMisses: [],
+      totalContextCount: packet.primaryContext.length + packet.relatedContext.length,
+      budgetExhausted: false,
+      selectionLimitHit: true,
+      candidatesOmittedByLimit: 3,
+      requestedAnchorsOmitted: 1,
+      supportingSignalsOmitted: 0,
+    });
+    assert.ok(
+      countLimitedDiagnostics.retrievalPlan.signals.includes("selection_limit_omitted:3"),
+      "retrieval diagnostics should expose max-context selection truncation as a planning signal",
+    );
+    assert.ok(
+      countLimitedDiagnostics.retrievalPlan.signals.includes("requested_anchors_omitted:1"),
+      "retrieval diagnostics should expose requested anchors omitted by context limits as a planning signal",
+    );
+    assert.ok(
+      countLimitedDiagnostics.retrievalPlan.evidenceGaps.some((gap) =>
+        gap.kind === "context_budget" &&
+        gap.severity === "advisory" &&
+        gap.message.includes("maxPrimaryContext")
+      ),
+      "retrieval diagnostics should expose max-context selection truncation as a typed evidence gap",
+    );
+    assert.ok(
+      countLimitedDiagnostics.retrievalPlan.evidenceGaps.some((gap) =>
+        gap.kind === "context_budget" &&
+        gap.severity === "blocking" &&
+        gap.message.includes("requested anchor")
+      ),
+      "retrieval diagnostics should expose omitted requested anchors as a blocking typed budget evidence gap",
+    );
+    assert.ok(
+      countLimitedDiagnostics.recommendations.some((recommendation) =>
+        recommendation.includes("maxPrimaryContext/maxRelatedContext")
+      ),
+      "retrieval diagnostics should recommend raising limits or follow-ups when ranked candidates were omitted",
+    );
+    assert.ok(
+      countLimitedDiagnostics.recommendations.some((recommendation) =>
+        recommendation.includes("requested anchors")
+      ),
+      "retrieval diagnostics should recommend raising limits or anchor follow-ups when requested anchors were omitted",
+    );
+    assert.equal(
+      countLimitedDiagnostics.retrievalPlan.evidenceGate.status,
+      "follow_up_required",
+      "omitted requested anchors should require corrective retrieval before packet-only claims",
+    );
+    assert.equal(countLimitedDiagnostics.retrievalPlan.evidenceGate.canAnswerFromPacket, false);
+    assert.ok(
+      countLimitedDiagnostics.retrievalPlan.evidenceGate.blockingReasons.some((reason) =>
+        reason.includes("ranked but omitted")
+      ),
+      "omitted requested anchors should be visible as an evidence-gate blocking reason",
+    );
+    assert.ok(
+      countLimitedDiagnostics.retrievalPlan.evidenceGate.advisoryReasons.some((reason) =>
+        reason.includes("maxPrimaryContext/maxRelatedContext")
+      ),
+      "selection-limit truncation should be visible as an evidence-gate advisory reason",
+    );
+    assert.ok(
+      countLimitedDiagnostics.retrievalPlan.nextStep.includes("omitted requested anchors"),
+      "omitted requested anchors should steer the next step toward anchor-specific follow-ups",
+    );
+    assert.ok(
+      countLimitedDiagnostics.retrievalPlan.confidence < untruncatedDiagnostics.retrievalPlan.confidence,
+      "omitted requested anchors should reduce retrieval-plan confidence",
     );
     assert.ok(packet.limits.providersRun.includes("hot_hint_index"));
     const hotHintRunDetail = packet.limits.providersRunDetail.find((detail) => detail.provider === "hot_hint_index");
@@ -555,6 +1719,18 @@ async function main(): Promise<void> {
       ["app/api/auth/callback/route.ts"],
       "repo_map suggestedArgs should preserve focusFiles as graph personalization anchors",
     );
+    const exploreBatchOps = batchExpansionOps(packet, "primary packet");
+    assert.deepEqual(
+      exploreBatchOps.map((op) => op.tool),
+      ["repo_map", "live_text_search", "project_open_loops", "evidence_confidence"],
+      "explore packet should batch its independent read-only follow-ups",
+    );
+    assert.equal(
+      exploreBatchOps.every((op) => op.resultMode === "summary"),
+      true,
+      "batched context-packet follow-ups should request compact result summaries",
+    );
+    await assertGeneratedBatchExpansionExecutes(packet, "primary packet", hotIndexCache);
     assert.ok(
       exploreToolNames.includes("project_open_loops"),
       "explore mode should recommend project_open_loops",
@@ -603,6 +1779,27 @@ async function main(): Promise<void> {
       { hotIndexCache },
     ) as ContextPacketToolOutput;
     assertExpandableToolsHaveValidArgs(quotedLiteralPacket, "quoted literal packet");
+    assert.equal(
+      quotedLiteralPacket.retrievalDiagnostics.retrievalPlan.level,
+      "code_understanding",
+      "literal lookup without edit anchors should remain a code-understanding retrieval task",
+    );
+    assert.equal(
+      quotedLiteralPacket.retrievalDiagnostics.retrievalPlan.strategy,
+      "hybrid",
+      "quoted identifiers should use hybrid literal and entity retrieval planning",
+    );
+    assert.ok(
+      quotedLiteralPacket.retrievalDiagnostics.retrievalPlan.recommendedTools.includes("live_text_search"),
+      "literal lookup retrieval plan should recommend the generated live_text_search follow-up",
+    );
+    assert.ok(
+      quotedLiteralPacket.retrievalDiagnostics.retrievalPlan.recommendedFollowUps.some((tool) =>
+        tool.toolName === "live_text_search" &&
+        (tool.suggestedArgs as { query?: unknown }).query === "Login"
+      ),
+      "literal lookup retrieval plan should include the concrete live_text_search args",
+    );
     const literalLiveTextSearch = quotedLiteralPacket.expandableTools.find((tool) => tool.toolName === "live_text_search");
     assert.ok(literalLiveTextSearch, "context_packet should recommend live_text_search for exact follow-up checks");
     assert.ok(
@@ -673,6 +1870,51 @@ async function main(): Promise<void> {
       "request coverage should mark live text literals as covered by current filesystem evidence",
     );
 
+    const cappedLiteralPacket = await invokeTool(
+      "context_packet",
+      {
+        projectId,
+        request: "verify \"Login\" \"duplicate role check\" \"missing capped marker\" \"unsearched capped marker\"",
+      },
+      { hotIndexCache },
+    ) as ContextPacketToolOutput;
+    assertExpandableToolsHaveValidArgs(cappedLiteralPacket, "capped literal packet");
+    assert.ok(
+      cappedLiteralPacket.warnings.some((warning) =>
+        warning.includes("quoted literal search capped at 3 of 4")
+      ),
+      "live text provider should warn when quoted literal checks are capped",
+    );
+    assert.ok(
+      cappedLiteralPacket.requestCoverage.items.some((item) =>
+        item.kind === "quoted_text" &&
+        item.value === "unsearched capped marker" &&
+        item.status === "not_checked"
+      ),
+      "quoted literals omitted by the live text cap should be marked not_checked",
+    );
+    assert.ok(
+      cappedLiteralPacket.requestCoverage.items.some((item) =>
+        item.kind === "quoted_text" &&
+        item.value === "missing capped marker" &&
+        item.status === "uncovered"
+      ),
+      "quoted literals searched and missed should remain uncovered",
+    );
+    assert.equal(
+      cappedLiteralPacket.retrievalDiagnostics.liveTextMisses.some((miss) =>
+        miss.query === "unsearched capped marker"
+      ),
+      false,
+      "capped literals should not be reported as live text misses when they were never searched",
+    );
+    assert.ok(
+      cappedLiteralPacket.requestCoverage.recommendations.some((recommendation) =>
+        recommendation.includes("Enable live hints or run live_text_search")
+      ),
+      "request coverage should recommend explicit live search for capped not-checked literals",
+    );
+
     const scopedLiteralCache = createHotIndexCache();
     try {
       const scopedLiveLiteralPacket = await invokeTool(
@@ -731,21 +1973,21 @@ async function main(): Promise<void> {
       assert.ok(
         scopedLiveLiteralPacket.limits.providersSkippedDetail.some((detail) =>
           detail.provider === "hot_hint_index" && detail.adaptive &&
-          detail.reason.includes("Scoped live quoted-literal matches")
+          detail.reason.includes("Scoped live exact matches")
         ),
         "provider skip details should explain adaptive hot hint routing",
       );
       assert.ok(
         scopedLiveLiteralPacket.limits.providersSkippedDetail.some((detail) =>
           detail.provider === "repo_map_provider" && detail.adaptive &&
-          detail.reason.includes("Scoped live quoted-literal matches")
+          detail.reason.includes("Scoped live exact matches")
         ),
         "provider skip details should explain adaptive repo map routing",
       );
       assert.ok(
         scopedLiveLiteralPacket.limits.providersSkippedDetail.some((detail) =>
           detail.provider === "file_provider" && detail.adaptive &&
-          detail.reason.includes("Scoped live quoted-literal matches")
+          detail.reason.includes("Scoped live exact matches")
         ),
         "provider skip details should explain data-driven semantic provider pruning",
       );
@@ -753,6 +1995,19 @@ async function main(): Promise<void> {
         scopedLiveLiteralPacket.retrievalDiagnostics.adaptiveSkippedProviders.includes("file_provider") &&
           scopedLiveLiteralPacket.retrievalDiagnostics.adaptiveSkippedProviders.includes("hot_hint_index"),
         "retrieval diagnostics should summarize adaptive skips",
+      );
+      assert.deepEqual(
+        scopedLiveLiteralPacket.retrievalDiagnostics.providersSkippedDetail,
+        scopedLiveLiteralPacket.limits.providersSkippedDetail,
+        "retrieval diagnostics should expose model-facing skip reasons without requiring limits inspection",
+      );
+      assert.ok(
+        scopedLiveLiteralPacket.retrievalDiagnostics.providersSkippedDetail.some((detail) =>
+          detail.provider === "repo_map_provider" &&
+          detail.adaptive &&
+          detail.reason.includes("Scoped live exact matches")
+        ),
+        "retrieval diagnostics should include adaptive skip reasons",
       );
       assert.ok(
         scopedLiveLiteralPacket.retrievalDiagnostics.recommendations.some((recommendation) =>
@@ -791,6 +2046,205 @@ async function main(): Promise<void> {
         ),
         false,
         "scoped live literal search should not return matches from unanchored files",
+      );
+
+      const scopedGraphLiteralPacket = await invokeTool(
+        "context_packet",
+        {
+          projectId,
+          request: "find \"duplicate role check\" dependency graph",
+          focusFiles: ["app/dashboard/admin/endorsements/create/client-page.tsx"],
+        },
+        { hotIndexCache: scopedLiteralCache },
+      ) as ContextPacketToolOutput;
+      assertExpandableToolsHaveValidArgs(scopedGraphLiteralPacket, "scoped graph literal packet");
+      assert.equal(
+        scopedGraphLiteralPacket.limits.providersRun.includes("live_text_provider"),
+        true,
+        "scoped graph literal packets should still run live exact evidence",
+      );
+      assert.equal(
+        scopedGraphLiteralPacket.limits.providersRun.includes("import_graph_provider"),
+        true,
+        "scoped live exact hits should keep import graph retrieval when the request asks for graph evidence",
+      );
+      assert.equal(
+        scopedGraphLiteralPacket.limits.providersRun.includes("repo_map_provider"),
+        true,
+        "scoped live exact hits should keep graph-ranked repo map context for graph evidence requests",
+      );
+      assert.equal(
+        scopedGraphLiteralPacket.limits.providersSkipped.includes("import_graph_provider"),
+        false,
+        "graph evidence requests should not report import graph as adaptively skipped",
+      );
+      assert.equal(
+        scopedGraphLiteralPacket.limits.providersSkipped.includes("repo_map_provider"),
+        false,
+        "graph evidence requests should not report repo map as adaptively skipped",
+      );
+      assert.ok(
+        scopedGraphLiteralPacket.limits.providersSkippedDetail.some((detail) =>
+          detail.provider === "file_provider" &&
+          detail.adaptive &&
+          detail.reason.includes("graph providers stayed enabled")
+        ),
+        "semantic provider skip details should explain that graph providers stayed enabled",
+      );
+      assert.equal(
+        scopedGraphLiteralPacket.retrievalDiagnostics.retrievalPlan.strategy,
+        "graph_expansion",
+        "scoped graph literal packets should keep graph-expansion retrieval planning",
+      );
+
+      const scopedLiveSymbolPacket = await invokeTool(
+        "context_packet",
+        {
+          projectId,
+          request: "inspect AdminEndorsementCreatePage current file",
+          focusFiles: ["app/dashboard/admin/endorsements/create/client-page.tsx"],
+          focusSymbols: ["AdminEndorsementCreatePage"],
+        },
+        { hotIndexCache: scopedLiteralCache },
+      ) as ContextPacketToolOutput;
+      assertExpandableToolsHaveValidArgs(scopedLiveSymbolPacket, "scoped live symbol packet");
+      assert.equal(
+        scopedLiveSymbolPacket.limits.providersRun.includes("live_text_provider"),
+        true,
+        "scoped focus symbols should run bounded live text verification",
+      );
+      assert.equal(
+        scopedLiveSymbolPacket.limits.providersRun.includes("file_provider"),
+        false,
+        "scoped live symbol hits should skip indexed fallback providers",
+      );
+      const scopedLiveSymbolCandidate = scopedLiveSymbolPacket.primaryContext.find((candidate) =>
+        candidate.source === "live_text_provider" &&
+        candidate.kind === "symbol" &&
+        candidate.symbolName === "AdminEndorsementCreatePage"
+      );
+      assert.ok(scopedLiveSymbolCandidate, "live text provider should return scoped symbol evidence");
+      assert.equal(scopedLiveSymbolCandidate.path, "app/dashboard/admin/endorsements/create/client-page.tsx");
+      assert.equal(scopedLiveSymbolCandidate.metadata?.queryKind, "symbol");
+      assert.equal(scopedLiveSymbolCandidate.metadata?.scopePath, "app/dashboard/admin/endorsements/create/client-page.tsx");
+      assert.ok(
+        scopedLiveSymbolPacket.requestCoverage.items.some((item) =>
+          item.kind === "symbol" &&
+          item.value === "AdminEndorsementCreatePage" &&
+          item.status === "covered" &&
+          item.matchedBy.some((ref) => ref.includes("live_text_provider"))
+        ),
+        "request coverage should mark scoped live symbols as covered by current filesystem evidence",
+      );
+
+      const prioritizedFocusSymbolPacket = await invokeTool(
+        "context_packet",
+        {
+          projectId,
+          request: "verify \"duplicate role check\" \"missing scoped marker\" \"unsearched focus symbol marker\"",
+          focusFiles: ["app/dashboard/admin/endorsements/create/client-page.tsx"],
+          focusSymbols: ["AdminEndorsementCreatePage"],
+        },
+        { hotIndexCache: scopedLiteralCache },
+      ) as ContextPacketToolOutput;
+      assertExpandableToolsHaveValidArgs(prioritizedFocusSymbolPacket, "prioritized focus symbol packet");
+      assert.ok(
+        prioritizedFocusSymbolPacket.warnings.some((warning) =>
+          warning.includes("quoted literal search capped at 2 of 3")
+        ),
+        "explicit focus symbols should reserve live-text capacity before lower-priority quoted literals",
+      );
+      assert.ok(
+        [...prioritizedFocusSymbolPacket.primaryContext, ...prioritizedFocusSymbolPacket.relatedContext].some((candidate) =>
+          candidate.source === "live_text_provider" &&
+          candidate.kind === "symbol" &&
+          candidate.symbolName === "AdminEndorsementCreatePage" &&
+          candidate.metadata?.queryKind === "symbol"
+        ),
+        "focused symbols should still receive current-disk live evidence when quoted literals hit the cap",
+      );
+      assert.ok(
+        prioritizedFocusSymbolPacket.requestCoverage.items.some((item) =>
+          item.kind === "symbol" &&
+          item.value === "AdminEndorsementCreatePage" &&
+          item.status === "covered" &&
+          item.matchedBy.some((ref) => ref.includes("live_text_provider"))
+        ),
+        "request coverage should preserve current-disk focused-symbol coverage under live query caps",
+      );
+      assert.ok(
+        prioritizedFocusSymbolPacket.requestCoverage.items.some((item) =>
+          item.kind === "quoted_text" &&
+          item.value === "unsearched focus symbol marker" &&
+          item.status === "not_checked"
+        ),
+        "quoted literals omitted after explicit symbol priority should be marked not_checked",
+      );
+      assert.equal(
+        prioritizedFocusSymbolPacket.retrievalDiagnostics.liveTextMisses.some((miss) =>
+          miss.query === "unsearched focus symbol marker"
+        ),
+        false,
+        "quoted literals omitted by explicit symbol priority should not be reported as live text misses",
+      );
+
+      const mixedScopedLiveLiteralPacket = await invokeTool(
+        "context_packet",
+        {
+          projectId,
+          request: "find \"duplicate role check\" and \"missing scoped marker\"",
+          focusFiles: [
+            "app/dashboard/admin/endorsements/create/client-page.tsx",
+            "app/dashboard/instructor/endorsements/create/client-page.tsx",
+          ],
+        },
+        { hotIndexCache: scopedLiteralCache },
+      ) as ContextPacketToolOutput;
+      assertExpandableToolsHaveValidArgs(mixedScopedLiveLiteralPacket, "mixed scoped live literal packet");
+      assert.ok(
+        mixedScopedLiveLiteralPacket.limits.providersRun.includes("file_provider"),
+        "mixed scoped literal hits and misses should keep indexed fallback providers enabled",
+      );
+      assert.ok(
+        mixedScopedLiveLiteralPacket.limits.providersRun.includes("hot_hint_index"),
+        "mixed scoped literal hits and misses should keep broad hot hints enabled",
+      );
+      assert.ok(
+        mixedScopedLiveLiteralPacket.limits.providersRun.includes("repo_map_provider"),
+        "mixed scoped literal hits and misses should keep repo-map fallback enabled",
+      );
+      const mixedScopedHits = [...mixedScopedLiveLiteralPacket.primaryContext, ...mixedScopedLiveLiteralPacket.relatedContext]
+        .filter((candidate) =>
+          candidate.source === "live_text_provider" &&
+          candidate.metadata?.query === "duplicate role check"
+        )
+        .map((candidate) => candidate.metadata?.scopePath)
+        .sort();
+      assert.deepEqual(
+        mixedScopedHits,
+        [
+          "app/dashboard/admin/endorsements/create/client-page.tsx",
+          "app/dashboard/instructor/endorsements/create/client-page.tsx",
+        ],
+        "bounded live literal search should preserve scoped hits from multiple focus files",
+      );
+      assert.deepEqual(
+        mixedScopedLiveLiteralPacket.retrievalDiagnostics.liveTextMisses
+          .filter((miss) => miss.query === "missing scoped marker")
+          .map((miss) => miss.scopePath),
+        [
+          "app/dashboard/admin/endorsements/create/client-page.tsx",
+          "app/dashboard/instructor/endorsements/create/client-page.tsx",
+        ],
+        "bounded live literal search should reassemble scoped misses in deterministic focus-file order",
+      );
+      assert.ok(
+        mixedScopedLiveLiteralPacket.requestCoverage.items.some((item) =>
+          item.kind === "quoted_text" &&
+          item.value === "missing scoped marker" &&
+          item.status === "uncovered"
+        ),
+        "mixed scoped literal packets should keep missed literals visible in request coverage",
       );
 
       const scopedLiveLiteralMissPacket = await invokeTool(
@@ -889,6 +2343,18 @@ async function main(): Promise<void> {
     ) as ContextPacketToolOutput;
     assert.equal(weakPacket.evidenceQuality.label, "weak");
     assert.equal(weakPacket.evidenceQuality.totalContextCount, 0);
+    assert.equal(
+      weakPacket.retrievalDiagnostics.retrievalPlan.evidenceGate.status,
+      "follow_up_required",
+      "zero-context packet should require follow-up before answering",
+    );
+    assert.equal(weakPacket.retrievalDiagnostics.retrievalPlan.evidenceGate.canAnswerFromPacket, false);
+    assert.ok(
+      weakPacket.retrievalDiagnostics.retrievalPlan.evidenceGate.blockingReasons.some((reason) =>
+        reason.includes("No deterministic context")
+      ),
+      "zero-context gate should explain the missing evidence",
+    );
     assert.equal(weakPacket.retrievalDiagnostics.providerCandidateCount, 0);
     assert.ok(
       weakPacket.retrievalDiagnostics.zeroCandidateProviders.length > 0,
@@ -980,6 +2446,31 @@ async function main(): Promise<void> {
       ["app/api/auth/callback/route.ts", "lib/auth/session.ts", "types/auth.ts"],
       "transitive dependency should retain the focused graph path",
     );
+    const transitiveGraphFile = graphPacket.graphSummary.files.find((file) => file.filePath === "types/auth.ts");
+    assert.ok(
+      transitiveGraphFile,
+      "graph summary should include the transitive dependency file",
+    );
+    assert.equal(
+      transitiveGraphFile?.pathEvidenceCount,
+      1,
+      "graph summary should count path-level provenance for transitive dependencies",
+    );
+    assert.deepEqual(
+      transitiveGraphFile?.pathEvidence?.[0]?.path,
+      ["app/api/auth/callback/route.ts", "lib/auth/session.ts", "types/auth.ts"],
+      "graph summary should expose the dependency path that made the transitive file relevant",
+    );
+    assert.equal(
+      transitiveGraphFile?.pathEvidence?.[0]?.distance,
+      2,
+      "graph summary path evidence should expose dependency distance",
+    );
+    assert.equal(
+      transitiveGraphFile?.pathEvidence?.[0]?.source,
+      "import_graph_provider",
+      "graph summary path evidence should preserve the provider source",
+    );
     assert.equal(
       typeof transitiveTypeCandidate?.metadata?.corroborationBonus,
       "number",
@@ -1052,6 +2543,139 @@ async function main(): Promise<void> {
       graphPacket.evidenceQuality.graph.edgeCount > 0 ||
         graphPacket.evidenceQuality.graph.connectedFileCount > 0,
       "connected graph quality should prove edge or relation evidence was returned",
+    );
+
+    const cappedGraphPacket = await invokeTool(
+      "context_packet",
+      {
+        projectId,
+        request: "inspect wide dependency graph",
+        focusFiles: ["app/fairness/wide.ts"],
+        includeLiveHints: false,
+        maxPrimaryContext: 8,
+        maxRelatedContext: 16,
+        budgetTokens: 8000,
+      },
+      { hotIndexCache },
+    ) as ContextPacketToolOutput;
+    assertExpandableToolsHaveValidArgs(cappedGraphPacket, "capped graph packet");
+    assert.equal(
+      cappedGraphPacket.evidenceQuality.graph.status,
+      "connected",
+      "bounded graph traversal can still return connected evidence",
+    );
+    assert.ok(
+      cappedGraphPacket.warnings.some((warning) =>
+        warning.includes("import_graph_provider") &&
+        warning.includes("app/fairness/wide.ts") &&
+        warning.includes("capped at 8 of 12 edge")
+      ),
+      "wide graph traversal should report the per-node edge cap in packet warnings",
+    );
+    assert.ok(
+      cappedGraphPacket.graphSummary.warnings.some((warning) =>
+        warning.includes("import_graph_provider") &&
+        warning.includes("app/fairness/wide.ts") &&
+        warning.includes("capped at 8 of 12 edge")
+      ),
+      "graph summary should retain provider cap warnings for evidence assessment",
+    );
+    assert.ok(
+      cappedGraphPacket.evidenceQuality.graph.warningCount > 0,
+      "evidence quality should count graph traversal warnings",
+    );
+    assert.ok(
+      cappedGraphPacket.evidenceQuality.reasons.some((reason) =>
+        reason.includes("graph evidence warning") &&
+        reason.includes("bounded or incomplete traversal")
+      ),
+      "evidence quality should explain bounded graph traversal",
+    );
+    assert.ok(
+      cappedGraphPacket.evidenceQuality.recommendedAction.includes("bounded"),
+      "bounded graph evidence should steer agents away from exhaustive dependency claims",
+    );
+    assert.ok(
+      cappedGraphPacket.retrievalDiagnostics.retrievalPlan.signals.some((signal) =>
+        signal.startsWith("graph_warnings:")
+      ),
+      "retrieval plan should expose bounded graph evidence as a machine-readable signal",
+    );
+    assert.ok(
+      cappedGraphPacket.retrievalDiagnostics.retrievalPlan.evidenceGate.advisoryReasons.some((reason) =>
+        reason.includes("warning-labeled or bounded")
+      ),
+      "retrieval gate should recommend follow-up when graph traversal was capped",
+    );
+    assert.ok(
+      cappedGraphPacket.retrievalDiagnostics.retrievalPlan.evidenceGaps.some((gap) =>
+        gap.kind === "graph_evidence" &&
+        gap.severity === "advisory" &&
+        gap.message.includes("exhaustive")
+      ),
+      "retrieval plan should expose bounded graph traversal as a typed advisory gap",
+    );
+
+    const fairMultiSeedGraphPacket = await invokeTool(
+      "context_packet",
+      {
+        projectId,
+        request: "inspect multi-anchor dependency graph fairness",
+        focusFiles: ["app/fairness/hub.ts", "app/fairness/target.ts"],
+        includeLiveHints: false,
+        maxPrimaryContext: 16,
+        maxRelatedContext: 60,
+        budgetTokens: 12000,
+      },
+      { hotIndexCache },
+    ) as ContextPacketToolOutput;
+    const fairMultiSeedContext = [
+      ...fairMultiSeedGraphPacket.primaryContext,
+      ...fairMultiSeedGraphPacket.relatedContext,
+    ];
+    assert.ok(
+      fairMultiSeedContext.some((candidate) =>
+        candidate.source === "import_graph_provider" &&
+        candidate.path === "app/fairness/deps/dep-0.ts" &&
+        candidate.metadata?.seedPath === "app/fairness/hub.ts"
+      ),
+      "multi-seed graph retrieval should still return context from the high-fanout first seed",
+    );
+    const fairTargetLeafCandidate = fairMultiSeedContext.find((candidate) =>
+      candidate.source === "import_graph_provider" &&
+      candidate.path === "app/fairness/target-leaf.ts"
+    );
+    const fairImportGraphSeedOrder = fairMultiSeedContext
+      .filter((candidate) => candidate.source === "import_graph_provider")
+      .map((candidate) => candidate.metadata?.seedPath);
+    assert.ok(
+      fairImportGraphSeedOrder.slice(0, 4).includes("app/fairness/target.ts"),
+      `multi-seed graph ranking should diversify graph candidates across seeds early; got ${JSON.stringify(
+        fairImportGraphSeedOrder.slice(0, 12),
+      )}`,
+    );
+    assert.ok(
+      fairTargetLeafCandidate,
+      `multi-seed graph retrieval should not let the first seed exhaust the graph budget; got ${JSON.stringify(
+        fairMultiSeedContext
+          .filter((candidate) => candidate.source === "import_graph_provider")
+          .map((candidate) => ({
+            path: candidate.path,
+            seedPath: candidate.metadata?.seedPath,
+            graphDepth: candidate.metadata?.graphDepth,
+          }))
+          .slice(0, 24),
+      )}`,
+    );
+    assert.equal(
+      fairTargetLeafCandidate?.metadata?.seedPath,
+      "app/fairness/target.ts",
+      "later seed graph candidates should retain the seed path that produced them",
+    );
+    assert.equal(
+      fairTargetLeafCandidate?.metadata?.graphTraversalMode,
+      "round_robin_frontier",
+      "import graph metadata should expose balanced frontier traversal",
     );
 
     const isolatedGraphPacket = await invokeTool(
@@ -1140,6 +2764,67 @@ async function main(): Promise<void> {
     assert.ok(
       isolatedGraphExpansionTools.some((tool) => tool.toolName === "reef_where_used"),
       "isolated graph evidence should also suggest maintained usage evidence",
+    );
+    assert.equal(
+      isolatedGraphPacket.expandableTools[4]?.toolName,
+      "tool_batch",
+      "isolated graph evidence should keep direct graph tools first and then offer a batched shortcut",
+    );
+    assert.deepEqual(
+      batchExpansionOps(isolatedGraphPacket, "isolated graph packet").map((op) => op.tool),
+      ["imports_deps", "imports_impact", "repo_map", "reef_where_used"],
+      "isolated graph batch should bundle the direct dependency, impact, map, and usage follow-ups",
+    );
+    await assertGeneratedBatchExpansionExecutes(isolatedGraphPacket, "isolated graph packet", hotIndexCache);
+    assert.equal(
+      isolatedGraphPacket.retrievalDiagnostics.retrievalPlan.level,
+      "broader_context_retrieval",
+      "dependency graph requests should be classified as broader context retrieval",
+    );
+    assert.equal(
+      isolatedGraphPacket.retrievalDiagnostics.retrievalPlan.strategy,
+      "graph_expansion",
+      "dependency graph requests should prefer graph expansion",
+    );
+    assert.ok(
+      isolatedGraphPacket.retrievalDiagnostics.retrievalPlan.requiredEvidence.some((item) =>
+        item.includes("dependency graph")
+      ),
+      "broader context retrieval should require dependency graph evidence",
+    );
+    assert.deepEqual(
+      isolatedGraphPacket.retrievalDiagnostics.retrievalPlan.recommendedTools.slice(0, 5),
+      ["tool_batch", "imports_deps", "imports_impact", "repo_map", "reef_where_used"],
+      "graph retrieval plan should name the generated graph follow-up tools in priority order",
+    );
+    assert.deepEqual(
+      isolatedGraphPacket.retrievalDiagnostics.retrievalPlan.recommendedFollowUps.slice(0, 5).map((tool) => tool.toolName),
+      ["tool_batch", "imports_deps", "imports_impact", "repo_map", "reef_where_used"],
+      "graph retrieval plan should include executable graph follow-ups in priority order",
+    );
+    assert.equal(
+      isolatedGraphPacket.retrievalDiagnostics.retrievalPlan.evidenceGate.status,
+      "follow_up_required",
+      "isolated graph evidence should require follow-up before dependency claims",
+    );
+    assert.equal(isolatedGraphPacket.retrievalDiagnostics.retrievalPlan.evidenceGate.canAnswerFromPacket, false);
+    assert.ok(
+      isolatedGraphPacket.retrievalDiagnostics.retrievalPlan.evidenceGate.blockingReasons.some((reason) =>
+        reason.includes("isolated")
+      ),
+      "isolated graph gate should explain the graph evidence gap",
+    );
+    assert.ok(
+      isolatedGraphPacket.retrievalDiagnostics.retrievalPlan.evidenceGaps.some((gap) =>
+        gap.kind === "graph_evidence" &&
+        gap.severity === "blocking" &&
+        gap.recommendedTools.includes("imports_impact")
+      ),
+      "isolated graph plan should expose the graph gap with executable follow-up tools",
+    );
+    assert.ok(
+      isolatedGraphPacket.retrievalDiagnostics.recommendations[0]?.includes("Use the tool_batch expansion"),
+      "partial graph evidence should recommend the compact batch before broad dependency claims",
     );
 
     const routeOnlyGraphPacket = await invokeTool(
@@ -1429,6 +3114,14 @@ async function main(): Promise<void> {
       }),
       "uncovered database anchors should suggest table_neighborhood with parsed schema/table args",
     );
+    assert.equal(
+      unresolvedFocusPacket.expandableTools.some((tool) =>
+        (tool.toolName === "imports_deps" || tool.toolName === "imports_impact") &&
+        (tool.suggestedArgs as { file?: unknown }).file === "missing/file.ts"
+      ),
+      false,
+      "unresolved focus files should not produce imports_deps/imports_impact follow-ups against missing paths",
+    );
     const unresolvedRepoMapCandidates = [
       ...unresolvedFocusPacket.primaryContext,
       ...unresolvedFocusPacket.relatedContext,
@@ -1463,6 +3156,27 @@ async function main(): Promise<void> {
         risk.reason.includes("app/dashboard/layout.tsx")
       ),
       "context_packet risks should include relevant active Reef findings",
+    );
+    assert.equal(
+      dashboardPacket.limits.providersRun.includes("repo_map_provider"),
+      false,
+      "focused non-graph review packets should skip broad repo-map ranking",
+    );
+    assert.ok(
+      dashboardPacket.limits.providersSkipped.includes("repo_map_provider"),
+      "focused non-graph review packets should report repo_map_provider as skipped",
+    );
+    assert.ok(
+      dashboardPacket.retrievalDiagnostics.providersSkippedDetail.some((detail) =>
+        detail.provider === "repo_map_provider" &&
+        detail.adaptive &&
+        detail.reason.includes("focus/changed file anchors")
+      ),
+      "retrieval diagnostics should explain focused-file repo-map pruning",
+    );
+    assert.ok(
+      dashboardPacket.retrievalDiagnostics.adaptiveSkippedProviders.includes("repo_map_provider"),
+      "retrieval diagnostics should summarize focused-file repo-map pruning as adaptive",
     );
     const confidenceFilteredRiskPacket = await invokeTool(
       "context_packet",
@@ -1586,6 +3300,15 @@ async function main(): Promise<void> {
       "/api/auth/callback",
       "route_context suggestedArgs should reflect focusRoutes",
     );
+    assert.ok(
+      planPacket.requestCoverage.items.some((item) =>
+        item.kind === "route" &&
+        item.value === "/api/auth/callback" &&
+        item.status === "covered" &&
+        item.matchedBy.some((ref) => ref.includes("GET /api/auth/callback") || ref.includes("/api/auth/callback"))
+      ),
+      "route request coverage should treat method-qualified route evidence as covering the exact route path",
+    );
     const planTableNeighborhood = planPacket.expandableTools.find((tool) => tool.toolName === "table_neighborhood");
     assert.deepEqual(
       planTableNeighborhood?.suggestedArgs,
@@ -1595,6 +3318,123 @@ async function main(): Promise<void> {
         tableName: "user_profiles",
       },
       "table_neighborhood suggestedArgs should include required schema/table inputs",
+    );
+
+    const omittedAnchorPacket = await invokeTool(
+      "context_packet",
+      {
+        projectId,
+        mode: "plan",
+        request: "plan getSession, the auth callback route, and the user profile table together",
+        focusSymbols: ["getSession"],
+        focusRoutes: ["/api/auth/callback"],
+        focusDatabaseObjects: ["public.user_profiles"],
+        maxPrimaryContext: 1,
+        maxRelatedContext: 1,
+        budgetTokens: 1_000,
+        includeLiveHints: false,
+      },
+      { hotIndexCache },
+    ) as ContextPacketToolOutput;
+    ContextPacketToolOutputSchema.parse(omittedAnchorPacket);
+    assertExpandableToolsHaveValidArgs(omittedAnchorPacket, "omitted anchor packet");
+    assert.ok(
+      omittedAnchorPacket.limits.omittedRequestedAnchors.some((anchor) =>
+        anchor.kind === "database_object" &&
+        anchor.value === "public.user_profiles" &&
+        anchor.reason === "selection_limit"
+      ),
+      "tight packets should report requested anchors that were ranked but omitted by selection limits",
+    );
+    const omittedTableNeighborhood = omittedAnchorPacket.expandableTools.find((tool) => {
+      const args = tool.suggestedArgs as { schemaName?: unknown; tableName?: unknown; maxPerSection?: unknown };
+      return tool.toolName === "table_neighborhood" &&
+        args.schemaName === "public" &&
+        args.tableName === "user_profiles" &&
+        args.maxPerSection === 20 &&
+        tool.reason.includes("ranked but omitted");
+    });
+    assert.ok(
+      omittedTableNeighborhood,
+      "ranked-but-omitted database anchors should get a concrete table_neighborhood follow-up",
+    );
+    const omittedAnchorGap = omittedAnchorPacket.retrievalDiagnostics.retrievalPlan.evidenceGaps.find((gap) =>
+      gap.kind === "context_budget" &&
+      gap.severity === "blocking" &&
+      gap.message.includes("public.user_profiles")
+    );
+    assert.ok(
+      omittedAnchorGap,
+      "retrieval diagnostics should name the exact requested anchor omitted from returned context",
+    );
+    assert.deepEqual(
+      omittedAnchorGap?.anchors?.map((anchor) => ({
+        kind: anchor.kind,
+        value: anchor.value,
+        reason: anchor.reason,
+      })),
+      [{
+        kind: "database_object",
+        value: "public.user_profiles",
+        reason: "selection_limit",
+      }],
+      "omitted-anchor evidence gaps should carry machine-readable anchor details",
+    );
+    assert.ok(
+      omittedAnchorPacket.retrievalDiagnostics.retrievalPlan.recommendedTools.includes("table_neighborhood"),
+      "retrieval plan should recommend the anchor-specific omitted table follow-up",
+    );
+    assert.ok(
+      omittedAnchorPacket.retrievalDiagnostics.retrievalPlan.recommendedFollowUps.some((tool) => {
+        const args = tool.suggestedArgs as { schemaName?: unknown; tableName?: unknown; maxPerSection?: unknown };
+        return tool.toolName === "table_neighborhood" &&
+          args.schemaName === "public" &&
+          args.tableName === "user_profiles" &&
+          args.maxPerSection === 20;
+      }),
+      "retrieval plan should expose the omitted-anchor table_neighborhood follow-up as executable",
+    );
+    assert.ok(
+      batchExpansionOps(omittedAnchorPacket, "omitted anchor packet").some((op) => {
+        const args = op.args as { schemaName?: unknown; tableName?: unknown; maxPerSection?: unknown } | undefined;
+        return op.tool === "table_neighborhood" &&
+          args?.schemaName === "public" &&
+          args.tableName === "user_profiles" &&
+          args.maxPerSection === 20;
+      }),
+      "generated tool_batch should preserve the omitted-anchor table_neighborhood expansion",
+    );
+
+    const routePrefixPacket = await invokeTool(
+      "context_packet",
+      {
+        projectId,
+        mode: "plan",
+        request: "plan the auth callback route prefix",
+        focusRoutes: ["/api/auth"],
+        includeLiveHints: false,
+      },
+      { hotIndexCache },
+    ) as ContextPacketToolOutput;
+    assert.ok(
+      routePrefixPacket.routes.some((route) => route.routeKey === "GET /api/auth/callback"),
+      "prefix packet fixture should include a neighboring concrete route candidate",
+    );
+    assert.ok(
+      routePrefixPacket.requestCoverage.items.some((item) =>
+        item.kind === "route" &&
+        item.value === "/api/auth" &&
+        item.status === "uncovered"
+      ),
+      "route request coverage should not treat neighboring route prefixes as covered",
+    );
+    assert.ok(
+      routePrefixPacket.expandableTools.some((tool) =>
+        tool.toolName === "route_context" &&
+        (tool.suggestedArgs as { route?: unknown }).route === "/api/auth" &&
+        tool.reason.includes("not covered")
+      ),
+      "uncovered route prefixes should keep an explicit route_context follow-up",
     );
 
     const reviewPacket = await invokeTool(
@@ -1618,6 +3458,11 @@ async function main(): Promise<void> {
       reviewToolNames.includes("ast_find_pattern"),
       false,
       "review mode should not recommend ast_find_pattern",
+    );
+    assert.equal(
+      batchExpansionOps(reviewPacket, "review packet").some((op) => op.tool === "lint_files"),
+      false,
+      "review batch should not include mutation-oriented lint_files follow-ups",
     );
 
     const coercedAuthPath = await invokeTool(
@@ -1760,6 +3605,64 @@ async function main(): Promise<void> {
       fallbackPacket.expandableTools.some((tool) => tool.toolName === "working_tree_overlay" && tool.readOnly === false),
       "context_packet should recommend the overlay mutation without running it",
     );
+    assert.equal(
+      batchExpansionOps(fallbackPacket, "overlay fallback packet").some((op) => op.tool === "working_tree_overlay"),
+      false,
+      "overlay fallback batch should not include mutation-oriented working_tree_overlay follow-ups",
+    );
+
+    writeFixtureFile(
+      projectRoot,
+      "app/dashboard/admin/endorsements/create/client-page.tsx",
+      [
+        "export function AdminEndorsementRenamedPage() {",
+        "  const roleCheck = 'admin endorsement create duplicate role check';",
+        "  return <section>{roleCheck}</section>;",
+        "}",
+      ].join("\n"),
+    );
+    const staleSymbolPacket = await invokeTool(
+      "context_packet",
+      {
+        projectId,
+        request: "inspect AdminEndorsementCreatePage current file after rename",
+        focusFiles: ["app/dashboard/admin/endorsements/create/client-page.tsx"],
+        focusSymbols: ["AdminEndorsementCreatePage"],
+      },
+      { hotIndexCache },
+    ) as ContextPacketToolOutput;
+    assertExpandableToolsHaveValidArgs(staleSymbolPacket, "stale symbol packet");
+    assert.ok(
+      staleSymbolPacket.retrievalDiagnostics.liveTextMisses.some((miss) =>
+        miss.query === "AdminEndorsementCreatePage" &&
+        miss.queryKind === "symbol" &&
+        miss.scope === "file" &&
+        miss.scopePath === "app/dashboard/admin/endorsements/create/client-page.tsx"
+      ),
+      "retrieval diagnostics should report scoped current-file misses for requested symbols",
+    );
+    assert.ok(
+      staleSymbolPacket.requestCoverage.items.some((item) =>
+        item.kind === "symbol" &&
+        item.value === "AdminEndorsementCreatePage" &&
+        item.status === "uncovered" &&
+        item.matchedBy.length === 0
+      ),
+      "current-disk symbol misses should prevent stale indexed symbol matches from satisfying request coverage",
+    );
+    assert.ok(
+      staleSymbolPacket.retrievalDiagnostics.recommendations.some((recommendation) =>
+        recommendation.includes("Focused symbol was not found in scoped current files")
+      ),
+      "retrieval diagnostics should recommend rename/deletion checks for scoped symbol misses",
+    );
+    assert.ok(
+      staleSymbolPacket.retrievalDiagnostics.retrievalPlan.evidenceGaps.some((gap) =>
+        gap.message.includes("requested symbol") &&
+        gap.message.includes("scoped current files")
+      ),
+      "retrieval-plan evidence gaps should distinguish scoped symbol misses from quoted literal misses",
+    );
 
     writeFixtureFile(
       projectRoot,
@@ -1810,6 +3713,32 @@ async function main(): Promise<void> {
       });
       assert.ok(events.length >= 1, "context_packet should emit packet usefulness telemetry");
       assert.equal(events.some((event) => event.requestId === "req_context_packet_smoke"), true);
+      const primaryEvent = events.find((event) => event.requestId === "req_context_packet_smoke");
+      assert.ok(primaryEvent, "primary context_packet telemetry event should be queryable by requestId");
+      assert.ok(
+        primaryEvent.reasonCodes.includes("retrieval_level_issue_to_edit_localization"),
+        "context_packet telemetry should include retrieval-plan level",
+      );
+      assert.ok(
+        primaryEvent.reasonCodes.includes("retrieval_strategy_entity_lookup"),
+        "context_packet telemetry should include retrieval-plan strategy",
+      );
+      assert.ok(
+        primaryEvent.reasonCodes.includes("evidence_gate_follow_up_recommended"),
+        "context_packet telemetry should include evidence-gate status",
+      );
+      assert.ok(
+        primaryEvent.reasonCodes.includes("recommended_followups_available"),
+        "context_packet telemetry should indicate executable follow-ups were available",
+      );
+      assert.ok(
+        primaryEvent.reasonCodes.includes("evidence_gap_edit_localization_advisory"),
+        "context_packet telemetry should include retrieval evidence-gap reason codes",
+      );
+      assert.ok(
+        primaryEvent.reason?.includes("retrieval gate follow_up_recommended"),
+        "context_packet telemetry reason should summarize retrieval gate state",
+      );
     } finally {
       store.close();
     }

@@ -322,6 +322,11 @@ export interface UsefulnessEventGradeCount {
   count: number;
 }
 
+export interface UsefulnessEventReasonCodeCount {
+  reasonCode: string;
+  count: number;
+}
+
 // Initial Testing Phase 1: finding acknowledgements.
 //
 // `FindingAckRecord` mirrors the `FindingAck` contract exactly — the store

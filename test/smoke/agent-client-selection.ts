@@ -82,8 +82,21 @@ async function main(): Promise<void> {
     "context_packet hint advertises graph expansion",
   );
   assert.ok(
+    CLAUDE_CODE_TOOL_HINTS.context_packet.searchHint.includes("retrieval") &&
+      CLAUDE_CODE_TOOL_HINTS.context_packet.searchHint.includes("plans"),
+    "context_packet hint advertises retrieval plans",
+  );
+  assert.ok(
     CLAUDE_CODE_TOOL_HINTS.tool_batch.searchHint.includes("compact"),
     "tool_batch hint advertises compact summaries",
+  );
+  assert.ok(
+    CLAUDE_CODE_TOOL_HINTS.tool_batch.searchHint.includes("parallel"),
+    "tool_batch hint advertises parallel follow-up batching",
+  );
+  assert.ok(
+    CLAUDE_CODE_TOOL_HINTS.tool_batch.searchHint.includes("bounded"),
+    "tool_batch hint advertises bounded concurrency",
   );
 
   assert.equal(
@@ -106,6 +119,14 @@ async function main(): Promise<void> {
     "server instructions point agents at context_packet",
   );
   assert.ok(
+    MAKO_SERVER_INSTRUCTIONS.includes("retrievalDiagnostics.retrievalPlan.level") &&
+      MAKO_SERVER_INSTRUCTIONS.includes("evidenceGate") &&
+      MAKO_SERVER_INSTRUCTIONS.includes("evidenceGaps") &&
+      MAKO_SERVER_INSTRUCTIONS.includes("recommendedFollowUps") &&
+      MAKO_SERVER_INSTRUCTIONS.includes("nextStep"),
+    "server instructions teach agents to read retrieval plans and executable follow-ups",
+  );
+  assert.ok(
     MAKO_SERVER_INSTRUCTIONS.includes("focusRoutes") &&
       MAKO_SERVER_INSTRUCTIONS.includes("focusSymbols") &&
       MAKO_SERVER_INSTRUCTIONS.includes("focusDatabaseObjects"),
@@ -119,6 +140,12 @@ async function main(): Promise<void> {
   assert.ok(
     MAKO_SERVER_INSTRUCTIONS.includes("compact summaries"),
     "server instructions mention compact tool_batch summaries",
+  );
+  assert.ok(
+    MAKO_SERVER_INSTRUCTIONS.includes("continueOnError=true") &&
+      MAKO_SERVER_INSTRUCTIONS.includes("bounded concurrency") &&
+      MAKO_SERVER_INSTRUCTIONS.includes("maxConcurrency"),
+    "server instructions mention bounded concurrent tool_batch execution",
   );
 
   console.log("agent-client-selection: PASS");

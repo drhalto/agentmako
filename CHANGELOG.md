@@ -7,6 +7,23 @@ it reaches 1.0.
 
 ## [Unreleased]
 
+## [0.4.1] - 2026-06-28
+
+### Added
+
+- Context-packet **retrieval diagnostics**: a retrieval plan (level + strategy),
+  an evidence gate (`canAnswerFromPacket` / `canEditFromPacket`), typed evidence
+  gaps, request-coverage tracking, and provider-run diagnostics — so an agent
+  knows whether a packet is answer/edit-ready or needs follow-up tools.
+
+### Fixed
+
+- Request coverage is now derived from what was retrieved rather than the
+  budget-trimmed payload, so a supporting signal dropped only to fit
+  `budgetTokens` no longer reports a covered anchor as uncovered.
+- The context-packet evidence gate is now a projection of the evidence gaps, so
+  the gate status can no longer contradict the listed gaps.
+
 ## [0.4.0] - 2026-06-27
 
 ### Added

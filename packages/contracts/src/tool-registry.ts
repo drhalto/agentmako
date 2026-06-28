@@ -15,6 +15,7 @@ export const MAKO_TOOL_NAMES = [
   "flow_map",
   "change_plan",
   "tenant_leak_audit",
+  "owasp_audit",
   "health_trend",
   "issues_next",
   "session_handoff",

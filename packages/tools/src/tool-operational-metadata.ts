@@ -53,6 +53,7 @@ export const TOOL_OPERATIONAL_METADATA = {
   flow_map: readOnly(RO),
   change_plan: readOnly(RO),
   tenant_leak_audit: readOnly(RO_ADVISORY_DERIVED),
+  owasp_audit: readOnly(RO_ADVISORY_DERIVED),
   health_trend: readOnly(RO_DERIVED),
   issues_next: readOnly(RO),
   session_handoff: readOnly(RO_DERIVED),

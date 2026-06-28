@@ -17,6 +17,7 @@ import {
   aggregateUsefulnessEventsByDecisionKindImpl,
   aggregateUsefulnessEventsByFamilyImpl,
   aggregateUsefulnessEventsByGradeImpl,
+  aggregateUsefulnessEventsByReasonCodeImpl,
   countUsefulnessEventsImpl,
   insertUsefulnessEventImpl,
   queryUsefulnessEventsImpl,
@@ -59,6 +60,7 @@ import type {
   UsefulnessEventFamilyCount,
   UsefulnessEventGradeCount,
   UsefulnessEventInsert,
+  UsefulnessEventReasonCodeCount,
   UsefulnessEventRecord,
   WorkflowFollowupInsert,
   WorkflowFollowupRecord,
@@ -166,6 +168,14 @@ export const projectStoreIndexMethods = {
     filter: UsefulnessEventAggregationFilter = {},
   ): UsefulnessEventGradeCount[] {
     return aggregateUsefulnessEventsByGradeImpl(this.db, filter);
+  },
+
+  aggregateUsefulnessEventsByReasonCode(
+    this: ProjectStoreContext,
+    filter: UsefulnessEventAggregationFilter = {},
+    limit?: number,
+  ): UsefulnessEventReasonCodeCount[] {
+    return aggregateUsefulnessEventsByReasonCodeImpl(this.db, filter, limit);
   },
 
   insertFindingAck(

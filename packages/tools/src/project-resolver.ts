@@ -1,4 +1,5 @@
-import { existsSync, realpathSync } from "node:fs";
+import { existsSync, realpathSync, statSync } from "node:fs";
+import { dirname, join } from "node:path";
 import { loadConfig } from "@mako-ai/config";
 import type { AttachedProject, JsonObject, ProjectLocatorInput } from "@mako-ai/contracts";
 import {
@@ -22,6 +23,199 @@ export interface ProjectLocationResolution {
   project: AttachedProject | null;
   detachedProject: AttachedProject | null;
   ambiguousCandidates: AttachedProject[];
+}
+
+type ProjectContextLocationSource = "mcp_root" | "meta_cwd";
+
+interface ProjectContextLocationHint {
+  source: ProjectContextLocationSource;
+  path: string;
+  normalizedPath: string;
+  exists: boolean;
+  suggestedProjectRoot?: string;
+  suggestedProjectRootReason?: string;
+}
+
+interface DiscoveredProjectRoot {
+  path: string;
+  reason: string;
+}
+
+const WORKSPACE_ROOT_MARKERS = [
+  "pnpm-workspace.yaml",
+  "rush.json",
+  "lerna.json",
+  "nx.json",
+  "workspace.json",
+] as const;
+const PROJECT_ROOT_MARKERS = [
+  "package.json",
+  "pyproject.toml",
+  "Cargo.toml",
+  "go.mod",
+  "pom.xml",
+  "build.gradle",
+  "settings.gradle",
+  "deno.json",
+] as const;
+
+function existingDirectoryForReference(reference: string): string | undefined {
+  if (!existsSync(reference)) {
+    return undefined;
+  }
+
+  try {
+    const resolved = realpathSync(reference);
+    return statSync(resolved).isDirectory() ? resolved : dirname(resolved);
+  } catch {
+    return undefined;
+  }
+}
+
+function hasAnyMarker(directory: string, markers: readonly string[]): string | undefined {
+  return markers.find((marker) => existsSync(join(directory, marker)));
+}
+
+function normalizeExistingDirectory(directory: string): string {
+  return normalizePath(realpathSync(directory));
+}
+
+function discoverSuggestedProjectRoot(reference: string): DiscoveredProjectRoot | undefined {
+  let current = existingDirectoryForReference(reference);
+  let packageCandidate: DiscoveredProjectRoot | undefined;
+
+  while (current) {
+    if (existsSync(join(current, ".mako", "project.json"))) {
+      return {
+        path: normalizeExistingDirectory(current),
+        reason: "mako_manifest",
+      };
+    }
+
+    if (existsSync(join(current, ".git"))) {
+      return {
+        path: normalizeExistingDirectory(current),
+        reason: "git_root",
+      };
+    }
+
+    const workspaceMarker = hasAnyMarker(current, WORKSPACE_ROOT_MARKERS);
+    if (workspaceMarker) {
+      return {
+        path: normalizeExistingDirectory(current),
+        reason: workspaceMarker,
+      };
+    }
+
+    const projectMarker = hasAnyMarker(current, PROJECT_ROOT_MARKERS);
+    if (!packageCandidate && projectMarker) {
+      packageCandidate = {
+        path: normalizeExistingDirectory(current),
+        reason: projectMarker,
+      };
+    }
+
+    const parent = dirname(current);
+    if (parent === current) {
+      break;
+    }
+    current = parent;
+  }
+
+  return packageCandidate;
+}
+
+function createProjectContextLocationHint(
+  source: ProjectContextLocationSource,
+  rawPath: string,
+): ProjectContextLocationHint | null {
+  const path = rawPath.trim();
+  if (path === "") {
+    return null;
+  }
+
+  const suggestedProjectRoot = discoverSuggestedProjectRoot(path);
+  return {
+    source,
+    path,
+    normalizedPath: resolveProjectReference(path),
+    exists: existsSync(path),
+    ...(suggestedProjectRoot
+      ? {
+          suggestedProjectRoot: suggestedProjectRoot.path,
+          suggestedProjectRootReason: suggestedProjectRoot.reason,
+        }
+      : {}),
+  };
+}
+
+function collectProjectContextLocationHints(
+  roots: readonly string[],
+  metaCwd: string | undefined,
+): ProjectContextLocationHint[] {
+  const hints = new Map<string, ProjectContextLocationHint>();
+  for (const root of roots) {
+    const hint = createProjectContextLocationHint("mcp_root", root);
+    if (hint) {
+      hints.set(`${hint.source}:${hint.normalizedPath}`, hint);
+    }
+  }
+
+  if (metaCwd) {
+    const hint = createProjectContextLocationHint("meta_cwd", metaCwd);
+    if (hint) {
+      hints.set(`${hint.source}:${hint.normalizedPath}`, hint);
+    }
+  }
+
+  return [...hints.values()];
+}
+
+function quoteCliArg(value: string): string {
+  return /^[A-Za-z0-9_./:-]+$/.test(value) ? value : `"${value.replace(/"/g, '\\"')}"`;
+}
+
+function chooseSuggestedProjectRef(hints: readonly ProjectContextLocationHint[]): string | undefined {
+  return (
+    hints.find((hint) => hint.source === "meta_cwd" && hint.suggestedProjectRoot)?.suggestedProjectRoot ??
+    hints.find((hint) => hint.suggestedProjectRoot)?.suggestedProjectRoot ??
+    hints.find((hint) => hint.source === "meta_cwd" && hint.exists)?.normalizedPath ??
+    hints.find((hint) => hint.exists)?.normalizedPath ??
+    hints[0]?.normalizedPath
+  );
+}
+
+function createUnmatchedLocationProjectContextError(
+  hints: readonly ProjectContextLocationHint[],
+): ReturnType<typeof createMissingProjectContextError> {
+  const suggestedProjectRef = chooseSuggestedProjectRef(hints);
+  const suggestedCommand = suggestedProjectRef
+    ? `agentmako connect ${quoteCliArg(suggestedProjectRef)} --no-db`
+    : undefined;
+  const message = suggestedCommand
+    ? `Project context is required. MCP roots/cwd did not match any attached Mako project. Run \`${suggestedCommand}\` or pass \`projectId\`/\`projectRef\`.`
+    : "Project context is required. Provide `projectId` or `projectRef`, or call from an attached project context.";
+  const details: JsonObject = {
+    unmatchedLocations: hints.map((hint) => ({
+      source: hint.source,
+      path: hint.path,
+      normalizedPath: hint.normalizedPath,
+      exists: hint.exists,
+      ...(hint.suggestedProjectRoot
+        ? {
+            suggestedProjectRoot: hint.suggestedProjectRoot,
+            suggestedProjectRootReason: hint.suggestedProjectRootReason,
+          }
+        : {}),
+    })),
+  };
+  if (suggestedProjectRef && suggestedCommand) {
+    details.suggestedProjectRef = suggestedProjectRef;
+    details.suggestedCommand = suggestedCommand;
+    details.suggestedAction = "Run the suggested command from a terminal, then retry the MCP tool call.";
+  }
+
+  return createMissingProjectContextError(message, details);
 }
 
 export function pickBestLocationCandidate(matches: ProjectLocationMatch[]): ProjectLocationResolution {
@@ -194,13 +388,14 @@ export async function resolveProject(
     }
 
     const roots = (await options.requestContext?.getRoots?.()) ?? [];
+    const metaCwd = getMetaCwd(options.requestContext?.meta);
+    const locationHints = collectProjectContextLocationHints(roots, metaCwd);
     const rootResolution = resolveProjectFromLocations(globalStore, roots);
     if (rootResolution.project) {
       await notifyProjectResolved(options, rootResolution.project);
       return rootResolution.project;
     }
 
-    const metaCwd = getMetaCwd(options.requestContext?.meta);
     const cwdResolution = metaCwd
       ? resolveProjectFromLocations(globalStore, [metaCwd])
       : { project: null, detachedProject: null, ambiguousCandidates: [] };
@@ -236,6 +431,10 @@ export async function resolveProject(
         await notifyProjectResolved(options, sessionProject);
         return sessionProject;
       }
+    }
+
+    if (locationHints.length > 0) {
+      throw createUnmatchedLocationProjectContextError(locationHints);
     }
   } finally {
     if (!shared) {

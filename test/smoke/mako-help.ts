@@ -11,6 +11,29 @@ function step(output: MakoHelpToolOutput, id: string) {
   return found;
 }
 
+function assertRetrievalPlanGuide(output: MakoHelpToolOutput, sourceStepId = "context") {
+  const guide = output.retrievalPlanGuide;
+  assert.ok(guide, "expected retrieval plan guide");
+  assert.equal(guide.sourceStepId, sourceStepId);
+  assert.equal(guide.planPath, "retrievalDiagnostics.retrievalPlan");
+  assert.equal(guide.recommendedToolsPath, "retrievalDiagnostics.retrievalPlan.recommendedTools");
+  assert.equal(guide.recommendedFollowUpsPath, "retrievalDiagnostics.retrievalPlan.recommendedFollowUps");
+  assert.equal(guide.expandableToolsPath, "expandableTools");
+  assert.equal(guide.requiredEvidencePath, "retrievalDiagnostics.retrievalPlan.requiredEvidence");
+  assert.equal(guide.evidenceGapsPath, "retrievalDiagnostics.retrievalPlan.evidenceGaps");
+  assert.equal(guide.preferToolBatch, true);
+  assert.ok(
+    guide.evidenceGate.includes("evidenceGaps") &&
+      guide.evidenceGate.includes("requiredEvidence") &&
+      guide.evidenceGate.includes("recommendedFollowUps"),
+    "retrieval plan guide should make evidence and expansion requirements explicit",
+  );
+  assert.deepEqual(
+    guide.strategyActions.map((entry) => entry.strategy),
+    ["entity_lookup", "graph_expansion", "literal_search", "hybrid"],
+  );
+}
+
 async function main(): Promise<void> {
   const auth = MakoHelpToolOutputSchema.parse(await invokeTool("mako_help", {
     projectId: "project_auth",
@@ -41,6 +64,8 @@ async function main(): Promise<void> {
   assert.ok(auth.batchHint.eligibleStepIds.includes("auth-path"));
   assert.equal(auth.batchHint.eligibleStepIds.includes("lint-after-edit"), false);
   assert.equal((auth.batchHint.suggestedArgs as { projectId?: unknown }).projectId, "project_auth");
+  assert.equal(typeof (auth.batchHint.suggestedArgs as { maxConcurrency?: unknown }).maxConcurrency, "number");
+  assert.equal(auth.retrievalPlanGuide, null);
 
   const db = MakoHelpToolOutputSchema.parse(await invokeTool("mako_help", {
     task: "audit RLS for admin_audit_log",
@@ -61,6 +86,7 @@ async function main(): Promise<void> {
   assert.equal(step(db, "table-schema").toolName, "db_table_schema");
   assert.equal((step(db, "table-schema").suggestedArgs as { table?: unknown }).table, "admin_audit_log");
   assert.ok(db.batchHint.eligibleStepIds.includes("table-neighborhood"));
+  assertRetrievalPlanGuide(db);
 
   const general = MakoHelpToolOutputSchema.parse(await invokeTool("mako_help", {
     task: "understand how this feature is wired",
@@ -71,7 +97,21 @@ async function main(): Promise<void> {
   assert.equal(general.steps[0]?.toolName, "reef_ask");
   assert.equal(step(general, "repo-map").toolName, "repo_map");
   assert.ok(general.batchHint.eligibleStepIds.includes("repo-map"));
+  assert.equal(typeof (general.batchHint.suggestedArgs as { maxConcurrency?: unknown }).maxConcurrency, "number");
   assert.ok(general.steps.some((entry) => entry.toolName === "cross_search"));
+  assertRetrievalPlanGuide(general);
+
+  const truncatedGeneral = MakoHelpToolOutputSchema.parse(await invokeTool("mako_help", {
+    task: "understand how this feature is wired",
+    maxSteps: 1,
+  }));
+  assert.equal(truncatedGeneral.steps.length, 1);
+  assert.equal(truncatedGeneral.steps[0]?.toolName, "reef_ask");
+  assert.equal(
+    truncatedGeneral.retrievalPlanGuide,
+    null,
+    "mako_help should not expose a context_packet retrieval guide when maxSteps removed the context step",
+  );
 
   const anchoredGeneral = MakoHelpToolOutputSchema.parse(await invokeTool("mako_help", {
     task: "understand checkout flow wiring",
@@ -136,6 +176,7 @@ async function main(): Promise<void> {
     ["public.checkout_sessions"],
   );
   assert.ok(anchoredGeneral.batchHint.eligibleStepIds.includes("repo-map"));
+  assertRetrievalPlanGuide(anchoredGeneral);
 
   const fileEditLiteral = MakoHelpToolOutputSchema.parse(await invokeTool("mako_help", {
     projectId: "project_literal",

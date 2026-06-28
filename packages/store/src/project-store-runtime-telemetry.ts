@@ -13,6 +13,7 @@ import type {
   UsefulnessEventFamilyCount,
   UsefulnessEventGradeCount,
   UsefulnessEventInsert,
+  UsefulnessEventReasonCodeCount,
   UsefulnessEventRecord,
 } from "./types.js";
 
@@ -336,4 +337,28 @@ export function aggregateUsefulnessEventsByGradeImpl(
       count: number;
     }>;
   return rows.map((row) => ({ grade: row.grade, count: row.count }));
+}
+
+export function aggregateUsefulnessEventsByReasonCodeImpl(
+  db: DatabaseSync,
+  filter: UsefulnessEventAggregationFilter = {},
+  limit = 50,
+): UsefulnessEventReasonCodeCount[] {
+  const { sql, values } = buildWhereClause(filter);
+  const rows = db
+    .prepare(`
+      SELECT json_each.value AS reason_code, COUNT(*) AS count
+      FROM mako_usefulness_events, json_each(mako_usefulness_events.reason_codes_json)
+      ${sql}
+      GROUP BY json_each.value
+      ORDER BY count DESC, reason_code ASC
+      LIMIT ?
+    `)
+    .all(...values, limit) as unknown as Array<{
+      reason_code: string;
+      count: number;
+    }>;
+  return rows
+    .filter((row) => typeof row.reason_code === "string" && row.reason_code.length > 0)
+    .map((row) => ({ reasonCode: row.reason_code, count: row.count }));
 }

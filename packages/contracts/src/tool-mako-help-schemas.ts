@@ -1,5 +1,9 @@
 import { z } from "zod";
 import type { JsonObject } from "./common.js";
+import {
+  ContextPacketRetrievalPlanStrategySchema,
+  type ContextPacketRetrievalPlanStrategy,
+} from "./tool-context-packet-schemas.js";
 import { ProjectLocatorInputObjectSchema, type ProjectLocatorInput } from "./tool-project-locator.js";
 import { ToolNameSchema, type ToolName } from "./tool-registry.js";
 
@@ -49,6 +53,42 @@ export const MakoHelpToolStepSchema = z.object({
   batchable: z.boolean(),
 }) satisfies z.ZodType<MakoHelpToolStep>;
 
+export interface MakoHelpRetrievalPlanStrategyAction {
+  strategy: ContextPacketRetrievalPlanStrategy;
+  action: string;
+}
+
+export const MakoHelpRetrievalPlanStrategyActionSchema = z.object({
+  strategy: ContextPacketRetrievalPlanStrategySchema,
+  action: z.string().min(1),
+}) satisfies z.ZodType<MakoHelpRetrievalPlanStrategyAction>;
+
+export interface MakoHelpRetrievalPlanGuide {
+  sourceStepId: string;
+  planPath: string;
+  recommendedToolsPath: string;
+  recommendedFollowUpsPath: string;
+  expandableToolsPath: string;
+  requiredEvidencePath: string;
+  evidenceGapsPath: string;
+  preferToolBatch: boolean;
+  evidenceGate: string;
+  strategyActions: MakoHelpRetrievalPlanStrategyAction[];
+}
+
+export const MakoHelpRetrievalPlanGuideSchema = z.object({
+  sourceStepId: z.string().min(1),
+  planPath: z.string().min(1),
+  recommendedToolsPath: z.string().min(1),
+  recommendedFollowUpsPath: z.string().min(1),
+  expandableToolsPath: z.string().min(1),
+  requiredEvidencePath: z.string().min(1),
+  evidenceGapsPath: z.string().min(1),
+  preferToolBatch: z.boolean(),
+  evidenceGate: z.string().min(1),
+  strategyActions: z.array(MakoHelpRetrievalPlanStrategyActionSchema),
+}) satisfies z.ZodType<MakoHelpRetrievalPlanGuide>;
+
 export interface MakoHelpToolInput extends ProjectLocatorInput {
   task: string;
   focusFiles?: string[];
@@ -86,6 +126,7 @@ export interface MakoHelpToolOutput {
     suggestedArgs: JsonObject;
     eligibleStepIds: string[];
   };
+  retrievalPlanGuide: MakoHelpRetrievalPlanGuide | null;
   notes: string[];
 }
 
@@ -100,5 +141,6 @@ export const MakoHelpToolOutputSchema = z.object({
     suggestedArgs: JsonObjectSchema,
     eligibleStepIds: z.array(z.string().min(1)),
   }),
+  retrievalPlanGuide: MakoHelpRetrievalPlanGuideSchema.nullable(),
   notes: z.array(z.string().min(1)),
 }) satisfies z.ZodType<MakoHelpToolOutput>;

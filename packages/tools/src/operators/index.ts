@@ -18,6 +18,9 @@ import type { ProgressReporter } from "../progress/types.js";
 import { withProjectContext, type ToolServiceOptions } from "../runtime.js";
 import { ensureFreshSchemaSnapshot } from "../schema-freshness.js";
 
+export { owaspAuditTool } from "./owasp/index.js";
+export { buildOwaspAuditResult } from "./owasp/result.js";
+
 const DEFAULT_TENANT_SIGNAL_TOKENS = [
   "tenant_id",
   "tenantid",

@@ -13,6 +13,13 @@ import type {
 
 type CoverageValues = Record<ContextPacketRequestCoverageKind, Map<string, Set<string>>>;
 
+export interface LiveTextCheckedQuery {
+  query: string;
+  queryKind: "quoted_text" | "symbol";
+}
+
+type LiveTextCheckedQueryInput = string | LiveTextCheckedQuery;
+
 const COVERAGE_KINDS: ContextPacketRequestCoverageKind[] = [
   "file",
   "symbol",
@@ -34,6 +41,16 @@ function normalizeRoute(value: string): string {
     .replace(/^nextjs:/, "")
     .replace(/^(get|post|put|patch|delete|options|head):/, "$1 ")
     .replace(/\s+/g, " ");
+}
+
+function routeParts(value: string): { method?: string; path: string } {
+  const normalized = normalizeRoute(value);
+  const match = normalized.match(/^(get|post|put|patch|delete|options|head)\s+(.+)$/);
+  const path = (match?.[2] ?? normalized).replace(/\/+$/g, "") || "/";
+  return {
+    ...(match?.[1] ? { method: match[1] } : {}),
+    path,
+  };
 }
 
 function normalizeDatabaseObject(value: string): string {
@@ -114,15 +131,16 @@ function collectCoveredValues(candidates: readonly ContextPacketReadableCandidat
     addCoverageValue(values, "route", stringValue(candidate.metadata?.pattern), ref);
     addCoverageValue(values, "database_object", candidate.databaseObjectName, ref);
     addCoverageValue(values, "database_object", stringValue(candidate.metadata?.schemaObject), ref);
-    if (candidate.source === "live_text_provider") {
+    if (candidate.source === "live_text_provider" && stringValue(candidate.metadata?.queryKind) !== "symbol") {
       addCoverageValue(values, "quoted_text", stringValue(candidate.metadata?.query), ref);
     }
 
     for (const raw of jsonArray(candidate.metadata?.supportingSignals)) {
       const signal = jsonRecord(raw);
       if (!signal) continue;
+      const signalSource = stringValue(signal.source) ?? candidate.source;
       const signalRef = [
-        stringValue(signal.source) ?? candidate.source,
+        signalSource,
         stringValue(signal.path) ?? stringValue(signal.routeKey) ?? stringValue(signal.databaseObjectName) ?? ref,
         signal.lineStart ?? "",
       ].filter((part) => String(part).length > 0).join(":");
@@ -133,6 +151,13 @@ function collectCoveredValues(candidates: readonly ContextPacketReadableCandidat
       addCoverageValue(values, "route", stringValue(metadata?.pattern), signalRef);
       addCoverageValue(values, "database_object", stringValue(signal.databaseObjectName), signalRef);
       addCoverageValue(values, "database_object", stringValue(metadata?.schemaObject), signalRef);
+      if (signalSource === "live_text_provider") {
+        if (stringValue(metadata?.queryKind) === "symbol") {
+          addCoverageValue(values, "symbol", stringValue(metadata?.query), signalRef);
+        } else {
+          addCoverageValue(values, "quoted_text", stringValue(metadata?.query), signalRef);
+        }
+      }
     }
   }
 
@@ -172,7 +197,10 @@ function valueMatches(
   if (covered === normalizedRequested) return true;
 
   if (kind === "route") {
-    return covered.includes(normalizedRequested) || normalizedRequested.includes(covered);
+    const requestedRoute = routeParts(requested);
+    const coveredRoute = routeParts(covered);
+    if (requestedRoute.path !== coveredRoute.path) return false;
+    return !requestedRoute.method || !coveredRoute.method || requestedRoute.method === coveredRoute.method;
   }
   if (kind === "database_object") {
     return covered.endsWith(`.${normalizedRequested}`) || normalizedRequested.endsWith(`.${covered}`);
@@ -196,8 +224,33 @@ function matchedRefs(
 function liveTextMissed(
   value: string,
   liveTextMisses: readonly ContextPacketLiveTextMiss[],
+  queryKind?: "quoted_text" | "symbol",
 ): boolean {
-  return liveTextMisses.some((miss) => miss.query.toLowerCase() === value.toLowerCase());
+  return liveTextMisses.some((miss) =>
+    miss.query.toLowerCase() === value.toLowerCase() &&
+    (queryKind == null || (miss.queryKind ?? "quoted_text") === queryKind)
+  );
+}
+
+function liveTextChecked(
+  value: string,
+  liveTextCheckedQueries: ReadonlySet<string>,
+  queryKind: "quoted_text" | "symbol",
+): boolean {
+  return liveTextCheckedQueries.has(liveTextCheckedQueryKey(value, queryKind));
+}
+
+function liveTextCheckedQueryKey(
+  query: string,
+  queryKind: "quoted_text" | "symbol",
+): string {
+  return `${queryKind}:${query.toLowerCase()}`;
+}
+
+function normalizeLiveTextCheckedQuery(query: LiveTextCheckedQueryInput): string {
+  return typeof query === "string"
+    ? liveTextCheckedQueryKey(query, "quoted_text")
+    : liveTextCheckedQueryKey(query.query, query.queryKind);
 }
 
 function itemReason(item: Pick<ContextPacketRequestCoverageItem, "kind" | "value" | "status">): string {
@@ -207,7 +260,14 @@ function itemReason(item: Pick<ContextPacketRequestCoverageItem, "kind" | "value
   if (item.status === "not_checked") {
     return `Requested quoted text "${item.value}" was not checked by the live text provider.`;
   }
+  if (item.kind === "symbol") {
+    return `Requested symbol "${item.value}" was not represented in current returned context.`;
+  }
   return `Requested ${item.kind} "${item.value}" was not represented in returned context.`;
+}
+
+function hasLiveTextRef(refs: readonly string[]): boolean {
+  return refs.some((ref) => ref.startsWith("live_text_provider:"));
 }
 
 function coverageItems(args: {
@@ -215,6 +275,7 @@ function coverageItems(args: {
   intent: ContextPacketIntent;
   coveredValues: CoverageValues;
   liveTextMisses: readonly ContextPacketLiveTextMiss[];
+  liveTextCheckedQueries: ReadonlySet<string>;
   liveTextRan: boolean;
 }): ContextPacketRequestCoverageItem[] {
   const requested = requestedValues(args.input, args.intent);
@@ -223,16 +284,24 @@ function coverageItems(args: {
   for (const kind of COVERAGE_KINDS) {
     for (const value of requested[kind]) {
       const matchedBy = matchedRefs(kind, value, args.coveredValues);
-      const status = matchedBy.length > 0
+      const currentDiskSymbolMiss = kind === "symbol" &&
+        liveTextMissed(value, args.liveTextMisses, "symbol") &&
+        !hasLiveTextRef(matchedBy);
+      const effectiveMatchedBy = currentDiskSymbolMiss ? [] : matchedBy;
+      const status = effectiveMatchedBy.length > 0
         ? "covered"
-        : kind === "quoted_text" && !args.liveTextRan && !liveTextMissed(value, args.liveTextMisses)
+        : kind === "quoted_text" && (
+            !args.liveTextRan ||
+            (!liveTextChecked(value, args.liveTextCheckedQueries, "quoted_text") &&
+              !liveTextMissed(value, args.liveTextMisses, "quoted_text"))
+          )
           ? "not_checked"
           : "uncovered";
       items.push({
         kind,
         value,
         status,
-        matchedBy,
+        matchedBy: effectiveMatchedBy,
         reason: itemReason({ kind, value, status }),
       });
     }
@@ -296,6 +365,7 @@ export function buildContextPacketRequestCoverage(args: {
   intent: ContextPacketIntent;
   candidates: readonly ContextPacketReadableCandidate[];
   liveTextMisses: readonly ContextPacketLiveTextMiss[];
+  liveTextCheckedQueries?: readonly LiveTextCheckedQueryInput[];
   liveTextRan: boolean;
 }): ContextPacketRequestCoverage {
   const items = coverageItems({
@@ -303,6 +373,9 @@ export function buildContextPacketRequestCoverage(args: {
     intent: args.intent,
     coveredValues: collectCoveredValues(args.candidates),
     liveTextMisses: args.liveTextMisses,
+    liveTextCheckedQueries: new Set(
+      (args.liveTextCheckedQueries ?? []).map(normalizeLiveTextCheckedQuery),
+    ),
     liveTextRan: args.liveTextRan,
   });
   const coveredCount = items.filter((item) => item.status === "covered").length;

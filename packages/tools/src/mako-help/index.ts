@@ -1,5 +1,6 @@
 import type {
   JsonObject,
+  MakoHelpRetrievalPlanGuide,
   MakoHelpRecipeId,
   MakoHelpToolInput,
   MakoHelpToolOutput,
@@ -10,6 +11,35 @@ import type {
 type Args = Record<string, unknown>;
 
 const DEFAULT_MAX_STEPS = 8;
+
+const RETRIEVAL_PLAN_GUIDE_TEMPLATE: Omit<MakoHelpRetrievalPlanGuide, "sourceStepId"> = {
+  planPath: "retrievalDiagnostics.retrievalPlan",
+  recommendedToolsPath: "retrievalDiagnostics.retrievalPlan.recommendedTools",
+  recommendedFollowUpsPath: "retrievalDiagnostics.retrievalPlan.recommendedFollowUps",
+  expandableToolsPath: "expandableTools",
+  requiredEvidencePath: "retrievalDiagnostics.retrievalPlan.requiredEvidence",
+  evidenceGapsPath: "retrievalDiagnostics.retrievalPlan.evidenceGaps",
+  preferToolBatch: true,
+  evidenceGate: "Treat evidenceGaps and requiredEvidence as the checklist for answering or editing; run recommendedFollowUps before making broad repository, dependency, or repair claims.",
+  strategyActions: [
+    {
+      strategy: "entity_lookup",
+      action: "Use named file, symbol, route, auth, or schema anchors first; inspect matching expandableTools args before falling back to broad search.",
+    },
+    {
+      strategy: "graph_expansion",
+      action: "Run graph-oriented recommendedFollowUps such as imports_deps, imports_impact, repo_map, or reef_where_used before dependency or impact claims.",
+    },
+    {
+      strategy: "literal_search",
+      action: "Run the live_text_search expansion for exact current-disk text before relying on indexed or summarized matches.",
+    },
+    {
+      strategy: "hybrid",
+      action: "Batch the recommended read-only expansions when available, then answer from the combined cited evidence instead of one retrieval lane.",
+    },
+  ],
+};
 
 function locator(input: MakoHelpToolInput): JsonObject {
   if (input.projectId) return { projectId: input.projectId };
@@ -33,6 +63,15 @@ function compactOps(steps: MakoHelpToolStep[]): JsonObject[] {
       args: step.suggestedArgs,
       resultMode: "summary",
     }));
+}
+
+function retrievalPlanGuide(steps: MakoHelpToolStep[]): MakoHelpRetrievalPlanGuide | null {
+  const contextStep = steps.find((entry) => entry.toolName === "context_packet");
+  if (!contextStep) return null;
+  return {
+    sourceStepId: contextStep.id,
+    ...RETRIEVAL_PLAN_GUIDE_TEMPLATE,
+  };
 }
 
 function step(args: {
@@ -187,7 +226,7 @@ function contextPacketStep(input: MakoHelpToolInput, mode: "explore" | "plan" | 
     toolName: "context_packet",
     title: "Expand into a scoped context packet",
     why: "Ranks likely files, routes, schema objects, instructions, freshness, findings, risks, and expansion tools before broad searching.",
-    whenToUse: "Use when reef_ask needs more raw ranked files, routes, symbols, or schema objects.",
+    whenToUse: "Use when reef_ask needs more raw ranked files, routes, symbols, or schema objects; read retrievalDiagnostics.retrievalPlan and run matching expandableTools args before broad claims.",
     suggestedArgs: withLocator(input, {
       request: input.task,
       mode,
@@ -585,6 +624,7 @@ export async function makoHelpTool(input: MakoHelpToolInput): Promise<MakoHelpTo
   const batchArgs = withLocator(input, {
     verbosity: "compact",
     continueOnError: true,
+    maxConcurrency: Math.min(8, Math.max(1, ops.length)),
     ops,
   });
   const placeholderNotes = steps.some((entry) => JSON.stringify(entry.suggestedArgs).includes("<"))
@@ -602,6 +642,7 @@ export async function makoHelpTool(input: MakoHelpToolInput): Promise<MakoHelpTo
       suggestedArgs: batchArgs,
       eligibleStepIds: steps.filter((entry) => entry.batchable).map((entry) => entry.id),
     },
+    retrievalPlanGuide: retrievalPlanGuide(steps),
     notes: [...recipe.notes, ...placeholderNotes],
   };
 }

@@ -48,6 +48,9 @@ export const CLAUDE_CODE_TOOL_HINTS: Record<
   tenant_leak_audit: {
     searchHint: "tenant boundary rls rpc audit",
   },
+  owasp_audit: {
+    searchHint: "owasp top 10 security audit heuristic findings",
+  },
   health_trend: {
     searchHint: "recent project health trend traces",
   },
@@ -199,10 +202,10 @@ export const CLAUDE_CODE_TOOL_HINTS: Record<
     searchHint: "repo PageRank map focus anchors graph",
   },
   context_packet: {
-    searchHint: "ranked context packet graph anchors risks",
+    searchHint: "ranked context packet retrieval plans graph",
   },
   tool_batch: {
-    searchHint: "batch compact summaries ranked graph evidence",
+    searchHint: "bounded parallel batch compact summaries ranked graph evidence",
     alwaysLoad: true,
   },
   reef_ask: {
