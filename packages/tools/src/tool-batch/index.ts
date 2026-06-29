@@ -248,18 +248,22 @@ function compactReefAskSummary(value: JsonObject): JsonObject | undefined {
       ...(featureFlowSummary
         ? { featureFlow: compactReefFeatureFlowSummary(featureFlowSummary) }
         : {}),
-      decisionTrace: {
-        entries: jsonArray(decisionTrace?.entries)
-          .map(jsonRecord)
-          .filter((entry): entry is Record<string, unknown> => Boolean(entry))
-          .map((entry) => ({
-            lane: stringValue(entry.lane) ?? "",
-            status: stringValue(entry.status) ?? "",
-            evidenceCount: numberValue(entry.evidenceCount) ?? 0,
-            ...(stringValue(entry.fallback) ? { fallback: stringValue(entry.fallback) } : {}),
-          })),
-        lowConfidenceFallbacks: jsonValues(decisionTrace?.lowConfidenceFallbacks),
-      },
+      ...(decisionTrace
+        ? {
+            decisionTrace: {
+              entries: jsonArray(decisionTrace.entries)
+                .map(jsonRecord)
+                .filter((entry): entry is Record<string, unknown> => Boolean(entry))
+                .map((entry) => ({
+                  lane: stringValue(entry.lane) ?? "",
+                  status: stringValue(entry.status) ?? "",
+                  evidenceCount: numberValue(entry.evidenceCount) ?? 0,
+                  ...(stringValue(entry.fallback) ? { fallback: stringValue(entry.fallback) } : {}),
+                })),
+              lowConfidenceFallbacks: jsonValues(decisionTrace.lowConfidenceFallbacks),
+            },
+          }
+        : {}),
       nextQueries: jsonValues(answer?.nextQueries),
       suggestedNextActions: jsonValues(answer?.suggestedNextActions),
     },
@@ -267,18 +271,26 @@ function compactReefAskSummary(value: JsonObject): JsonObject | undefined {
       mode: stringValue(queryPlan?.mode) ?? "",
       intent: stringValue(queryPlan?.intent) ?? "",
       evidenceLanes: jsonValues(queryPlan?.evidenceLanes),
-      engineSteps: jsonArray(queryPlan?.engineSteps)
-        .map(jsonRecord)
-        .filter((step): step is Record<string, unknown> => Boolean(step))
-        .map((step) => ({
-          name: stringValue(step.name) ?? "",
-          status: stringValue(step.status) ?? "",
-          returnedCount: numberValue(step.returnedCount) ?? 0,
-        })),
-      calculations: jsonArray(queryPlan?.calculations)
-        .map(compactReefCalculation)
-        .filter((calculation): calculation is JsonObject => Boolean(calculation))
-        .slice(0, 12),
+      ...(queryPlan?.engineSteps
+        ? {
+            engineSteps: jsonArray(queryPlan.engineSteps)
+              .map(jsonRecord)
+              .filter((step): step is Record<string, unknown> => Boolean(step))
+              .map((step) => ({
+                name: stringValue(step.name) ?? "",
+                status: stringValue(step.status) ?? "",
+                returnedCount: numberValue(step.returnedCount) ?? 0,
+              })),
+          }
+        : {}),
+      ...(queryPlan?.calculations
+        ? {
+            calculations: jsonArray(queryPlan.calculations)
+              .map(compactReefCalculation)
+              .filter((calculation): calculation is JsonObject => Boolean(calculation))
+              .slice(0, 12),
+          }
+        : {}),
     },
     freshness: (freshness as JsonObject | undefined) ?? {},
     evidence: {

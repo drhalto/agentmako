@@ -874,6 +874,7 @@ async function main(): Promise<void> {
               includeVerification: false,
               includeInstructions: false,
               includeRisks: false,
+              includeTrace: true,
               maxEvidenceItemsPerSection: 2,
             },
           },
@@ -898,11 +899,10 @@ async function main(): Promise<void> {
     assert.equal(typeof reefAnswer.summary, "string");
     assert.equal(reefAnswer.keys, undefined);
     assert.equal(typeof reefAnswer.confidence, "string");
-    const decisionTrace = record(reefAnswer.decisionTrace);
-    assert.equal(Array.isArray(decisionTrace.entries), true);
     const queryPlan = record(reefSummary.queryPlan);
-    assert.equal(Array.isArray(queryPlan.engineSteps), true);
-    assert.equal(Array.isArray(queryPlan.calculations), true);
+    assert.equal(reefAnswer.decisionTrace, undefined);
+    assert.equal(queryPlan.engineSteps, undefined);
+    assert.equal(queryPlan.calculations, undefined);
     const evidence = record(reefSummary.evidence);
     assert.equal(evidence.mode, "compact");
     assert.equal(evidence.primaryContext, undefined);

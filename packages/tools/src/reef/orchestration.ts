@@ -15,6 +15,8 @@ import { projectOpenLoopsTool } from "./open-loops.js";
 import { buildReefToolExecution } from "./tool-execution.js";
 import { verificationStateTool } from "./verification.js";
 
+const REEF_VERIFY_DEFAULT_OPEN_LOOPS_LIMIT = 5;
+
 export async function reefStatusTool(
   input: ReefStatusToolInput,
   options: ToolServiceOptions = {},
@@ -117,7 +119,7 @@ function openLoopsInput(
     ...(input.includeAcknowledgedLoops !== undefined
       ? { includeAcknowledged: input.includeAcknowledgedLoops }
       : {}),
-    limit: input.openLoopsLimit ?? input.limit ?? 100,
+    limit: input.openLoopsLimit ?? REEF_VERIFY_DEFAULT_OPEN_LOOPS_LIMIT,
     ...(input.cacheStalenessMs !== undefined ? { cacheStalenessMs: input.cacheStalenessMs } : {}),
   };
 }

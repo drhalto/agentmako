@@ -118,6 +118,27 @@ function resolveSupportLevel(
   return "native";
 }
 
+// Upper bound on evidence blocks returned in a single composer packet. Rich
+// enough to convey a file/route/table neighbourhood, bounded enough that the
+// result stays consumable inline instead of forcing a spill-to-disk + jq pass.
+const MAX_PACKET_EVIDENCE = 50;
+
+// Per-block freshness timestamps (indexed/live mtime + byte sizes) repeat on
+// every evidence block and are redundant with the packet-level `indexFreshness`
+// summary. Keeping only state + reason keeps a large neighbourhood compact —
+// e.g. a trace_file with ~90 blocks drops tens of KB of duplicated timestamps.
+function slimEvidenceBlockFreshness(block: EvidenceBlock): EvidenceBlock {
+  if (!block.freshness) return block;
+  return {
+    ...block,
+    freshness: {
+      state: block.freshness.state,
+      filePath: block.freshness.filePath,
+      reason: block.freshness.reason,
+    },
+  };
+}
+
 export function makePacket(
   ctx: ComposerContext,
   input: MakePacketInput,
@@ -133,7 +154,19 @@ export function makePacket(
   if (ctx.freshness.generatedAt == null) stalenessFlags.push("snapshot-absent");
   stalenessFlags.push(...enriched.stalenessFlags);
   const hasStaleIndexEvidence = enriched.summary.state !== "fresh";
-  const evidence = orderByContextLayout(enriched.evidence);
+  const orderedEvidence = orderByContextLayout(enriched.evidence).map(slimEvidenceBlockFreshness);
+  // Bound every composer's evidence so a large neighbourhood (e.g. trace_file on
+  // a hub file) can't return an unbounded blob the agent has to wade through.
+  // Evidence is already relevance-ordered, so the kept blocks are the strongest.
+  // Self-limiting composers (cross_search caps at ~15) are unaffected.
+  const evidence = orderedEvidence.slice(0, MAX_PACKET_EVIDENCE);
+  const droppedEvidenceCount = orderedEvidence.length - evidence.length;
+  const packetMissingInformation = droppedEvidenceCount > 0
+    ? [
+        ...missingInformation,
+        `Evidence bounded to the ${evidence.length} most relevant blocks (${droppedEvidenceCount} more omitted); narrow the query or use a more specific tool to see the rest.`,
+      ]
+    : missingInformation;
 
   const evidenceStatus = deriveEvidenceStatus(
     evidence.length,
@@ -163,7 +196,7 @@ export function makePacket(
     supportLevel,
     evidenceStatus,
     evidenceConfidence: score,
-    missingInformation,
+    missingInformation: packetMissingInformation,
     stalenessFlags,
     indexFreshness: enriched.summary,
     evidence,

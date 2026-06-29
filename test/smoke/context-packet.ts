@@ -723,6 +723,19 @@ function assertIntentExpandsCompoundRepoTerms(): void {
     false,
     "intent detection should not keep generic method-prefix keywords from compound identifiers",
   );
+
+  const pronounIntent = detectContextPacketIntent({
+    request: "Understand what QRGenerator does and where it is used",
+  });
+  assert.ok(
+    pronounIntent.entities.symbols.includes("QRGenerator"),
+    "intent detection should retain the named code symbol from pronoun-style usage questions",
+  );
+  assert.equal(
+    ["Understand", "What", "it"].some((symbol) => pronounIntent.entities.symbols.includes(symbol)),
+    false,
+    "intent detection should not promote interrogatives or pronouns to symbols",
+  );
 }
 
 function writeFixtureFile(projectRoot: string, relPath: string, content: string): string {

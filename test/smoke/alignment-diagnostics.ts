@@ -115,6 +115,43 @@ function seedProject(projectRoot: string, projectId: string): void {
     "}",
   ].join("\n");
 
+  // Regression fixture for reuse.helper_bypass precision: a guard that reads a
+  // table for a side effect (requireUnpaidInvoice on `invoices`) plus a fetcher
+  // for a DIFFERENT table (fetchPayments on `payments`). A route querying
+  // `invoices` must NOT be told to use either — the guard is not a fetch path
+  // and the fetcher targets another table.
+  const billingContent = [
+    "import { supabase } from \"./client\";",
+    "",
+    "export async function requireUnpaidInvoice(id: string) {",
+    "  const { data } = await supabase.from(\"invoices\").select(\"status\");",
+    "  if (!data) throw new Error(\"missing\");",
+    "}",
+    "",
+    "export async function fetchPayments() {",
+    "  return supabase.from(\"payments\").select(\"*\");",
+    "}",
+    "",
+    "export interface InvoiceRow {",
+    "  billing_cycle: string | null;",
+    "}",
+    "",
+    "export function toInvoiceView(row: InvoiceRow) {",
+    "  return { billingCycle: row.billing_cycle };",
+    "}",
+  ].join("\n");
+
+  const invoicesRouteContent = [
+    "import { supabase } from \"../../../lib/client\";",
+    "",
+    "export async function GET() {",
+    "  return supabase.from(\"invoices\").select(\"*\");",
+    "}",
+  ].join("\n");
+
+  mkdirSync(path.join(projectRoot, "app", "api", "invoices"), { recursive: true });
+  writeFileSync(path.join(projectRoot, "lib", "billing.ts"), `${billingContent}\n`);
+  writeFileSync(path.join(projectRoot, "app", "api", "invoices", "route.ts"), `${invoicesRouteContent}\n`);
   writeFileSync(path.join(projectRoot, "lib", "dashboard.ts"), `${dashboardContent}\n`);
   writeFileSync(path.join(projectRoot, "lib", "auth.ts"), `${authContent}\n`);
   writeFileSync(path.join(projectRoot, "lib", "audit.ts"), `${auditContent}\n`);
@@ -413,6 +450,95 @@ function seedProject(projectRoot: string, projectId: string): void {
             },
           ],
         },
+        {
+          path: "lib/billing.ts",
+          sha256: "billing",
+          language: "typescript",
+          sizeBytes: fixtureSizeBytes(billingContent),
+          lineCount: billingContent.split("\n").length,
+          chunks: [
+            {
+              chunkKind: "file",
+              name: "lib/billing.ts",
+              lineStart: 1,
+              lineEnd: billingContent.split("\n").length,
+              content: billingContent,
+            },
+          ],
+          symbols: [
+            {
+              name: "requireUnpaidInvoice",
+              kind: "function",
+              exportName: "requireUnpaidInvoice",
+              lineStart: 3,
+              lineEnd: 6,
+              signatureText: "export async function requireUnpaidInvoice(id: string)",
+            },
+            {
+              name: "fetchPayments",
+              kind: "function",
+              exportName: "fetchPayments",
+              lineStart: 8,
+              lineEnd: 10,
+              signatureText: "export async function fetchPayments()",
+            },
+          ],
+          imports: [
+            {
+              targetPath: "lib/client.ts",
+              specifier: "./client",
+              importKind: "relative",
+              isTypeOnly: false,
+              line: 1,
+            },
+          ],
+          routes: [],
+        },
+        {
+          path: "app/api/invoices/route.ts",
+          sha256: "invoices-route",
+          language: "typescript",
+          sizeBytes: fixtureSizeBytes(invoicesRouteContent),
+          lineCount: invoicesRouteContent.split("\n").length,
+          chunks: [
+            {
+              chunkKind: "file",
+              name: "app/api/invoices/route.ts",
+              lineStart: 1,
+              lineEnd: invoicesRouteContent.split("\n").length,
+              content: invoicesRouteContent,
+            },
+          ],
+          symbols: [
+            {
+              name: "GET",
+              kind: "function",
+              exportName: "GET",
+              lineStart: 3,
+              lineEnd: 5,
+              signatureText: "export async function GET()",
+            },
+          ],
+          imports: [
+            {
+              targetPath: "lib/client.ts",
+              specifier: "../../../lib/client",
+              importKind: "relative",
+              isTypeOnly: false,
+              line: 1,
+            },
+          ],
+          routes: [
+            {
+              routeKey: "route:app/api/invoices/route.ts",
+              framework: "next",
+              pattern: "/api/invoices",
+              method: "GET",
+              handlerName: "GET",
+              isApi: true,
+            },
+          ],
+        },
       ],
       schemaObjects: [],
       schemaUsages: [],
@@ -531,6 +657,32 @@ async function main(): Promise<void> {
     })) as TraceFileToolOutput;
     const routeCodes = diagnosticCodes(routeOutput.result);
     assert.ok(routeCodes.includes("reuse.helper_bypass"));
+
+    // Precision regression: a route querying `invoices` must NOT be flagged when
+    // the only lib accessors are a guard (requireUnpaidInvoice, a side-effect read)
+    // and a fetcher for a different table (fetchPayments). Neither is a canonical
+    // fetch path for `invoices`, so the previous file-level/usesRpc matching that
+    // produced false positives must stay fixed.
+    const invoicesRouteOutput = (await invokeTool("trace_file", {
+      projectId,
+      file: "app/api/invoices/route.ts",
+    })) as TraceFileToolOutput;
+    assert.ok(
+      !diagnosticCodes(invoicesRouteOutput.result).includes("reuse.helper_bypass"),
+      "reuse.helper_bypass must not fire for a guard or a different-table fetcher",
+    );
+
+    // Precision regression: a mapper (toInvoiceView) that reshapes a snake-cased
+    // DB row (InvoiceRow.billing_cycle) into a camel-cased object (billingCycle)
+    // is doing its job — it must NOT be reported as producer/consumer field drift.
+    const billingOutput = (await invokeTool("trace_file", {
+      projectId,
+      file: "lib/billing.ts",
+    })) as TraceFileToolOutput;
+    assert.ok(
+      !diagnosticCodes(billingOutput.result).includes("producer.field_shape_drift"),
+      "field_shape_drift must not fire for a mapper that intentionally reshapes field names",
+    );
 
     const eventSearchOutput = (await invokeTool("cross_search", {
       projectId,

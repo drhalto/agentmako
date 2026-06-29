@@ -23,9 +23,9 @@ import { stringDataValue } from "./shared.js";
 import { applyReefToolFreshnessPolicy, buildReefToolExecution } from "./tool-execution.js";
 
 const DEFAULT_DEPTH = 2;
-const DEFAULT_MAX_CALLERS_PER_FILE = 50;
-const DEFAULT_MAX_FINDINGS_PER_CALLER = 10;
-const DEFAULT_MAX_CONVENTIONS = 30;
+const DEFAULT_MAX_CALLERS_PER_FILE = 10;
+const DEFAULT_MAX_FINDINGS_PER_CALLER = 3;
+const DEFAULT_MAX_CONVENTIONS = 5;
 
 type ImpactCallerSourceFile = Pick<ReefDiffImpactChangedFile, "filePath" | "exportedSymbols" | "declaredSymbols">;
 

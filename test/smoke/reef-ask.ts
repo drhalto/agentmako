@@ -83,6 +83,7 @@ async function main(): Promise<void> {
       focusFiles: ["lib/auth/session.ts"],
       focusDatabaseObjects: ["public.user_profiles"],
       maxOpenLoops: 10,
+      includeTrace: true,
     }) as ReefAskToolOutput;
 
     assert.equal(result.toolName, "reef_ask");
@@ -90,6 +91,7 @@ async function main(): Promise<void> {
     assert.equal(result.evidence.mode, "compact");
     assert.equal(result.limits.evidenceMode, "compact");
     assert.equal(result.limits.maxEvidenceItemsPerSection, 40);
+    assert.ok(Array.isArray(result.queryPlan.assumptions));
     assert.equal(result.evidence.sections.primaryContext.total, result.evidence.primaryContext.length);
     assert.ok(result.queryPlan.evidenceLanes.includes("codebase"));
     assert.ok(result.queryPlan.evidenceLanes.includes("database"));
@@ -220,6 +222,7 @@ async function main(): Promise<void> {
     assert.equal(result.evidence.verification.status, "fresh");
     const diagnosticSummary = result.answer.diagnosticSummary;
     assert.ok(diagnosticSummary);
+    assert.equal(result.limits.includeTrace, true);
     assert.equal(diagnosticSummary.gate, "review_required");
     assert.equal(diagnosticSummary.canClaimVerified, false);
     assert.equal(diagnosticSummary.verificationStatus, "fresh");
@@ -233,32 +236,32 @@ async function main(): Promise<void> {
       run.source === "lint_files" &&
       run.status === "succeeded"
     ));
-    assert.ok(result.answer.decisionTrace.entries.some((entry) =>
+    assert.ok(result.answer.decisionTrace!.entries.some((entry) =>
       entry.lane === "context_compile" &&
       entry.status === "included" &&
       entry.evidenceCount > 0
     ));
-    assert.ok(result.answer.decisionTrace.entries.some((entry) =>
+    assert.ok(result.answer.decisionTrace!.entries.some((entry) =>
       entry.lane === "live_text_search" &&
       entry.status === "skipped" &&
       entry.fallback?.includes("quoted literal")
     ));
-    assert.ok(result.answer.decisionTrace.entries.some((entry) =>
+    assert.ok(result.answer.decisionTrace!.entries.some((entry) =>
       entry.lane === "verification_state" &&
       entry.status === "included" &&
       entry.evidenceCount > 0
     ));
-    assert.ok(result.answer.decisionTrace.entries.some((entry) =>
+    assert.ok(result.answer.decisionTrace!.entries.some((entry) =>
       entry.lane === "project_conventions" &&
       entry.status === "included" &&
       entry.evidenceCount > 0
     ));
-    assert.ok(result.answer.decisionTrace.entries.some((entry) =>
+    assert.ok(result.answer.decisionTrace!.entries.some((entry) =>
       entry.lane === "reef_operations_graph" &&
       entry.status === "included" &&
       entry.evidenceCount > 0
     ));
-    assert.ok(result.answer.decisionTrace.entries.some((entry) =>
+    assert.ok(result.answer.decisionTrace!.entries.some((entry) =>
       entry.lane === "reef_feature_flow" &&
       entry.status === "included" &&
       entry.evidenceCount > 0
@@ -291,26 +294,26 @@ async function main(): Promise<void> {
     ));
     assert.ok(featureFlowSummary.links.some((link) => link.kind === "handles_route"));
     assert.ok(featureFlowSummary.links.some((link) => link.kind === "reads_table"));
-    assert.ok(result.queryPlan.calculations.some((calculation) =>
+    assert.ok(result.queryPlan.calculations!.some((calculation) =>
       calculation.queryKind === "table_neighborhood" &&
       calculation.status === "included" &&
       calculation.returnedCount > 0
     ));
-    assert.ok(result.queryPlan.calculations.some((calculation) =>
+    assert.ok(result.queryPlan.calculations!.some((calculation) =>
       calculation.queryKind === "feature_flow" &&
       calculation.status === "included" &&
       calculation.returnedCount > 0
     ));
-    assert.ok(result.queryPlan.calculations.some((calculation) =>
+    assert.ok(result.queryPlan.calculations!.some((calculation) =>
       calculation.queryKind === "diagnostic_coverage" &&
       calculation.status === "included" &&
       calculation.returnedCount > 0
     ));
-    assert.ok(result.answer.decisionTrace.calculations.some((calculation) =>
+    assert.ok(result.answer.decisionTrace!.calculations.some((calculation) =>
       calculation.nodeId === "reef.query.table_neighborhood" &&
       calculation.status === "included"
     ));
-    assert.deepEqual(result.answer.decisionTrace.lowConfidenceFallbacks, []);
+    assert.deepEqual(result.answer.decisionTrace!.lowConfidenceFallbacks, []);
     assert.match(result.answer.summary, /Reef found/);
     assert.match(result.answer.summary, /Diagnostic gate is review_required/);
     assert.equal(result.reefExecution.queryPath, "reef_materialized_view");
@@ -324,6 +327,7 @@ async function main(): Promise<void> {
       includeVerification: false,
     });
     assert.equal(enginePlan.mode, "plan");
+    assert.equal(enginePlan.includeTrace, false);
     assert.equal(enginePlan.contextInput.request, "Plan the auth/session change that touches the user_profiles table");
     assert.deepEqual(enginePlan.verificationFiles, ["lib/auth/session.ts"]);
     assert.equal(enginePlan.tableNeighborhood?.tableName, "user_profiles");
@@ -383,6 +387,21 @@ async function main(): Promise<void> {
     assert.equal(whereUsedPlan.whereUsed?.query, "getSession");
     assert.equal(whereUsedPlan.whereUsed?.targetKind, "symbol");
 
+    const pronounWhereUsedPlan = planReefQuery({
+      projectId,
+      question: "What does the QRGenerator component do and where is it used?",
+      includeVerification: false,
+    });
+    assert.equal(pronounWhereUsedPlan.whereUsed?.query, "QRGenerator");
+    assert.equal(pronounWhereUsedPlan.whereUsed?.targetKind, "component");
+
+    const unresolvedPronounWhereUsedPlan = planReefQuery({
+      projectId,
+      question: "What does the component do and where is it used?",
+      includeVerification: false,
+    });
+    assert.equal(unresolvedPronounWhereUsedPlan.whereUsed, undefined);
+
     const compiled = await compileReefQuery({
       projectId,
       question: "Plan the auth/session change that touches the user_profiles table",
@@ -395,6 +414,26 @@ async function main(): Promise<void> {
     assert.equal("toolName" in compiled, false);
     assert.equal(compiled.freshness.diagnostics, "skipped");
     assert.ok(compiled.queryPlan.evidenceLanes.includes("database"));
+    assert.equal(compiled.answer.decisionTrace, undefined);
+    assert.equal(compiled.queryPlan.assumptions, undefined);
+    assert.equal(compiled.queryPlan.engineSteps, undefined);
+    assert.equal(compiled.queryPlan.calculations, undefined);
+    assert.equal(compiled.limits.includeTrace, false);
+
+    const leanExact = await toolService.callTool("reef_ask", {
+      projectId,
+      question: "Find exact string \"getSession\"",
+      includeOpenLoops: false,
+      includeVerification: false,
+      includeInstructions: false,
+      includeRisks: false,
+    }) as ReefAskToolOutput;
+    assert.ok(leanExact.queryPlan.evidenceLanes.includes("live_text"));
+    assert.equal(leanExact.answer.decisionTrace, undefined);
+    assert.equal(leanExact.queryPlan.assumptions, undefined);
+    assert.equal(leanExact.queryPlan.engineSteps, undefined);
+    assert.equal(leanExact.queryPlan.calculations, undefined);
+    assert.equal(leanExact.limits.includeTrace, false);
 
     const exact = await toolService.callTool("reef_ask", {
       projectId,
@@ -403,6 +442,7 @@ async function main(): Promise<void> {
       includeVerification: false,
       includeInstructions: false,
       includeRisks: false,
+      includeTrace: true,
     }) as ReefAskToolOutput;
     assert.ok(exact.queryPlan.evidenceLanes.includes("live_text"));
     const exactLiveTextSearch = exact.evidence.liveTextSearch;
@@ -416,12 +456,12 @@ async function main(): Promise<void> {
       file.filePath === "lib/auth/session.ts" &&
       file.matchCount > 0
     ));
-    assert.ok(exact.queryPlan.engineSteps.some((step) =>
+    assert.ok(exact.queryPlan.engineSteps!.some((step) =>
       step.name === "live_text_search" &&
       step.status === "included" &&
       step.returnedCount > 0
     ));
-    assert.ok(exact.answer.decisionTrace.entries.some((entry) =>
+    assert.ok(exact.answer.decisionTrace!.entries.some((entry) =>
       entry.lane === "live_text_search" &&
       entry.status === "included" &&
       entry.evidenceCount > 0
@@ -467,6 +507,7 @@ async function main(): Promise<void> {
       includeVerification: false,
       includeInstructions: false,
       includeRisks: false,
+      includeTrace: true,
     }) as ReefAskToolOutput;
     assert.ok(whereUsed.queryPlan.evidenceLanes.includes("usage"));
     const whereUsedEvidence = whereUsed.evidence.whereUsed;
@@ -482,12 +523,12 @@ async function main(): Promise<void> {
     assert.ok(whereUsedSummary);
     assert.equal(whereUsedSummary.query, "getSession");
     assert.ok(whereUsedSummary.usageCount > 0);
-    assert.ok(whereUsed.queryPlan.engineSteps.some((step) =>
+    assert.ok(whereUsed.queryPlan.engineSteps!.some((step) =>
       step.name === "reef_where_used" &&
       step.status === "included" &&
       step.returnedCount > 0
     ));
-    assert.ok(whereUsed.queryPlan.calculations.some((calculation) =>
+    assert.ok(whereUsed.queryPlan.calculations!.some((calculation) =>
       calculation.queryKind === "where_used" &&
       calculation.status === "included" &&
       calculation.returnedCount > 0
@@ -500,6 +541,7 @@ async function main(): Promise<void> {
       includeVerification: false,
       includeInstructions: false,
       includeRisks: false,
+      includeTrace: true,
     }) as ReefAskToolOutput;
     assert.ok(rpcInventory.queryPlan.evidenceLanes.includes("facts"));
     assert.ok(rpcInventory.queryPlan.evidenceLanes.includes("database"));
@@ -514,7 +556,7 @@ async function main(): Promise<void> {
       item.kind === "db_rpc" &&
       item.name === "public.search_users(text)"
     ));
-    assert.ok(rpcInventory.queryPlan.engineSteps.some((step) =>
+    assert.ok(rpcInventory.queryPlan.engineSteps!.some((step) =>
       step.name === "reef_fact_inventory" &&
       step.status === "included" &&
       step.returnedCount >= 2
@@ -527,6 +569,7 @@ async function main(): Promise<void> {
       includeVerification: false,
       includeInstructions: false,
       includeRisks: false,
+      includeTrace: true,
     }) as ReefAskToolOutput;
     assert.ok(databaseObject.queryPlan.evidenceLanes.includes("database"));
     assert.ok(databaseObject.queryPlan.evidenceLanes.includes("facts"));
@@ -550,17 +593,17 @@ async function main(): Promise<void> {
     assert.ok(databaseObjectSummary.triggers.some((trigger) =>
       trigger.name === "sync_profile_subject"
     ));
-    assert.ok(databaseObject.queryPlan.engineSteps.some((step) =>
+    assert.ok(databaseObject.queryPlan.engineSteps!.some((step) =>
       step.name === "reef_database_object" &&
       step.status === "included" &&
       step.returnedCount > 0
     ));
-    assert.ok(databaseObject.queryPlan.engineSteps.some((step) =>
+    assert.ok(databaseObject.queryPlan.engineSteps!.some((step) =>
       step.name === "reef_table_neighborhood" &&
       step.status === "included" &&
       step.returnedCount > 0
     ));
-    assert.ok(databaseObject.queryPlan.calculations.some((calculation) =>
+    assert.ok(databaseObject.queryPlan.calculations!.some((calculation) =>
       calculation.queryKind === "table_neighborhood" &&
       calculation.status === "included" &&
       calculation.returnedCount > 0
@@ -584,13 +627,14 @@ async function main(): Promise<void> {
       includeVerification: false,
       includeInstructions: false,
       includeRisks: false,
+      includeTrace: true,
     }) as ReefAskToolOutput;
-    assert.ok(impact.queryPlan.calculations.some((calculation) =>
+    assert.ok(impact.queryPlan.calculations!.some((calculation) =>
       calculation.queryKind === "where_used" &&
       calculation.status === "included" &&
       calculation.returnedCount > 0
     ));
-    const impactCalculation = impact.queryPlan.calculations.find((calculation) =>
+    const impactCalculation = impact.queryPlan.calculations!.find((calculation) =>
       calculation.queryKind === "impact"
     );
     assert.ok(impactCalculation);
@@ -604,6 +648,7 @@ async function main(): Promise<void> {
       includeVerification: false,
       includeInstructions: false,
       includeRisks: false,
+      includeTrace: true,
     }) as ReefAskToolOutput;
     assert.ok(durableFindings.queryPlan.evidenceLanes.includes("findings"));
     assert.ok(durableFindings.evidence.findings.some((finding) =>
@@ -617,12 +662,12 @@ async function main(): Promise<void> {
       finding.ruleId === "auth.session_profile_rule" &&
       finding.filePath === "lib/auth/session.ts"
     ));
-    assert.ok(durableFindings.queryPlan.engineSteps.some((step) =>
+    assert.ok(durableFindings.queryPlan.engineSteps!.some((step) =>
       step.name === "project_findings" &&
       step.status === "included" &&
       step.returnedCount > 0
     ));
-    assert.ok(durableFindings.queryPlan.calculations.some((calculation) =>
+    assert.ok(durableFindings.queryPlan.calculations!.some((calculation) =>
       calculation.queryKind === "active_finding_status" &&
       calculation.status === "included" &&
       calculation.returnedCount > 0
@@ -635,8 +680,9 @@ async function main(): Promise<void> {
       includeVerification: false,
       includeInstructions: false,
       includeRisks: false,
+      includeTrace: true,
     }) as ReefAskToolOutput;
-    assert.ok(duplicateFindings.queryPlan.calculations.some((calculation) =>
+    assert.ok(duplicateFindings.queryPlan.calculations!.some((calculation) =>
       calculation.queryKind === "duplicate_candidates" &&
       calculation.status === "included"
     ));

@@ -131,8 +131,8 @@ export async function projectOpenLoopsTool(
     }
 
     const sorted = loops
-      .sort((a, b) => severityWeight(b.severity) - severityWeight(a.severity) || a.id.localeCompare(b.id))
-      .slice(0, limit);
+      .sort((a, b) => severityWeight(b.severity) - severityWeight(a.severity) || a.id.localeCompare(b.id));
+    const limited = sorted.slice(0, limit);
     const reefExecution = await buildReefToolExecution({
       toolName: "project_open_loops",
       projectId: project.projectId,
@@ -140,10 +140,10 @@ export async function projectOpenLoopsTool(
       options,
       startedAtMs,
       freshnessPolicy: "allow_stale_labeled",
-      staleEvidenceLabeled: sorted.filter((loop) =>
+      staleEvidenceLabeled: limited.filter((loop) =>
         loop.kind === "stale_fact" || loop.kind === "unknown_fact" || loop.kind === "stale_diagnostic_run"
       ).length,
-      returnedCount: sorted.length,
+      returnedCount: limited.length,
     });
 
     return {
@@ -151,7 +151,7 @@ export async function projectOpenLoopsTool(
       projectId: project.projectId,
       projectRoot: project.canonicalPath,
       ...(filePath ? { filePath } : {}),
-      loops: sorted,
+      loops: limited,
       summary: {
         total: sorted.length,
         errors: sorted.filter((loop) => loop.severity === "error").length,
@@ -159,7 +159,9 @@ export async function projectOpenLoopsTool(
         infos: sorted.filter((loop) => loop.severity === "info").length,
       },
       reefExecution,
-      warnings: [],
+      warnings: sorted.length > limited.length
+        ? [`open loop details limited to top ${limited.length} of ${sorted.length}; increase limit for the full list.`]
+        : [],
     };
   });
 }

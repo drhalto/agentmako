@@ -41,6 +41,13 @@ export function runTsAwareAlignmentDiagnostics(
   ]);
 }
 
+// Mapper functions intentionally reshape field names (a snake-cased DB row
+// mapped to a camel-cased app object is the mapper's job, not drift). When the
+// producer object is owned by one of these, the snake/camel difference is
+// expected, so it must not be reported as producer/consumer drift.
+const MAPPER_OWNER_NAME_RE =
+  /^(?:to|map|serialize|deserialize|normalize|denormalize|transform|build|format|convert|adapt|hydrate|present)[A-Z]/;
+
 function findFieldShapeDrift(files: DiagnosticAstFile[]): AnswerSurfaceIssue[] {
   const groups = new Map<string, FieldVariantGroup>();
 
@@ -76,6 +83,24 @@ function findFieldShapeDrift(files: DiagnosticAstFile[]): AnswerSurfaceIssue[] {
     );
     const returned = group.occurrences.find((occurrence) => occurrence.ownerKind === "returned_object_property");
     if (!declaration || !returned || declaration.propertyName === returned.propertyName) {
+      continue;
+    }
+
+    // Only flag when the producer and the declared contract are actually linked —
+    // same file, or the returned object is typed/owned by the declaring type.
+    // Without this, a snake_case DB-row property and a camelCase app property that
+    // merely share a canonical name (the normal Supabase DB↔app mapping) get
+    // paired across unrelated files, producing noise rather than real drift.
+    const linked =
+      declaration.path === returned.path ||
+      (declaration.ownerName != null && declaration.ownerName === returned.ownerName);
+    if (!linked) {
+      continue;
+    }
+
+    // The producer is a mapper (toX / mapX / serializeX …) whose whole purpose is
+    // to reshape field names, so the snake/camel difference is intentional.
+    if (returned.ownerName != null && MAPPER_OWNER_NAME_RE.test(returned.ownerName)) {
       continue;
     }
 

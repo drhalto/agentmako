@@ -6,10 +6,14 @@ import type {
 
 const STOP_WORDS = new Set([
   "the",
+  "all",
   "and",
+  "any",
   "for",
   "that",
   "this",
+  "these",
+  "those",
   "with",
   "from",
   "after",
@@ -19,10 +23,14 @@ const STOP_WORDS = new Set([
   "where",
   "why",
   "what",
+  "who",
   "get",
   "set",
   "use",
   "does",
+  "do",
+  "it",
+  "its",
   "is",
   "are",
   "was",
@@ -40,6 +48,7 @@ const STOP_WORDS = new Set([
   "issue",
   "bug",
   "fix",
+  "understand",
 ]);
 
 const FILE_TOKEN = /(?:[A-Za-z]:)?(?:[\w.-]+[\\/])+[\w.[\]()-]+\.(?:tsx|ts|jsx|js|mjs|cjs|sql|md|json|scss|css|html|py|rs|go)/g;
@@ -100,6 +109,7 @@ function extractSymbols(request: string, input: ContextPacketToolInput): string[
   const symbols = new Set<string>(input.focusSymbols ?? []);
   for (const match of request.matchAll(IDENTIFIER)) {
     const value = match[0];
+    if (STOP_WORDS.has(value.toLowerCase())) continue;
     if (/^[A-Z]/.test(value) || /[a-z][A-Z]/.test(value) || /^use[A-Z0-9_]/.test(value)) {
       symbols.add(value);
     }

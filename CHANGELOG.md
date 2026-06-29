@@ -7,6 +7,18 @@ it reaches 1.0.
 
 ## [Unreleased]
 
+## [0.4.3] - 2026-06-28
+
+### Changed
+
+- Leaner `reef_ask` compact output: long finding rule prose is clipped to a lead
+  snippet and debug provenance metadata is dropped from ranked items (full text
+  and provenance remain available via `evidenceMode: "full"`, `file_findings`,
+  or `lint_files`).
+- Improvements to the `cross_search` composer (cross-source retrieval over code,
+  schema, routes, and harness memories) and to structural / TS-aware alignment
+  diagnostics (field-shape, relation-alias, and identity-boundary drift).
+
 ## [0.4.2] - 2026-06-28
 
 ### Fixed

@@ -62,7 +62,7 @@ async function main(): Promise<void> {
       projectId: seeded.projectId,
     }) as ReefStatusToolOutput;
     assert.equal(status.toolName, "reef_status");
-    assert.equal(status.summary.knownIssueCount, 1);
+    assert.equal(status.summary.knownIssueCount, 7);
     assert.equal(status.knownIssues[0]?.ruleId, "orchestration.issue");
     assert.equal(status.reefExecution.queryPath, "reef_materialized_view");
 
@@ -74,9 +74,21 @@ async function main(): Promise<void> {
     assert.equal(verify.toolName, "reef_verify");
     assert.equal(verify.verification.toolName, "verification_state");
     assert.equal(verify.openLoops?.toolName, "project_open_loops");
-    assert.equal(verify.summary.openLoopErrorCount, 1);
+    assert.equal(verify.openLoops?.loops.length, 5);
+    assert.equal(verify.openLoops?.summary.total, 7);
+    assert.equal(verify.summary.openLoopCount, 7);
+    assert.equal(verify.summary.openLoopErrorCount, 7);
     assert.equal(verify.summary.canClaimVerified, false);
     assert.ok(verify.suggestedActions.some((action) => action.includes("Resolve")));
+    assert.ok(verify.warnings.some((warning) => warning.includes("limited to top 5 of 7")));
+
+    const verifyExpandedLoops = await toolService.callTool("reef_verify", {
+      projectId: seeded.projectId,
+      files: ["src/app.ts"],
+      includeOpenLoops: true,
+      openLoopsLimit: 7,
+    }) as ReefVerifyToolOutput;
+    assert.equal(verifyExpandedLoops.openLoops?.loops.length, 7);
 
     const verifyWithoutLoops = await toolService.callTool("reef_verify", {
       projectId: seeded.projectId,
@@ -92,6 +104,9 @@ async function main(): Promise<void> {
     assert.equal(impact.toolName, "reef_impact");
     assert.equal(impact.summary.changedFileCount, 1);
     assert.equal(impact.changedFiles[0]?.filePath, "src/app.ts");
+    assert.equal(impact.filters.maxCallersPerFile, 10);
+    assert.equal(impact.filters.maxFindingsPerCaller, 3);
+    assert.equal(impact.filters.maxConventions, 5);
 
     const batch = await toolService.callTool("tool_batch", {
       projectId: seeded.projectId,
@@ -129,33 +144,35 @@ function seedFinding(
 ): void {
   const subject = { kind: "file" as const, path: "src/app.ts" };
   const subjectFingerprint = store.computeReefSubjectFingerprint(subject);
-  const message = "Fixture active issue blocks completion.";
-  const finding: ProjectFinding = {
-    projectId,
-    fingerprint: store.computeReefFindingFingerprint({
+  const findings: ProjectFinding[] = Array.from({ length: 7 }, (_, index) => {
+    const message = `Fixture active issue ${index + 1} blocks completion.`;
+    return {
+      projectId,
+      fingerprint: store.computeReefFindingFingerprint({
+        source: "orchestration_smoke",
+        ruleId: "orchestration.issue",
+        subjectFingerprint,
+        message,
+      }),
       source: "orchestration_smoke",
-      ruleId: "orchestration.issue",
       subjectFingerprint,
+      overlay: "working_tree",
+      severity: "error",
+      status: "active",
+      filePath: "src/app.ts",
+      line: index + 1,
+      ruleId: "orchestration.issue",
+      freshness: { state: "fresh", checkedAt: now(), reason: "fixture fresh" },
+      capturedAt: now(),
       message,
-    }),
-    source: "orchestration_smoke",
-    subjectFingerprint,
-    overlay: "working_tree",
-    severity: "error",
-    status: "active",
-    filePath: "src/app.ts",
-    line: 1,
-    ruleId: "orchestration.issue",
-    freshness: { state: "fresh", checkedAt: now(), reason: "fixture fresh" },
-    capturedAt: now(),
-    message,
-    factFingerprints: [],
-  };
+      factFingerprints: [],
+    };
+  });
   store.replaceReefFindingsForSource({
     projectId,
     source: "orchestration_smoke",
     overlay: "working_tree",
-    findings: [finding],
+    findings,
   });
 }
 

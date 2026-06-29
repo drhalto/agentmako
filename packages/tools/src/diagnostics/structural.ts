@@ -240,6 +240,12 @@ function basenameKey(filePath: string): string {
   return canonicalizeFieldName(rawName.replace(/\.[^.]+$/, ""));
 }
 
+// A canonical fetch helper is conventionally named like a data fetcher.
+// Guards such as enforceAccountStatus / requireRole / assertOwner read the same
+// table for a side effect, not to return it, so they are not "the fetch path"
+// and must not be suggested as a replacement for a direct query.
+const HELPER_FETCHER_NAME_RE = /^(?:fetch|get|load|list|find|query|select|read|lookup|resolve)[A-Z0-9_]/;
+
 function findHelperCandidates(
   projectStore: ProjectStore,
   tableName: string,
@@ -250,31 +256,50 @@ function findHelperCandidates(
     .map((file) => file.path)
     .filter((path) => path.startsWith("lib/") && path !== consumerPath);
   const candidates: Array<{ path: string; line: number; functionName: string; usesRpc: boolean }> = [];
+  const tableLower = tableName.toLowerCase();
+  const visibleRpc = `get_visible_${tableName}`.toLowerCase();
 
   for (const file of readDiagnosticFiles(projectStore, files)) {
-    const text = file.content;
-    if (!text.includes(tableName) && !text.includes(`get_visible_${tableName}`)) {
-      continue;
-    }
-    const functionMatches = [...text.matchAll(/export\s+async\s+function\s+([A-Za-z0-9_]+)/g)];
-    const usesRpc = text.includes(".rpc(");
-    for (const match of functionMatches) {
-      const index = match.index ?? 0;
-      const position = file.sourceFile.getLineAndCharacterOfPosition(index);
-      candidates.push({
-        path: file.path,
-        line: position.line + 1,
-        functionName: match[1],
-        usesRpc,
-      });
+    // Exported async functions in declaration order, so each table/RPC usage can
+    // be attributed to the function that actually contains it. Matching at the
+    // file level (the previous behaviour) blamed every export in a file for one
+    // query and treated any `.rpc(` anywhere as encapsulating any table.
+    const functionDecls = [...file.content.matchAll(/export\s+async\s+function\s+([A-Za-z0-9_]+)/g)]
+      .map((match) => ({
+        name: match[1],
+        line: file.sourceFile.getLineAndCharacterOfPosition(match.index ?? 0).line + 1,
+      }))
+      .sort((left, right) => left.line - right.line);
+    if (functionDecls.length === 0) continue;
+
+    const enclosingFunction = (line: number): { name: string; line: number } | undefined => {
+      let current: { name: string; line: number } | undefined;
+      for (const decl of functionDecls) {
+        if (decl.line <= line) current = decl;
+        else break;
+      }
+      return current;
+    };
+
+    const seen = new Set<string>();
+    for (const usage of collectQueryUsages(file)) {
+      // The helper must genuinely access THIS table: a direct `.from(table)`, or
+      // an RPC that encapsulates it (get_visible_<table>, or a name referencing
+      // the table). A file merely mentioning the table no longer qualifies.
+      const valueLower = usage.value.toLowerCase();
+      const isFromTable = usage.kind === "from" && usage.value === tableName;
+      const isRpcForTable = usage.kind === "rpc" &&
+        (valueLower === visibleRpc || valueLower.includes(tableLower));
+      if (!isFromTable && !isRpcForTable) continue;
+
+      const fn = enclosingFunction(usage.line);
+      if (!fn || !HELPER_FETCHER_NAME_RE.test(fn.name) || seen.has(fn.name)) continue;
+      seen.add(fn.name);
+      candidates.push({ path: file.path, line: fn.line, functionName: fn.name, usesRpc: isRpcForTable });
     }
   }
 
-  return candidates.filter((candidate) =>
-    canonicalizeFieldName(candidate.path).includes(canonicalizeFieldName(tableName)) ||
-    candidate.functionName.toLowerCase().includes(tableName.toLowerCase()) ||
-    candidate.usesRpc,
-  );
+  return candidates;
 }
 
 function resolveStructuralRelatedFiles(projectStore: ProjectStore, focusPath: string): string[] {

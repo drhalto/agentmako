@@ -2317,6 +2317,7 @@ export interface ReefAskToolInput extends ProjectLocatorInput {
   includeRisks?: boolean;
   includeOpenLoops?: boolean;
   includeVerification?: boolean;
+  includeTrace?: boolean;
   freshnessPolicy?: "report" | "prefer_fresh";
   budgetTokens?: number;
   maxPrimaryContext?: number;
@@ -2339,6 +2340,7 @@ export const ReefAskToolInputSchema = ProjectLocatorInputObjectSchema.extend({
   includeRisks: z.boolean().optional(),
   includeOpenLoops: z.boolean().optional(),
   includeVerification: z.boolean().optional(),
+  includeTrace: z.boolean().optional(),
   freshnessPolicy: z.enum(["report", "prefer_fresh"]).optional(),
   budgetTokens: z.number().int().min(512).max(24_000).optional(),
   maxPrimaryContext: z.number().int().min(1).max(50).optional(),
@@ -2412,9 +2414,9 @@ export interface ReefAskQueryPlan {
   intent: ContextPacketIntent;
   evidenceLanes: string[];
   graphSummary: ReefAskGraphSummary;
-  assumptions: string[];
-  engineSteps: ReefAskEngineStep[];
-  calculations: ReefAskPlannedCalculation[];
+  assumptions?: string[];
+  engineSteps?: ReefAskEngineStep[];
+  calculations?: ReefAskPlannedCalculation[];
 }
 
 export const ReefAskQueryPlanSchema = z.object({
@@ -2422,9 +2424,9 @@ export const ReefAskQueryPlanSchema = z.object({
   intent: ContextPacketIntentSchema,
   evidenceLanes: z.array(z.string().min(1)),
   graphSummary: ReefAskGraphSummarySchema,
-  assumptions: z.array(z.string().min(1)),
-  engineSteps: z.array(ReefAskEngineStepSchema),
-  calculations: z.array(ReefAskPlannedCalculationSchema),
+  assumptions: z.array(z.string().min(1)).optional(),
+  engineSteps: z.array(ReefAskEngineStepSchema).optional(),
+  calculations: z.array(ReefAskPlannedCalculationSchema).optional(),
 }) satisfies z.ZodType<ReefAskQueryPlan>;
 
 export interface ReefAskAnswer {
@@ -2438,7 +2440,7 @@ export interface ReefAskAnswer {
   findingsSummary?: ReefAskFindingsSummary;
   literalMatchesSummary?: ReefAskLiteralMatchesSummary;
   whereUsedSummary?: ReefAskWhereUsedSummary;
-  decisionTrace: ReefAskDecisionTrace;
+  decisionTrace?: ReefAskDecisionTrace;
   nextQueries: ReefAskNextQuery[];
   suggestedNextActions: string[];
 }
@@ -3156,7 +3158,7 @@ export const ReefAskAnswerSchema = z.object({
   findingsSummary: ReefAskFindingsSummarySchema.optional(),
   literalMatchesSummary: ReefAskLiteralMatchesSummarySchema.optional(),
   whereUsedSummary: ReefAskWhereUsedSummarySchema.optional(),
-  decisionTrace: ReefAskDecisionTraceSchema,
+  decisionTrace: ReefAskDecisionTraceSchema.optional(),
   nextQueries: z.array(ReefAskNextQuerySchema),
   suggestedNextActions: z.array(z.string().min(1)),
 }) satisfies z.ZodType<ReefAskAnswer>;
@@ -3284,6 +3286,7 @@ export interface ReefAskToolOutput {
     maxOpenLoops: number;
     evidenceMode: ReefAskEvidenceMode;
     maxEvidenceItemsPerSection: number;
+    includeTrace: boolean;
   };
   warnings: string[];
 }
@@ -3305,6 +3308,7 @@ export const ReefAskToolOutputSchema = z.object({
     maxOpenLoops: z.number().int().min(1),
     evidenceMode: ReefAskEvidenceModeSchema,
     maxEvidenceItemsPerSection: z.number().int().min(1),
+    includeTrace: z.boolean(),
   }),
   warnings: z.array(z.string().min(1)),
 }) satisfies z.ZodType<ReefAskToolOutput>;

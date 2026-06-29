@@ -43,10 +43,36 @@ const QUERY_KIND: ComposerQueryKind = "cross_search";
 const DEFAULT_COMPACT_LIMIT = 8;
 const DEFAULT_FULL_LIMIT = 15;
 const DEFAULT_LIVE_EXACT_LIMIT = 25;
+const DEFAULT_LIVE_MULTI_TERM_LIMIT = 25;
 const SOURCE_FILE_RE = /\.(?:ts|tsx|js|jsx|mjs|cjs|sql)$/i;
 const DB_QUALIFIED_IDENTIFIER_RE = /^[a-z_][a-z0-9_$]*\.[a-z_][a-z0-9_$]*$/i;
 const ROUTE_PATTERN_RE = /^\/[A-Za-z0-9_./:{}[\]-]+$/;
 const EXACT_CODE_LITERAL_RE = /(?:[()[\]{}'"`;]|=>|\?\.)/;
+const LIVE_RECALL_STOP_WORDS = new Set([
+  "and",
+  "are",
+  "const",
+  "does",
+  "export",
+  "file",
+  "find",
+  "for",
+  "from",
+  "function",
+  "import",
+  "into",
+  "let",
+  "search",
+  "that",
+  "the",
+  "this",
+  "used",
+  "uses",
+  "var",
+  "what",
+  "where",
+  "with",
+]);
 
 function isRelevantSourceFile(filePath: string): boolean {
   return SOURCE_FILE_RE.test(filePath);
@@ -105,6 +131,29 @@ function textBoost(text: string, terms: string[]): number {
 function containsExactTerm(text: string, terms: string[]): boolean {
   const lowered = text.toLowerCase();
   return terms.some((term) => term.trim().length > 0 && lowered.includes(term.toLowerCase()));
+}
+
+function isCodeShapedSearchToken(term: string): boolean {
+  return /[a-z][A-Z]/.test(term) ||
+    /^[A-Z][A-Za-z0-9_$]*$/.test(term) ||
+    /^[A-Z0-9_]{3,}$/.test(term) ||
+    term.includes(".");
+}
+
+function liveRecallTerms(term: string): string[] {
+  const trimmed = term.trim();
+  if (!/\s/.test(trimmed)) return [];
+  const tokens = trimmed.match(/[A-Za-z_$][A-Za-z0-9_$.]{2,}/g) ?? [];
+  const uniqueTokens = dedupeByKey(
+    tokens
+      .map((token) => token.replace(/^[._$]+|[._$]+$/g, ""))
+      .filter((token) => token.length >= 3 && !LIVE_RECALL_STOP_WORDS.has(token.toLowerCase())),
+    (token) => token.toLowerCase(),
+  );
+  if (!uniqueTokens.some(isCodeShapedSearchToken)) {
+    return [];
+  }
+  return uniqueTokens.slice(0, 6);
 }
 
 function rankChunkHit(hit: CodeChunkHit, terms: string[]): number {
@@ -300,6 +349,112 @@ function blocksFromLiveTextMatches(matches: LiveTextSearchMatch[], term: string)
   }));
 }
 
+type LiveRecallFile = {
+  filePath: string;
+  terms: Set<string>;
+  matches: LiveTextSearchMatch[];
+};
+
+function rankLiveRecallFile(file: LiveRecallFile, queryTerms: readonly string[]): number {
+  const hasCodeTerm = [...file.terms].some(isCodeShapedSearchToken);
+  const distinctTermScore = file.terms.size * 120;
+  const queryOrderScore = queryTerms.reduce((score, term, index) =>
+    file.terms.has(term) ? score + Math.max(0, 30 - index * 3) : score, 0);
+  return distinctTermScore + queryOrderScore + sourcePathBoost(file.filePath) + (hasCodeTerm ? 80 : 0);
+}
+
+async function collectLiveTokenRecall(args: {
+  projectId: string;
+  projectRoot: string;
+  term: string;
+  limit: number;
+}): Promise<{
+  evidence: EvidenceBlock[];
+  warnings: string[];
+  matchCount: number;
+  fileCount: number;
+  terms: string[];
+}> {
+  const terms = liveRecallTerms(args.term);
+  if (terms.length === 0) {
+    return { evidence: [], warnings: [], matchCount: 0, fileCount: 0, terms: [] };
+  }
+
+  const perTermLimit = Math.max(args.limit * 3, 12);
+  const results = await Promise.all(terms.map(async (term) => ({
+    term,
+    result: await runRipgrepSearch(args.projectRoot, {
+      projectId: args.projectId,
+      query: term,
+      fixedStrings: true,
+      maxMatches: perTermLimit,
+      maxFiles: perTermLimit,
+    }),
+  })));
+
+  const byFile = new Map<string, LiveRecallFile>();
+  const warnings: string[] = [];
+  for (const { term, result } of results) {
+    warnings.push(...result.warnings.map((warning) => `live token recall '${term}': ${warning}`));
+    for (const match of result.matches) {
+      if (!isRelevantSourceFile(match.filePath)) continue;
+      const entry = byFile.get(match.filePath) ?? {
+        filePath: match.filePath,
+        terms: new Set<string>(),
+        matches: [],
+      };
+      entry.terms.add(term);
+      if (entry.matches.length < 3) {
+        entry.matches.push(match);
+      }
+      byFile.set(match.filePath, entry);
+    }
+  }
+
+  const files = [...byFile.values()]
+    .filter((file) =>
+      [...file.terms].some(isCodeShapedSearchToken) ||
+      file.terms.size >= Math.min(2, terms.length)
+    )
+    .sort((left, right) => {
+      const scoreDiff = rankLiveRecallFile(right, terms) - rankLiveRecallFile(left, terms);
+      if (scoreDiff !== 0) return scoreDiff;
+      return left.filePath.localeCompare(right.filePath);
+    })
+    .slice(0, args.limit);
+
+  const representativeMatches = files
+    .map((file) => file.matches[0])
+    .filter((match): match is LiveTextSearchMatch => Boolean(match));
+
+  return {
+    evidence: representativeMatches.map((match) => {
+      const file = byFile.get(match.filePath);
+      return {
+        blockId: createId("ev"),
+        kind: "file",
+        title: `live token recall ${match.filePath}:${match.line}`,
+        sourceRef: `${match.filePath}:${match.line}`,
+        filePath: match.filePath,
+        line: match.line,
+        content: match.text,
+        metadata: {
+          kind: "cross_search_live_token_recall",
+          evidenceMode: "live_filesystem",
+          query: args.term,
+          matchedTerms: file ? [...file.terms].sort((left, right) => left.localeCompare(right)) : [],
+          column: match.column,
+          submatchCount: match.submatches.length,
+        },
+      };
+    }),
+    warnings,
+    matchCount: representativeMatches.length,
+    fileCount: files.length,
+    terms,
+  };
+}
+
 function summarizeLiveExactSearch(args: {
   term: string;
   matchCount: number;
@@ -376,6 +531,12 @@ export const crossSearchTool = defineComposer({
     const schemaTerms = schemaSearchTerms(term);
     const requireExactSchemaTerm = /\s/.test(term.trim());
 
+    const liveRecall = await collectLiveTokenRecall({
+      projectId: ctx.projectId,
+      projectRoot: ctx.projectRoot,
+      term,
+      limit: input.limit ?? DEFAULT_LIVE_MULTI_TERM_LIMIT,
+    });
     const chunkHits = collectChunkHits(ctx, searchTerms, limit);
     const chunkFiles = new Set(chunkHits.map((hit) => hit.filePath));
     const fileHits = collectFileHits(ctx, searchTerms, limit).filter(
@@ -399,6 +560,7 @@ export const crossSearchTool = defineComposer({
       .filter((row): row is NonNullable<typeof row> => row != null);
 
     const evidence: EvidenceBlock[] = [
+      ...liveRecall.evidence,
       ...blocksFromChunkHits(chunkHits),
       ...blocksFromFileMatches(fileHits, {
         title: (hit) => `file hit ${hit.path}`,
@@ -412,6 +574,7 @@ export const crossSearchTool = defineComposer({
 
     const summary = summarize(term, {
       "code hit": chunkHits.length,
+      "live recall hit": liveRecall.fileCount,
       "file hit": fileHits.length,
       "schema object": schemaHits.length,
       "body match": schemaBodyHits.length,
@@ -424,6 +587,7 @@ export const crossSearchTool = defineComposer({
       queryText: `cross_search(${term})`,
       evidence,
       summary,
+      missingInformation: liveRecall.warnings,
     });
 
     return {

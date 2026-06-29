@@ -140,6 +140,7 @@ export interface ReefQueryEnginePlan {
   mode: ReefAskMode;
   includeOpenLoops: boolean;
   includeVerification: boolean;
+  includeTrace: boolean;
   maxOpenLoops: number;
   maxPrimaryContext: number;
   maxRelatedContext: number;
@@ -626,6 +627,58 @@ function structuralTargetKindFor(query: string): ReefStructuralTargetKind {
   return "pattern";
 }
 
+const WHERE_USED_NON_TARGET_TOKENS = new Set([
+  "all",
+  "and",
+  "any",
+  "are",
+  "component",
+  "components",
+  "dependents",
+  "does",
+  "for",
+  "how",
+  "impact",
+  "it",
+  "its",
+  "references",
+  "that",
+  "the",
+  "these",
+  "this",
+  "those",
+  "understand",
+  "usage",
+  "usages",
+  "used",
+  "uses",
+  "what",
+  "where",
+  "which",
+  "who",
+  "why",
+]);
+
+function isWhereUsedNonTarget(value: string): boolean {
+  const normalized = normalizeBareLiteral(value).toLowerCase();
+  return normalized.length < 2 || WHERE_USED_NON_TARGET_TOKENS.has(normalized);
+}
+
+function extractCodeShapedWhereUsedTarget(question: string): string | undefined {
+  const tokens = question.match(/[A-Za-z_$][A-Za-z0-9_$]*(?:\.[A-Za-z_$][A-Za-z0-9_$]*)?/g) ?? [];
+  return tokens
+    .map(normalizeBareLiteral)
+    .find((token) =>
+      !isWhereUsedNonTarget(token) &&
+      (
+        /[a-z][A-Z]/.test(token) ||
+        /^[A-Z][A-Za-z0-9_$]*$/.test(token) ||
+        /^[A-Z0-9_]{3,}$/.test(token) ||
+        token.includes(".")
+      )
+    );
+}
+
 function extractWhereUsedTarget(question: string): string | undefined {
   const quoted = extractQuotedLiteral(question);
   if (quoted) return quoted;
@@ -638,14 +691,17 @@ function extractWhereUsedTarget(question: string): string | undefined {
   ];
   for (const pattern of patterns) {
     const target = question.match(pattern)?.groups?.target;
-    if (target) return normalizeBareLiteral(target);
+    if (target) {
+      const normalized = normalizeBareLiteral(target);
+      if (!isWhereUsedNonTarget(normalized)) return normalized;
+    }
   }
-  return undefined;
+  return extractCodeShapedWhereUsedTarget(question);
 }
 
 function inferWhereUsed(input: ReefAskToolInput): ReefQueryEnginePlan["whereUsed"] {
   const question = input.question;
-  if (input.focusSymbols?.[0] && looksLikeWhereUsedQuestion(question)) {
+  if (input.focusSymbols?.[0] && looksLikeWhereUsedQuestion(question) && !isWhereUsedNonTarget(input.focusSymbols[0])) {
     const query = input.focusSymbols[0];
     return {
       query,
@@ -1290,7 +1346,17 @@ function compileDiagnosticSummary(evidence: ReefQueryEvidenceBundle): ReefAskDia
   };
 }
 
-function compileFindingsSummary(findings: ProjectFinding[]): ReefAskFindingsSummary | undefined {
+const COMPACT_FINDING_MESSAGE_LIMIT = 220;
+
+// Findings can carry long rule prose (multi-sentence guidance) repeated verbatim
+// per occurrence. In compact mode the message is clipped to a lead snippet; the
+// full text is available via evidenceMode: "full", file_findings, or lint_files.
+function compactFindingMessage(message: string): string {
+  if (message.length <= COMPACT_FINDING_MESSAGE_LIMIT) return message;
+  return `${message.slice(0, COMPACT_FINDING_MESSAGE_LIMIT - 1).trimEnd()}…`;
+}
+
+function compileFindingsSummary(findings: ProjectFinding[], compact: boolean): ReefAskFindingsSummary | undefined {
   if (findings.length === 0) return undefined;
   const bySeverity: ReefAskFindingsSummary["bySeverity"] = {
     info: 0,
@@ -1321,7 +1387,7 @@ function compileFindingsSummary(findings: ProjectFinding[]): ReefAskFindingsSumm
       status: finding.status,
       ...(finding.filePath ? { filePath: finding.filePath } : {}),
       ...(finding.line ? { line: finding.line } : {}),
-      message: finding.message,
+      message: compact ? compactFindingMessage(finding.message) : finding.message,
       freshness: finding.freshness,
     })),
     truncated: findings.length > ANSWER_FINDING_ITEM_LIMIT,
@@ -2330,6 +2396,25 @@ function anyEvidenceSectionTruncated(sections: ReefCompiledQuery["evidence"]["se
   return Object.values(sections).some((section) => section.truncated);
 }
 
+type ReefContextCandidate = ContextPacketResult["primaryContext"][number];
+
+// Compact projection for ranked context items: the per-item `metadata`
+// (graph seed sources, supporting signals, traversal paths) and the timestamp
+// detail inside `freshness` are debug provenance that an answering agent rarely
+// needs. In compact mode we drop `metadata` and keep only the freshness state +
+// reason, shrinking each item ~5x. Both fields are optional in the contract and
+// the full detail is still available via evidenceMode: "full".
+function compactContextCandidate(item: ReefContextCandidate): ReefContextCandidate {
+  const { metadata: _metadata, freshness, ...rest } = item;
+  return freshness
+    ? { ...rest, freshness: { state: freshness.state, filePath: freshness.filePath, reason: freshness.reason } }
+    : rest;
+}
+
+function projectContextCandidates(items: ReefContextCandidate[], compact: boolean): ReefContextCandidate[] {
+  return compact ? items.map(compactContextCandidate) : items;
+}
+
 function buildReefAskEvidenceOutput(args: {
   plan: ReefQueryEnginePlan;
   context: ContextPacketResult;
@@ -2349,13 +2434,27 @@ function buildReefAskEvidenceOutput(args: {
   revision?: number;
 }): ReefCompiledQuery["evidence"] {
   const limit = evidenceCap(args.plan);
+  const compactItems = args.plan.evidenceMode !== "full";
   const sections: ReefCompiledQuery["evidence"]["sections"] = {};
-  const primaryContext = capEvidenceArray(sections, "primaryContext", args.context.primaryContext, limit);
-  const relatedContext = capEvidenceArray(sections, "relatedContext", args.context.relatedContext, limit);
+  const primaryContext = projectContextCandidates(
+    capEvidenceArray(sections, "primaryContext", args.context.primaryContext, limit),
+    compactItems,
+  );
+  const relatedContext = projectContextCandidates(
+    capEvidenceArray(sections, "relatedContext", args.context.relatedContext, limit),
+    compactItems,
+  );
   const symbols = capEvidenceArray(sections, "symbols", args.context.symbols, limit);
   const routes = capEvidenceArray(sections, "routes", args.context.routes, limit);
   const databaseObjects = capEvidenceArray(sections, "databaseObjects", args.context.databaseObjects, limit);
-  const findings = capEvidenceArray(sections, "findings", args.findings, limit);
+  const findingsCapped = capEvidenceArray(sections, "findings", args.findings, limit);
+  const findings = compactItems
+    ? findingsCapped.map((finding) =>
+        finding.message.length > COMPACT_FINDING_MESSAGE_LIMIT
+          ? { ...finding, message: compactFindingMessage(finding.message) }
+          : finding,
+      )
+    : findingsCapped;
   const risks = capEvidenceArray(sections, "risks", args.context.risks, limit);
   const instructions = capEvidenceArray(sections, "instructions", args.context.scopedInstructions, limit);
   const openLoops = capEvidenceArray(sections, "openLoops", args.openLoops?.loops ?? [], limit);
@@ -2466,8 +2565,12 @@ function buildReefAskEvidenceOutput(args: {
   const verification = args.verification
     ? {
         status: args.verification.status,
-        sources: verificationSources,
-        changedFiles: verificationChangedFiles,
+        // In compact mode the per-source diagnostic-run records and changed-file
+        // detail are dropped: answer.diagnosticSummary already digests them, and
+        // the full detail is available via evidenceMode: "full", reef_status, or
+        // verification_state. Status + suggested actions are kept as the gate.
+        sources: compactItems ? [] : verificationSources,
+        changedFiles: compactItems ? [] : verificationChangedFiles,
         suggestedActions: verificationSuggestedActions,
       }
     : {
@@ -2476,7 +2579,7 @@ function buildReefAskEvidenceOutput(args: {
         changedFiles: [],
         suggestedActions: [],
       };
-  const graph = buildReefEvidenceGraph({
+  const fullGraph = buildReefEvidenceGraph({
     ...(args.revision !== undefined ? { revision: args.revision } : {}),
     primaryContext: args.context.primaryContext,
     relatedContext: args.context.relatedContext,
@@ -2519,6 +2622,30 @@ function buildReefAskEvidenceOutput(args: {
     },
     ...(limit !== undefined ? { nodeLimit: limit, edgeLimit: limit } : {}),
   });
+  // The raw evidence graph (nodes/edges with provenance) is the single heaviest
+  // section and has no compact-surface consumers, so it is only emitted for
+  // evidenceMode "full" or when includeTrace is set — matching how the decision
+  // trace and engine steps are gated. Compact callers still get node/edge totals
+  // and coverage via `truncated`/`graphSummary`, and can re-request the full
+  // graph with evidenceMode: "full" or includeTrace: true.
+  const includeFullGraph = args.plan.evidenceMode === "full" || args.plan.includeTrace;
+  const graph: ReefEvidenceGraph = includeFullGraph
+    ? fullGraph
+    : {
+        ...fullGraph,
+        nodes: [],
+        edges: [],
+        warnings: [],
+        truncated: {
+          ...fullGraph.truncated,
+          returnedNodes: 0,
+          droppedNodes: fullGraph.truncated.totalNodes,
+          nodes: fullGraph.truncated.totalNodes > 0,
+          returnedEdges: 0,
+          droppedEdges: fullGraph.truncated.totalEdges,
+          edges: fullGraph.truncated.totalEdges > 0,
+        },
+      };
   sections["graph.nodes"] = {
     returned: graph.truncated.returnedNodes,
     total: graph.truncated.totalNodes,
@@ -2558,6 +2685,7 @@ export function planReefQuery(input: ReefAskToolInput): ReefQueryEnginePlan {
   const mode = input.mode ?? inferMode(input.question);
   const includeOpenLoops = input.includeOpenLoops ?? true;
   const includeVerification = input.includeVerification ?? true;
+  const includeTrace = input.includeTrace ?? false;
   const maxOpenLoops = input.maxOpenLoops ?? DEFAULT_MAX_OPEN_LOOPS;
   const maxPrimaryContext = input.maxPrimaryContext ?? DEFAULT_MAX_PRIMARY_CONTEXT;
   const maxRelatedContext = input.maxRelatedContext ?? DEFAULT_MAX_RELATED_CONTEXT;
@@ -2579,6 +2707,7 @@ export function planReefQuery(input: ReefAskToolInput): ReefQueryEnginePlan {
     mode,
     includeOpenLoops,
     includeVerification,
+    includeTrace,
     maxOpenLoops,
     maxPrimaryContext,
     maxRelatedContext,
@@ -3099,17 +3228,19 @@ export function compileReefQueryAnswer(
   const inventorySummary = compileInventorySummary(facts);
   const databaseObjectSummary = compileDatabaseObjectSummary(facts, evidence.databaseObjectQuery);
   const diagnosticSummary = compileDiagnosticSummary(evidence);
-  const findingsSummary = compileFindingsSummary(findings);
+  const findingsSummary = compileFindingsSummary(findings, plan.evidenceMode !== "full");
   const literalMatchesSummary = compileLiteralMatchesSummary(evidence.liveTextSearch);
   const whereUsedSummary = compileWhereUsedSummary(evidence.whereUsed);
   const featureFlowSummary = evidence.featureFlow;
   const nextQueries = compileNextQueries({ evidence, facts, findings });
-  const decisionTrace = compileDecisionTrace({
-    plan,
-    evidence,
-    confidence: confidenceResult.confidence,
-    nextQueries,
-  });
+  const decisionTrace = plan.includeTrace
+    ? compileDecisionTrace({
+        plan,
+        evidence,
+        confidence: confidenceResult.confidence,
+        nextQueries,
+      })
+    : undefined;
   return {
     summary: buildSummary(evidence, diagnosticSummary),
     confidence: confidenceResult.confidence,
@@ -3121,7 +3252,7 @@ export function compileReefQueryAnswer(
     ...(findingsSummary ? { findingsSummary } : {}),
     ...(literalMatchesSummary ? { literalMatchesSummary } : {}),
     ...(whereUsedSummary ? { whereUsedSummary } : {}),
-    decisionTrace,
+    ...(decisionTrace ? { decisionTrace } : {}),
     nextQueries,
     suggestedNextActions: suggestedActions(evidence),
   };
@@ -3334,38 +3465,42 @@ export async function compileReefQuery(
         featureFlowWarnings: evidence.featureFlowWarnings,
       }),
       graphSummary: graphSummary(outputEvidence.graph),
-      assumptions: [
-        "Reef query engine v0 compiles maintained Reef/context evidence into a normalized evidence graph; it does not execute live diagnostics or mutate project state.",
-        plan.liveTextSearch
-          ? "The planner detected a bounded literal lookup and checked current disk through the internal live_text_search lane."
-          : "Exact current-disk text is checked internally only when the question looks like a bounded literal lookup.",
-        plan.reefFactQueries.length > 0
-          ? "The planner detected a supported inventory question and queried materialized Reef facts directly."
-          : "Materialized Reef fact inventory is queried internally only for supported inventory-style questions.",
-        plan.databaseObject
-          ? "The planner detected a specific database object question and queried materialized schema/RLS facts directly."
-          : "Database object detail is queried internally only for specific table, column, RLS, index, FK, trigger, or schema questions.",
-        plan.tableNeighborhood || plan.rpcNeighborhood || plan.routeContext
-          ? "The planner selected cached Reef calculation nodes for focused neighborhood context."
-          : "Focused neighborhood calculations are selected internally only for specific table, RPC, or route questions.",
-        plan.projectFindings
-          ? "The planner detected a durable-findings question and queried project findings directly."
-          : "Durable project findings are queried internally only for finding, risk, audit, duplicate, drift, or bypass questions.",
-        conventionGraph
-          ? "Focused project conventions and rule-derived convention candidates were compiled into the normalized evidence graph."
-          : "Project conventions are graph-enriched internally when focused convention evidence is available.",
-        operationalGraph
-          ? "Recent diagnostic commands, test commands, sessions, and tool runs were compiled into the normalized evidence graph."
-          : "Recent operational activity is graph-enriched internally when focused session or diagnostic evidence is available.",
-        plan.whereUsed
-          ? "The planner detected a usage/impact question and queried maintained where-used evidence directly."
-          : "Where-used evidence is queried internally only for usage, caller, dependent, reference, or impact questions.",
-        plan.featureFlow
-          ? "The planner calculated a bounded feature-flow action surface across focused files, routes, imports, database facts, policies, triggers, RPC/table refs, and findings."
-          : "Feature-flow is calculated internally only for action-oriented questions or explicit focus anchors.",
-      ],
-      engineSteps: engineStepsForPlan(plan, evidence),
-      calculations: plannedCalculationsForPlan(plan, evidence),
+      ...(plan.includeTrace
+        ? {
+            assumptions: [
+              "Reef query engine v0 compiles maintained Reef/context evidence into a normalized evidence graph; it does not execute live diagnostics or mutate project state.",
+              plan.liveTextSearch
+                ? "The planner detected a bounded literal lookup and checked current disk through the internal live_text_search lane."
+                : "Exact current-disk text is checked internally only when the question looks like a bounded literal lookup.",
+              plan.reefFactQueries.length > 0
+                ? "The planner detected a supported inventory question and queried materialized Reef facts directly."
+                : "Materialized Reef fact inventory is queried internally only for supported inventory-style questions.",
+              plan.databaseObject
+                ? "The planner detected a specific database object question and queried materialized schema/RLS facts directly."
+                : "Database object detail is queried internally only for specific table, column, RLS, index, FK, trigger, or schema questions.",
+              plan.tableNeighborhood || plan.rpcNeighborhood || plan.routeContext
+                ? "The planner selected cached Reef calculation nodes for focused neighborhood context."
+                : "Focused neighborhood calculations are selected internally only for specific table, RPC, or route questions.",
+              plan.projectFindings
+                ? "The planner detected a durable-findings question and queried project findings directly."
+                : "Durable project findings are queried internally only for finding, risk, audit, duplicate, drift, or bypass questions.",
+              conventionGraph
+                ? "Focused project conventions and rule-derived convention candidates were compiled into the normalized evidence graph."
+                : "Project conventions are graph-enriched internally when focused convention evidence is available.",
+              operationalGraph
+                ? "Recent diagnostic commands, test commands, sessions, and tool runs were compiled into the normalized evidence graph."
+                : "Recent operational activity is graph-enriched internally when focused session or diagnostic evidence is available.",
+              plan.whereUsed
+                ? "The planner detected a usage/impact question and queried maintained where-used evidence directly."
+                : "Where-used evidence is queried internally only for usage, caller, dependent, reference, or impact questions.",
+              plan.featureFlow
+                ? "The planner calculated a bounded feature-flow action surface across focused files, routes, imports, database facts, policies, triggers, RPC/table refs, and findings."
+                : "Feature-flow is calculated internally only for action-oriented questions or explicit focus anchors.",
+            ],
+            engineSteps: engineStepsForPlan(plan, evidence),
+            calculations: plannedCalculationsForPlan(plan, evidence),
+          }
+        : {}),
     },
     evidence: outputEvidence,
     freshness: {
@@ -3381,6 +3516,7 @@ export async function compileReefQuery(
       maxOpenLoops: plan.maxOpenLoops,
       evidenceMode: plan.evidenceMode,
       maxEvidenceItemsPerSection: plan.maxEvidenceItemsPerSection,
+      includeTrace: plan.includeTrace,
     },
     warnings,
   };

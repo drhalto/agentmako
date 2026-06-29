@@ -18,6 +18,11 @@ import {
 } from "./project-index-scope.js";
 
 const SUMMARY_SAMPLE_LIMIT = 20;
+// Fresh rows are only illustrative; a handful is enough to show representative
+// live mtimes. Without this cap a fully-fresh project pads the sample to the
+// limit with redundant "fresh" entries (kilobytes of noise on every consumer
+// that embeds this summary — context_packet, composer packets, status tools).
+const SUMMARY_FRESH_SAMPLE_LIMIT = 3;
 
 export interface AssessFileFreshnessInput {
   projectRoot: string;
@@ -182,12 +187,14 @@ export function summarizeIndexFreshnessDetails(
 
   const dirtyCount = staleCount + deletedCount + unindexedCount;
   const state = dirtyCount > 0 ? "dirty" : unknownCount > 0 ? "unknown" : "fresh";
-  // Show actionable rows first, then include fresh examples when the sample
-  // budget has room so callers can still see representative live mtimes.
-  const sample = details
-    .filter((detail) => detail.state !== "fresh")
-    .concat(details.filter((detail) => detail.state === "fresh"))
-    .slice(0, SUMMARY_SAMPLE_LIMIT);
+  // Keep every actionable (non-fresh) row — those are what callers act on — but
+  // include only a few representative fresh examples rather than padding to the
+  // limit with redundant "fresh" rows.
+  const actionable = details.filter((detail) => detail.state !== "fresh");
+  const freshExamples = details
+    .filter((detail) => detail.state === "fresh")
+    .slice(0, SUMMARY_FRESH_SAMPLE_LIMIT);
+  const sample = actionable.concat(freshExamples).slice(0, SUMMARY_SAMPLE_LIMIT);
 
   return {
     checkedAt,

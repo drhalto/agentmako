@@ -23,6 +23,7 @@ async function main(): Promise<void> {
   mkdirSync(stateHome, { recursive: true });
   const projectRoot = path.join(tmp, "project");
   mkdirSync(path.join(projectRoot, "src"), { recursive: true });
+  mkdirSync(path.join(projectRoot, "components", "qr"), { recursive: true });
 
   process.env.MAKO_STATE_HOME = stateHome;
   delete process.env.MAKO_STATE_DIRNAME;
@@ -34,6 +35,18 @@ async function main(): Promise<void> {
   writeFileSync(
     path.join(projectRoot, "src", "rpc-client.ts"),
     "export async function touchUsers(supabase: { rpc: (name: string) => unknown }) {\n  return supabase.rpc('touch_users');\n}\n",
+  );
+  writeFileSync(
+    path.join(projectRoot, "components", "qr", "QRGenerator.tsx"),
+    "export function QRGenerator() {\n  return <canvas data-mode=\"lazy\" />;\n}\n",
+  );
+  writeFileSync(
+    path.join(projectRoot, "components", "qr", "QRGeneratorLazy.tsx"),
+    "import dynamic from 'next/dynamic';\nexport const QRGeneratorLazy = dynamic(() => import('./QRGenerator'), { ssr: false });\n",
+  );
+  writeFileSync(
+    path.join(projectRoot, "components", "qr", "qr-registry.ts"),
+    "export const lazyQrTools = ['QRGenerator'];\n",
   );
 
   const projectId = randomUUID();
@@ -264,6 +277,42 @@ async function main(): Promise<void> {
         b.freshness == null
       ),
       "expected exact literal evidence from live filesystem search",
+    );
+
+    const multiTermOutput = (await invokeTool("cross_search", {
+      projectId,
+      term: "QRGenerator dynamic import lazy",
+    })) as {
+      toolName: string;
+      result: {
+        answer?: string;
+        packet: {
+          evidence: Array<{
+            kind: string;
+            filePath?: string;
+            metadata?: Record<string, unknown>;
+          }>;
+        };
+      };
+    };
+    assert.equal(multiTermOutput.toolName, "cross_search");
+    assert.match(
+      multiTermOutput.result.answer ?? "",
+      /live recall hit/,
+      "multi-term code-shaped searches should report live recall hits",
+    );
+    const liveRecallFiles = new Set(
+      multiTermOutput.result.packet.evidence
+        .filter((block) => block.metadata?.kind === "cross_search_live_token_recall")
+        .map((block) => block.filePath),
+    );
+    assert.ok(
+      liveRecallFiles.has("components/qr/QRGenerator.tsx"),
+      "expected live token recall to surface the QRGenerator component file",
+    );
+    assert.ok(
+      liveRecallFiles.has("components/qr/QRGeneratorLazy.tsx"),
+      "expected live token recall to surface the dynamic import wrapper",
     );
 
     console.log("composer-cross-search: PASS");

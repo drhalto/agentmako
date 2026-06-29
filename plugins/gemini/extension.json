@@ -1,6 +1,6 @@
 {
   "name": "mako-ai",
-  "version": "0.4.2",
+  "version": "0.4.3",
   "description": "Project intelligence skills and MCP wiring for agentmako.",
   "mcpServers": {
     "mako-ai": {
