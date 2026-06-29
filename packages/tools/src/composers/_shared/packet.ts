@@ -159,14 +159,13 @@ export function makePacket(
   // a hub file) can't return an unbounded blob the agent has to wade through.
   // Evidence is already relevance-ordered, so the kept blocks are the strongest.
   // Self-limiting composers (cross_search caps at ~15) are unaffected.
+  //
+  // The bound is a deliberate size cap, NOT evidence we failed to read, so it is
+  // intentionally NOT added to `missingInformation`: that field feeds trust
+  // enrichment (a non-empty entry → `missing_information` → `insufficient_evidence`),
+  // which would degrade the answer's trust state and suppress the companion
+  // verification-plan packet for every large-neighbourhood result.
   const evidence = orderedEvidence.slice(0, MAX_PACKET_EVIDENCE);
-  const droppedEvidenceCount = orderedEvidence.length - evidence.length;
-  const packetMissingInformation = droppedEvidenceCount > 0
-    ? [
-        ...missingInformation,
-        `Evidence bounded to the ${evidence.length} most relevant blocks (${droppedEvidenceCount} more omitted); narrow the query or use a more specific tool to see the rest.`,
-      ]
-    : missingInformation;
 
   const evidenceStatus = deriveEvidenceStatus(
     evidence.length,
@@ -196,7 +195,7 @@ export function makePacket(
     supportLevel,
     evidenceStatus,
     evidenceConfidence: score,
-    missingInformation: packetMissingInformation,
+    missingInformation,
     stalenessFlags,
     indexFreshness: enriched.summary,
     evidence,
