@@ -7,6 +7,8 @@ it reaches 1.0.
 
 ## [Unreleased]
 
+## [0.5.0] - 2026-07-02
+
 ### Added
 
 - **Class methods are indexed as symbols** (`kind: "method"`, container class
@@ -332,7 +334,12 @@ Initial public release of `agentmako` under Apache-2.0.
 - `mako-ai-claude-plugin` with Mako-specific Claude Code skills and
   bundled MCP wiring.
 
-[Unreleased]: https://github.com/drhalto/agentmako/compare/v0.3.2...HEAD
+[Unreleased]: https://github.com/drhalto/agentmako/compare/v0.5.0...HEAD
+[0.5.0]: https://github.com/drhalto/agentmako/compare/v0.4.3...v0.5.0
+[0.4.3]: https://github.com/drhalto/agentmako/compare/v0.4.2...v0.4.3
+[0.4.2]: https://github.com/drhalto/agentmako/compare/v0.4.1...v0.4.2
+[0.4.1]: https://github.com/drhalto/agentmako/compare/v0.4.0...v0.4.1
+[0.4.0]: https://github.com/drhalto/agentmako/compare/v0.3.2...v0.4.0
 [0.3.2]: https://github.com/drhalto/agentmako/compare/v0.3.1...v0.3.2
 [0.3.1]: https://github.com/drhalto/agentmako/compare/v0.3.0...v0.3.1
 [0.3.0]: https://github.com/drhalto/agentmako/compare/v0.2.3...v0.3.0
