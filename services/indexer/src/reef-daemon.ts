@@ -88,6 +88,12 @@ export class ReefDaemonUnavailableError extends Error {
   }
 }
 
+// How often a running daemon re-checks its own process metadata. When the
+// state home is deleted (a smoke test's temp dir, an uninstall) or another
+// daemon takes over the slot, the process would otherwise live forever as an
+// orphan holding its port and DB handles.
+const ORPHAN_WATCHDOG_INTERVAL_MS = 30_000;
+
 export class ReefDaemonServer {
   private server: Server | undefined;
   private service: InProcessReefService | undefined;
@@ -95,6 +101,7 @@ export class ReefDaemonServer {
   private token = "";
   private info: ReefDaemonProcessInfo | undefined;
   private daemonLock: DaemonLockHandle | undefined;
+  private orphanWatchdog: NodeJS.Timeout | undefined;
   private shuttingDown = false;
   private resolveStopped: () => void = () => undefined;
   private readonly stopped = new Promise<void>((resolve) => {
@@ -165,10 +172,42 @@ export class ReefDaemonServer {
         tokenFingerprint: this.info.tokenFingerprint,
       },
     });
+    this.startOrphanWatchdog();
     if (this.options.onReady) {
       await this.options.onReady(this.info);
     }
     return this.info;
+  }
+
+  private startOrphanWatchdog(): void {
+    this.orphanWatchdog = setInterval(() => {
+      void (async () => {
+        if (this.shuttingDown) {
+          return;
+        }
+        let recorded: ReefDaemonProcessInfo | undefined | null;
+        try {
+          recorded = await readReefDaemonProcessInfo(this.options);
+        } catch {
+          // Transient read errors must not kill a healthy daemon.
+          return;
+        }
+        if (recorded && recorded.pid === process.pid) {
+          return;
+        }
+        await appendReefOperation(this.options, {
+          kind: "daemon_lifecycle",
+          severity: "warning",
+          message: recorded
+            ? "reef daemon superseded by another process; shutting down"
+            : "reef daemon process metadata is gone (state home removed?); shutting down",
+          data: { pid: process.pid, recordedPid: recorded?.pid ?? null },
+        }).catch(() => undefined);
+        await this.stop();
+      })();
+    }, ORPHAN_WATCHDOG_INTERVAL_MS);
+    // The watchdog must never be the thing keeping the process alive.
+    this.orphanWatchdog.unref?.();
   }
 
   async stop(): Promise<void> {
@@ -176,6 +215,10 @@ export class ReefDaemonServer {
       return;
     }
     this.shuttingDown = true;
+    if (this.orphanWatchdog) {
+      clearInterval(this.orphanWatchdog);
+      this.orphanWatchdog = undefined;
+    }
     await appendReefOperation(this.options, {
       kind: "daemon_lifecycle",
       message: "reef daemon stopping",

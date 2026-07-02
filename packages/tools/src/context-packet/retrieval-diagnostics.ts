@@ -201,7 +201,10 @@ function evidenceGapsForPlan(args: {
   if (args.graphQuality.requested && args.graphQuality.status === "missing") {
     addGap({
       kind: "graph_evidence",
-      severity: "blocking",
+      // With no resolved anchor there is nothing to hang a graph on — the
+      // actionable problem is the unresolved anchors (request_coverage), so
+      // the graph gap must not also block the packet.
+      severity: args.graphQuality.anchorFileCount > 0 ? "blocking" : "advisory",
       message: "Dependency or impact evidence was requested but no graph evidence was returned.",
       recommendedTools: recommendedToolsForGap(
         args.recommendedTools,

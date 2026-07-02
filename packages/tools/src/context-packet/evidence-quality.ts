@@ -9,8 +9,25 @@ import type {
 
 type GraphQuality = ContextPacketEvidenceQuality["graph"];
 
-const GRAPH_REQUEST_PATTERN =
-  /\b(dependency|dependencies|dependent|dependents|imports?|imported|importing|callers?|call[- ]?sites?|downstream|upstream|impact|where used|references?)\b|import graph/i;
+// Lone words like "import(s)" or "reference(s)" appear constantly in
+// non-graph requests ("fix the import ordering", "update the copyright
+// reference") and used to flip graphRequested on, producing a blocking
+// "graph evidence missing" gap for packets that had nothing graph-shaped to
+// return. Generic words only count inside a graph-shaped phrase.
+const GRAPH_REQUEST_PATTERN = new RegExp(
+  [
+    String.raw`\b(?:dependency|dependencies|dependents?|callers?|call[- ]?sites?|downstream|upstream)\b`,
+    String.raw`\bwhere used\b`,
+    String.raw`\bimport graph\b`,
+    String.raw`\bblast radius\b`,
+    String.raw`\bimpact (?:of|on|if|analysis|radius)\b`,
+    String.raw`\bwhat (?:imports|references|depends on|calls|uses)\b`,
+    String.raw`\bwho (?:imports|references|depends on|calls|uses)\b`,
+    String.raw`\b(?:imports|imported|referenced|used|called) by\b`,
+    String.raw`\breferences (?:to|of)\b`,
+  ].join("|"),
+  "i",
+);
 
 function round4(value: number): number {
   return Number(value.toFixed(4));

@@ -36,12 +36,15 @@ export function diagnosticRunCache(
 
   const ageMs = Math.max(0, args.checkedAtMs - finishedAtMs);
   if (ageMs > args.staleAfterMs) {
+    // Age alone proves nothing changed-based staleness does — the tree may be
+    // byte-identical to when the run finished. Expiry means "unverified", so
+    // report unknown (re-verify) instead of claiming the result is stale.
     return {
-      state: "stale",
+      state: "unknown",
       checkedAt: args.checkedAt,
       ageMs,
       staleAfterMs: args.staleAfterMs,
-      reason: `diagnostic run is older than cacheStalenessMs (${args.staleAfterMs} ms)`,
+      reason: `diagnostic run cache expired after ${args.staleAfterMs} ms without re-verification`,
     };
   }
 
@@ -283,6 +286,17 @@ export function diagnosticRunCheckedBeforeFileModified(
   return modifiedMs > startedAtMs;
 }
 
+// mtime churns without content changes (git checkout/pull, touch, a formatter
+// rewriting identical bytes). When the working-tree snapshot still hashes to
+// the content the index analyzed, the "modification" is not a real change and
+// must not mark diagnostic runs stale.
+export function overlayContentUnchanged(
+  overlaySha256: string | undefined,
+  indexedSha256: string | undefined,
+): boolean {
+  return overlaySha256 != null && overlaySha256 !== "" && overlaySha256 === indexedSha256;
+}
+
 export function watcherDiagnosticWarnings(
   watcher: ProjectIndexWatchState | undefined,
   filePaths: readonly string[],
@@ -358,6 +372,26 @@ export function verificationStateForSource(source: string, run: ReefDiagnosticRu
     reason: run.cache?.reason ?? "latest diagnostic run succeeded",
     suggestedActions: [],
   };
+}
+
+// Change-based staleness is authoritative: when a file covered by a source's
+// latest run changed afterwards, that source IS stale regardless of what the
+// wall-clock cache says (fresh-within-TTL or expired-to-unknown).
+export function upgradeSourceStatesForChangedFiles(
+  sourceStates: readonly VerificationSourceState[],
+  changedFiles: readonly VerificationChangedFile[],
+): VerificationSourceState[] {
+  const staleSources = new Set(changedFiles.flatMap((file) => file.staleForSources));
+  return sourceStates.map((state) =>
+    staleSources.has(state.source) && (state.status === "fresh" || state.status === "unknown")
+      ? {
+          ...state,
+          status: "stale" as const,
+          reason: "file(s) changed after this source's latest diagnostic run",
+          suggestedActions: [`Re-run ${state.source} diagnostics for the changed file(s).`],
+        }
+      : state,
+  );
 }
 
 export function overallVerificationStatus(

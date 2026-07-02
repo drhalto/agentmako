@@ -7,6 +7,81 @@ it reaches 1.0.
 
 ## [Unreleased]
 
+### Fixed
+
+False-positive reduction across the live map — findings now track what is
+actually broken instead of accumulating noise:
+
+- `imports_deps.unresolved` and composer import evidence no longer count npm
+  packages, node builtins, or workspace packages as "unresolved" imports.
+  Only relative/re-export edges that should have resolved to an indexable
+  source file are flagged (shared `isUnresolvedInternalImport` predicate,
+  also used by the engine's Unresolved Internal Imports finding, which now
+  additionally skips asset imports such as `.scss`/`.svg`).
+- Query-time alignment diagnostics persist under a single
+  `answer_diagnostics` source (previously one duplicate finding per
+  discovering query kind) and are scoped to the files each pass fully
+  recomputed, so a finding that a later pass over the same file no longer
+  reproduces is resolved instead of staying active forever.
+- Name-heuristic alignment diagnostics (`producer.field_shape_drift`,
+  `sql.relation_alias_drift`, `auth.role_source_drift`,
+  `reuse.helper_bypass`, non-tenant `identity.boundary_mismatch`) are now
+  `probable`/medium instead of `confirmed`/high — they are leads, not proof —
+  and no longer sink answer ranking on their own.
+- `identity.boundary_mismatch` no longer misaligns arguments with parameters
+  when the target function has destructured parameters, and no longer
+  classifies ambiguous names that mix identity roots (e.g. `tenantUserId`).
+- Reef staleness checks (`changedAfterCheck`, `verification_state`,
+  `file_preflight`) compare the working-tree sha256 against the indexed
+  content before claiming a file changed, so mtime churn with identical bytes
+  (git checkout/pull, touch, format-on-save) no longer marks diagnostics
+  stale.
+- Context packets no longer treat backticked prose (e.g. "the
+  `authentication middleware` flow") as a code literal that "was not found on
+  the current filesystem", and lone words like "import" or "reference" no
+  longer flip a request into a graph request with a blocking
+  `graph_evidence` gap; the graph gap is advisory when no anchor resolved.
+- `git_precommit_check` no longer blocks commits for custom hook modules
+  (`useToggle` calling `useState`), type-only imports of server-only modules,
+  method calls that merely share a hook name (`emitter.useEffect()`), or
+  routes guarded by conventionally-named auth wrappers (`withApiAuth`,
+  `requireUser`, …).
+- Migration-file-sourced schema snapshots on live-bound projects report the
+  live DB as `unknown` (unverified) instead of permanently `stale`, and
+  `schema_usage.stale_evidence` findings are emitted only for genuinely stale
+  evidence — ending the one-finding-per-usage flood five minutes after a
+  refresh.
+- The Reef daemon now runs an orphan watchdog: when its process metadata
+  disappears (state home deleted — e.g. a smoke test's temp dir) or another
+  daemon takes over the slot, it shuts itself down instead of living forever
+  holding its port and DB handles.
+
+Precision fixes found by dogfooding against a large real Next.js/Supabase
+repo:
+
+- `imports_cycles` no longer reports loops closed by `import type` edges —
+  they are erased at compile time, so there is no runtime cycle to break
+  (all 7 cycles reported on the test repo were type-only false positives).
+- Sentence-initial capitalized words ("Explain how the flow works") are no
+  longer extracted as symbol anchors, so they can't fail coverage and sink an
+  otherwise good context packet to `missing`/`weak` — this also stops the
+  bogus anchor from steering retrieval toward irrelevant files.
+- When the same token extracts as several anchor kinds (`getUserRole` as both
+  a symbol and a quoted literal), covering one now covers its siblings
+  instead of double-counting a single miss as partial coverage.
+- `file_not_found` errors from file-taking tools now include the closest
+  indexed paths (path-prefix ranked, basename fallback) so agents can
+  self-correct instead of dead-ending on a bare 404.
+- Revision-drift staleness is scoped to change sets that overlap what a
+  diagnostic run actually analyzed (its requested files, or analyzable code
+  for project-wide runs) — editing a README or another package no longer
+  flips every diagnostic source project-wide "stale".
+- Pure wall-clock cache expiry (the 30-minute diagnostic TTL /
+  `cacheStalenessMs`) now reports `unknown` ("expired without
+  re-verification") instead of claiming `stale`; conversely, a file that
+  really changed after a source's latest run now upgrades that source's
+  status to `stale` authoritatively, even when its cache is within TTL.
+
 ## [0.4.3] - 2026-06-28
 
 ### Changed

@@ -10,6 +10,7 @@ import type {
 import {
   createId,
   getSchemaSnapshotObjectDetail,
+  isUnresolvedInternalImport,
   searchSchemaSnapshotObjects,
   type FileDetailRecord,
   type FileSearchMatch,
@@ -348,9 +349,7 @@ export function buildFileEvidence(file: FileDetailRecord): EvidenceBlock[] {
     );
   }
 
-  const missingInternalImports = file.outboundImports.filter(
-    (edge) => !edge.targetExists && (edge.importKind === "relative" || edge.importKind === "re-export"),
-  );
+  const missingInternalImports = file.outboundImports.filter(isUnresolvedInternalImport);
 
   if (missingInternalImports.length > 0) {
     evidence.push(

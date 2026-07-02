@@ -22,9 +22,20 @@ export function answerToolHints(toolName: string, output: AnswerLikeOutput): str
     );
   }
   if (Array.isArray(result.diagnostics) && result.diagnostics.length > 0) {
-    hints.push(
-      `${result.diagnostics.length} diagnostic(s) flagged on this answer — review before declaring it resolved.`,
+    const severe = result.diagnostics.filter(
+      (diagnostic) => diagnostic.severity === "critical" || diagnostic.severity === "high",
     );
+    if (severe.length > 0) {
+      hints.push(
+        `${severe.length} high-severity diagnostic(s) flagged on this answer — review before declaring it resolved.`,
+      );
+    } else {
+      // Medium/low diagnostics are heuristic leads; don't present them as
+      // blockers on an otherwise clean answer.
+      hints.push(
+        `${result.diagnostics.length} heuristic diagnostic lead(s) attached — worth checking, not confirmed defects.`,
+      );
+    }
   }
   return hints;
 }

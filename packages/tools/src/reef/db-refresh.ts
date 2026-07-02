@@ -536,7 +536,11 @@ function liveDbFreshnessFromSnapshot(args: {
     return "not_bound";
   }
   if (args.sourceMode !== "live_refresh_enabled") {
-    return "stale";
+    // A migration-file-sourced snapshot tracks the committed SQL, not the
+    // wall clock — its currency is sourceFreshness. The live DB state is
+    // simply unverified here; calling it "stale" flooded every schema usage
+    // with stale-evidence findings on projects that never live-refresh.
+    return "unknown";
   }
   if (!Number.isFinite(args.refreshedAtMs) || args.snapshotAgeMs === undefined) {
     return "stale";
@@ -555,16 +559,13 @@ function schemaFreshnessReason(args: {
     return "schema snapshot source hashes are stale or drift was detected";
   }
   if (args.liveDbFreshness === "stale") {
-    if (!args.liveDbBound) {
-      return "schema snapshot has no live DB binding";
-    }
-    if (args.sourceMode !== "live_refresh_enabled") {
-      return "live DB binding exists but the latest schema snapshot was not produced by live refresh";
-    }
     if (args.snapshotAgeMs === undefined) {
       return "live DB snapshot age could not be computed";
     }
     return `live DB schema snapshot is older than ${REEF_SCHEMA_LIVE_SNAPSHOT_MAX_AGE_MS} ms`;
+  }
+  if (args.liveDbFreshness === "unknown" && args.liveDbBound && args.sourceMode !== "live_refresh_enabled") {
+    return "schema snapshot is source-fresh; the live DB binding has not been verified by a live refresh";
   }
   if (args.sourceFreshness === "unknown" || args.liveDbFreshness === "unknown") {
     return "schema freshness could not be fully determined";

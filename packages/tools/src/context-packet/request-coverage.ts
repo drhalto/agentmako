@@ -307,7 +307,22 @@ function coverageItems(args: {
     }
   }
 
-  return items;
+  // The same token often extracts as several anchor kinds (`getUserRole` is
+  // both a symbol and a quoted literal). Once any anchor for a value is
+  // covered, that evidence is in the packet — reporting the sibling kind
+  // uncovered double-counts a single miss and drags coverage to partial.
+  const coveredAnchorValues = new Set(
+    items.filter((item) => item.status === "covered").map((item) => item.value.toLowerCase()),
+  );
+  return items.map((item) =>
+    item.status !== "covered" && coveredAnchorValues.has(item.value.toLowerCase())
+      ? {
+          ...item,
+          status: "covered" as const,
+          reason: `Requested ${item.kind} "${item.value}" is represented in returned context (matched via a sibling anchor kind).`,
+        }
+      : item,
+  );
 }
 
 function kindSummary(

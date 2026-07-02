@@ -7,7 +7,7 @@ import type {
   ProjectFact,
   ReefWorkspaceChangeSet,
 } from "../../packages/contracts/src/index.ts";
-import { openProjectStore } from "../../packages/store/src/index.ts";
+import { hashText, openProjectStore } from "../../packages/store/src/index.ts";
 import { InProcessReefService } from "../../services/indexer/src/reef-service.ts";
 
 async function main(): Promise<void> {
@@ -101,9 +101,10 @@ async function runConcurrentEditCase(args: {
       },
     });
 
-    const upsertOverlayFact = (filePath: string, lastModifiedAt: string): void => {
+    const upsertOverlayFact = (filePath: string, lastModifiedAt: string, sha256?: string): void => {
       const subject = { kind: "file" as const, path: filePath };
       const subjectFingerprint = store.computeReefSubjectFingerprint(subject);
+      const data = { lastModifiedAt, ...(sha256 ? { sha256 } : {}) };
       const fact: ProjectFact = {
         projectId: args.projectId,
         kind: "file_snapshot",
@@ -118,7 +119,7 @@ async function runConcurrentEditCase(args: {
           subjectFingerprint,
           overlay: "working_tree",
           source: "working_tree_overlay",
-          data: { lastModifiedAt },
+          data,
         }),
         freshness: {
           state: "fresh",
@@ -129,13 +130,35 @@ async function runConcurrentEditCase(args: {
           source: "diagnostics-freshness-smoke",
           capturedAt: lastModifiedAt,
         },
-        data: { lastModifiedAt },
+        data,
       };
       store.upsertReefFacts([fact]);
     };
 
     upsertOverlayFact("src/edited-during.ts", editedDuringAt);
     upsertOverlayFact("src/edited-after.ts", editedAfterAt);
+
+    // Touched after the run but byte-identical to the indexed content: the
+    // sha256 gate must keep it out of changedAfterCheck.
+    const untouchedContent = "export const value = 2;\n";
+    const untouchedSha = hashText(untouchedContent);
+    store.replaceFileIndexRows({
+      deletedPaths: [],
+      files: [
+        {
+          path: "src/untouched.ts",
+          sha256: untouchedSha,
+          language: "typescript",
+          sizeBytes: Buffer.byteLength(untouchedContent, "utf8"),
+          lineCount: untouchedContent.split("\n").length,
+          chunks: [],
+          symbols: [],
+          imports: [],
+          routes: [],
+        },
+      ],
+    });
+    upsertOverlayFact("src/untouched.ts", editedAfterAt, untouchedSha);
   } finally {
     store.close();
   }
@@ -155,6 +178,10 @@ async function runConcurrentEditCase(args: {
       && entry.staleSources.includes("programmatic_findings")
     ),
     "file edited after the run should still appear in changedAfterCheck",
+  );
+  assert.ok(
+    !changed.some((entry) => entry.filePath === "src/untouched.ts"),
+    "an mtime-only touch whose content still matches the indexed sha256 must not appear in changedAfterCheck",
   );
 }
 
@@ -295,6 +322,59 @@ async function runRevisionDriftCase(args: {
     driftSource.inputRevision,
     driftSource.outputRevision,
     "input/output revisions should differ when a change set lands during the run",
+  );
+
+  // Scoped revision drift: a change set that does not overlap the run's
+  // requested files (here, a docs-only edit) advances the global revision but
+  // must NOT flip the source stale; a later overlapping change set must.
+  const scopedRevision = inputRevision + 1;
+  const scopedStartedAtMs = Date.now() - 5_000;
+  const scopedStore = openProjectStore({ projectRoot: args.projectRoot });
+  try {
+    scopedStore.saveReefDiagnosticRun({
+      projectId: args.projectId,
+      source: "lint_files",
+      overlay: "indexed",
+      status: "succeeded",
+      startedAt: new Date(scopedStartedAtMs).toISOString(),
+      finishedAt: new Date(scopedStartedAtMs + 1_000).toISOString(),
+      durationMs: 1_000,
+      checkedFileCount: 1,
+      findingCount: 0,
+      persistedFindingCount: 0,
+      command: "synthetic scoped-revision fixture",
+      cwd: args.projectRoot,
+      metadata: {
+        sourceKind: "programmatic",
+        inputRevision: scopedRevision,
+        outputRevision: scopedRevision,
+        requestedFiles: ["src/untouched.ts"],
+        requestedFileCount: 1,
+        truncated: false,
+      },
+    });
+  } finally {
+    scopedStore.close();
+  }
+
+  await args.reefService.applyChangeSet(makeChangeSet("docs_only", "docs/notes.md"));
+  const docsOnlyStatus = await args.reefService.getProjectStatus(args.projectId);
+  const docsOnlySource = docsOnlyStatus.diagnostics?.sources.find((source) => source.source === "lint_files");
+  assert.ok(docsOnlySource);
+  assert.equal(
+    docsOnlySource.state,
+    "clean",
+    "a docs-only change set outside the run's requested files must not mark the source stale",
+  );
+
+  await args.reefService.applyChangeSet(makeChangeSet("overlapping", "src/untouched.ts"));
+  const overlappingStatus = await args.reefService.getProjectStatus(args.projectId);
+  const overlappingSource = overlappingStatus.diagnostics?.sources.find((source) => source.source === "lint_files");
+  assert.ok(overlappingSource);
+  assert.equal(
+    overlappingSource.state,
+    "stale",
+    "a change set overlapping the run's requested files must still mark the source stale",
   );
 }
 

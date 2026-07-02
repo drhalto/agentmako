@@ -52,7 +52,10 @@ export interface FunctionParameterRecord {
   path: string;
   line: number;
   functionName: string;
-  parameterNames: string[];
+  // Position-aligned with the declaration's parameter list; destructured or
+  // otherwise unnamed parameters are null so call-site argument indexes still
+  // line up with the parameters they actually bind to.
+  parameterNames: Array<string | null>;
 }
 
 export interface ImportBindingRecord {
@@ -283,9 +286,9 @@ export function collectFunctionParameters(file: DiagnosticAstFile): FunctionPara
       path: file.path,
       line: lineOf(file.sourceFile, node),
       functionName,
-      parameterNames: node.parameters
-        .map((parameter) => (ts.isIdentifier(parameter.name) ? parameter.name.text : undefined))
-        .filter((value): value is string => typeof value === "string"),
+      parameterNames: node.parameters.map((parameter) =>
+        ts.isIdentifier(parameter.name) ? parameter.name.text : null,
+      ),
     });
   };
 
@@ -538,21 +541,25 @@ function getPropertyNameText(name: ts.PropertyName | undefined): string | undefi
   return undefined;
 }
 
+const IDENTITY_SUFFIXES: Record<string, string[]> = {
+  tenant: ["tenant", "id", "slug", "key", "uuid", "ref", "identifier"],
+  user: ["user", "id", "email", "uuid", "ref", "identifier"],
+  profile: ["profile", "id", "uuid", "ref", "identifier"],
+};
+
 export function classifyIdentityKind(name: string): string | null {
   const tokens = splitIdentifierTokens(name);
   const lastToken = tokens.at(-1);
   if (!lastToken) return null;
 
-  if (tokens.includes("tenant") && ["tenant", "id", "slug", "key", "uuid", "ref", "identifier"].includes(lastToken)) {
-    return "tenant";
-  }
-  if (tokens.includes("user") && ["user", "id", "email", "uuid", "ref", "identifier"].includes(lastToken)) {
-    return "user";
-  }
-  if (tokens.includes("profile") && ["profile", "id", "uuid", "ref", "identifier"].includes(lastToken)) {
-    return "profile";
-  }
-  return null;
+  // A name mixing identity roots ("tenantUserId", or expression text like
+  // `cond ? userId : tenantId`) is ambiguous — picking one root manufactures
+  // boundary-mismatch findings, so only single-root names classify.
+  const roots = Object.keys(IDENTITY_SUFFIXES).filter((root) => tokens.includes(root));
+  if (roots.length !== 1) return null;
+
+  const root = roots[0];
+  return IDENTITY_SUFFIXES[root].includes(lastToken) ? root : null;
 }
 
 function classifyIdentityKindFromNode(node: ts.Expression, sourceFile: ts.SourceFile): string | null {

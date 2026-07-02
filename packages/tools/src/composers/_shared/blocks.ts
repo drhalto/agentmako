@@ -31,7 +31,7 @@ import type {
   SchemaBodyHit,
   SymbolRecord,
 } from "@mako-ai/store";
-import { createId } from "@mako-ai/store";
+import { createId, isUnresolvedInternalImport } from "@mako-ai/store";
 import type { AstHit } from "../../code-intel/ast-patterns.js";
 
 function nextId(): string {
@@ -63,7 +63,9 @@ export function blocksFromImports(
     filePath: direction === "outbound" ? edge.sourcePath : edge.targetPath,
     line: edge.line,
     content: edge.specifier,
-    stale: !edge.targetExists,
+    // Only a broken internal import is stale evidence; package/builtin/asset
+    // specifiers legitimately have no indexed target.
+    stale: isUnresolvedInternalImport(edge),
     metadata: compact({
       importKind: edge.importKind,
       isTypeOnly: edge.isTypeOnly,

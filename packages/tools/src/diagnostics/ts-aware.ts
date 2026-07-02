@@ -110,8 +110,11 @@ function findFieldShapeDrift(files: DiagnosticAstFile[]): AnswerSurfaceIssue[] {
         code: "producer.field_shape_drift",
         message:
           `The same data surface is spelled both \`${declaration.propertyName}\` and \`${returned.propertyName}\` across producer/consumer boundaries.`,
-        severity: "high",
-        confidence: "confirmed",
+        // Name-canonicalization heuristic: the producer/consumer link is
+        // inferred from spelling, not from type information, so this is a
+        // lead to check rather than a confirmed defect.
+        severity: "medium",
+        confidence: "probable",
         path: returned.path,
         line: returned.line,
         producerPath: returned.path,
@@ -182,6 +185,9 @@ function findIdentityBoundaryMismatch(
       }
 
       parameterRecord.parameterNames.forEach((parameterName, index) => {
+        if (parameterName == null) {
+          return;
+        }
         const expectedIdentity = classifyIdentityKind(parameterName);
         const actualIdentity = callSite.argIdentityKinds[index] ?? null;
         if (!expectedIdentity || !actualIdentity || expectedIdentity === actualIdentity) {
@@ -194,8 +200,10 @@ function findIdentityBoundaryMismatch(
             code: "identity.boundary_mismatch",
             message:
               `Callers pass a ${actualIdentity}-scoped identity into \`${binding.importedName}\`, but parameter \`${parameterName}\` expects ${expectedIdentity}-scoped input.`,
-            severity: expectedIdentity === "tenant" ? "critical" : "high",
-            confidence: "confirmed",
+            // Identity kinds are classified from identifier naming alone, so
+            // even a tenant-boundary hit is a probable lead, not proof.
+            severity: expectedIdentity === "tenant" ? "high" : "medium",
+            confidence: "probable",
             path: file.path,
             line: callSite.line,
             producerPath: binding.targetPath,

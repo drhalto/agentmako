@@ -40,6 +40,7 @@ function seedProject(projectRoot: string, projectId: string): void {
   mkdirSync(path.join(projectRoot, "app", "api", "private"), { recursive: true });
   mkdirSync(path.join(projectRoot, "app", "api", "public"), { recursive: true });
   mkdirSync(path.join(projectRoot, "app", "api", "guarded"), { recursive: true });
+  mkdirSync(path.join(projectRoot, "app", "api", "wrapped"), { recursive: true });
   mkdirSync(path.join(projectRoot, "components"), { recursive: true });
   mkdirSync(path.join(projectRoot, "lib"), { recursive: true });
   mkdirSync(path.join(projectRoot, ".mako"), { recursive: true });
@@ -61,6 +62,31 @@ function seedProject(projectRoot: string, projectId: string): void {
       "export async function GET() {",
       "  await requireAuth();",
       "  return Response.json({ ok: true });",
+      "}",
+    ].join("\n"),
+    // A conventionally-named HOF guard must count as protection even though
+    // it is not in authGuardSymbols.
+    "app/api/wrapped/route.ts": [
+      "import { withApiAuth } from '../../../lib/auth';",
+      "export const GET = withApiAuth(async () => {",
+      "  return Response.json({ ok: true });",
+      "});",
+    ].join("\n"),
+    // A custom hook module legitimately calls hooks without "use client".
+    "lib/useToggle.ts": [
+      "import { useState } from 'react';",
+      "export function useToggle(initial: boolean) {",
+      "  const [value, setValue] = useState(initial);",
+      "  return { value, toggle: () => setValue((prev) => !prev) };",
+      "}",
+    ].join("\n"),
+    // Type-only imports are erased and never pull server code into a client
+    // bundle.
+    "components/TypeOnlyClient.tsx": [
+      "\"use client\";",
+      "import type { loadSecret } from '../lib/server';",
+      "export function TypeOnlyClient(props: { loader: typeof loadSecret }) {",
+      "  return <button>{props.loader()}</button>;",
       "}",
     ].join("\n"),
     "components/Client.tsx": [
@@ -178,6 +204,18 @@ async function main(): Promise<void> {
     ));
     assert.ok(!result.findings.some((finding) => finding.path === "app/api/public/route.ts"));
     assert.ok(!result.findings.some((finding) => finding.path === "app/api/guarded/route.ts"));
+    assert.ok(
+      !result.findings.some((finding) => finding.path === "app/api/wrapped/route.ts"),
+      "a conventionally-named auth HOF (withApiAuth) must count as a guard",
+    );
+    assert.ok(
+      !result.findings.some((finding) => finding.path === "lib/useToggle.ts"),
+      "a custom hook module calling useState must not be flagged as a server file using client hooks",
+    );
+    assert.ok(
+      !result.findings.some((finding) => finding.path === "components/TypeOnlyClient.tsx"),
+      "a type-only import of a server-only module must not be flagged in a client file",
+    );
     assert.ok(result.findings.some((finding) =>
       finding.code === "git.client_uses_server_only" &&
       finding.path === "components/Client.tsx"

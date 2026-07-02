@@ -16,13 +16,15 @@ import {
   filePathFromFact,
   latestDiagnosticRunsBySource,
   overallVerificationStatus,
+  overlayContentUnchanged,
   stringDataValue,
+  upgradeSourceStatesForChangedFiles,
   verificationStateForSource,
   verificationSuggestedActions,
 } from "./shared.js";
 
 export interface ReefDiagnosticCoverageCalculationInput {
-  projectStore: Pick<ProjectStore, "queryReefDiagnosticRuns" | "queryReefFacts">;
+  projectStore: Pick<ProjectStore, "queryReefDiagnosticRuns" | "queryReefFacts" | "listFiles">;
   projectId: string;
   projectRoot: string;
   requestedFileList: string[];
@@ -113,6 +115,7 @@ export function calculateDiagnosticCoverage(
   const recentRuns = relevantRuns.filter((run) => sources.includes(run.source)).slice(0, 20);
   const changedFiles: VerificationChangedFile[] = [];
   let newestRequestedFileModifiedAt: string | undefined;
+  let indexedShaByPath: Map<string, string | undefined> | undefined;
 
   for (const fact of input.projectStore.queryReefFacts({
     projectId: input.projectId,
@@ -133,6 +136,15 @@ export function calculateDiagnosticCoverage(
     if (!Number.isFinite(modifiedMs)) {
       continue;
     }
+    const overlaySha = stringDataValue(fact.data, "sha256");
+    if (overlaySha) {
+      indexedShaByPath ??= new Map(
+        input.projectStore.listFiles().map((file) => [file.path, file.sha256]),
+      );
+      if (overlayContentUnchanged(overlaySha, indexedShaByPath.get(filePath))) {
+        continue;
+      }
+    }
     if (!newestRequestedFileModifiedAt || modifiedMs > Date.parse(newestRequestedFileModifiedAt)) {
       newestRequestedFileModifiedAt = lastModifiedAt;
     }
@@ -152,15 +164,16 @@ export function calculateDiagnosticCoverage(
   }
 
   const returnedChangedFiles = changedFiles.slice(0, input.limit);
+  const upgradedSourceStates = upgradeSourceStatesForChangedFiles(sourceStates, changedFiles);
   const warnings = sources.length === 0
     ? ["no Reef diagnostic runs are available for this project"]
     : [];
   return {
-    status: overallVerificationStatus(sourceStates, changedFiles),
-    sources: sourceStates,
+    status: overallVerificationStatus(upgradedSourceStates, changedFiles),
+    sources: upgradedSourceStates,
     recentRuns,
     changedFiles: returnedChangedFiles,
-    suggestedActions: verificationSuggestedActions(sourceStates, changedFiles),
+    suggestedActions: verificationSuggestedActions(upgradedSourceStates, changedFiles),
     ...(newestRequestedFileModifiedAt ? { newestRequestedFileModifiedAt } : {}),
     warnings,
   };

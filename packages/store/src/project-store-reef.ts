@@ -1199,6 +1199,10 @@ export function queryReefAppliedChangeSetsImpl(
     clauses.push("change_set_id = ?");
     values.push(options.changeSetId);
   }
+  if (options.minRevision !== undefined) {
+    clauses.push("new_revision >= ?");
+    values.push(options.minRevision);
+  }
   if (options.maxRevision !== undefined) {
     clauses.push("new_revision <= ?");
     values.push(options.maxRevision);

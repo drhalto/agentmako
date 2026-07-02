@@ -16,7 +16,9 @@ import {
   diagnosticRunTouchesFile,
   latestDiagnosticRunsBySource,
   overallVerificationStatus,
+  overlayContentUnchanged,
   stringDataValue,
+  upgradeSourceStatesForChangedFiles,
   verificationStateForSource,
   verificationSuggestedActions,
   watcherDiagnosticWarnings,
@@ -71,14 +73,15 @@ export async function filePreflightTool(
     const recentRuns = fileRuns
       .filter((run) => sourceNames.includes(run.source))
       .slice(0, diagnosticRunsLimit);
-    const sourceStates = sourceNames.map((source) => verificationStateForSource(source, latestBySource.get(source)));
+    const initialSourceStates = sourceNames.map((source) => verificationStateForSource(source, latestBySource.get(source)));
     const changedFile = changedFileForSourceRuns({
       projectId: project.projectId,
       filePath,
       projectStore,
-      sourceStates,
+      sourceStates: initialSourceStates,
     });
     const changedFiles = changedFile ? [changedFile] : [];
+    const sourceStates = upgradeSourceStatesForChangedFiles(initialSourceStates, changedFiles);
     const diagnosticsStatus = overallVerificationStatus(sourceStates, changedFiles);
     const staleSources = sourceStates.filter((state) => state.status === "stale").map((state) => state.source);
     const failedSources = sourceStates
@@ -187,6 +190,11 @@ function changedFileForSourceRuns(args: {
   if (!lastModifiedAt) return undefined;
   const modifiedMs = Date.parse(lastModifiedAt);
   if (!Number.isFinite(modifiedMs)) return undefined;
+
+  const overlaySha = stringDataValue(snapshot?.data, "sha256");
+  if (overlaySha && overlayContentUnchanged(overlaySha, args.projectStore.findFile(args.filePath)?.sha256)) {
+    return undefined;
+  }
 
   const staleForSources = args.sourceStates
     .map((state) => [state.source, state.lastRun] as const)

@@ -307,7 +307,9 @@ async function main(): Promise<void> {
     assert.equal(runs.filters.cacheStalenessMs, 30_000);
     assert.equal(runs.runs[0]?.source, "eslint");
     assert.ok(runs.runs.some((run) => run.findingCount === 1 && run.cache?.state === "fresh"));
-    assert.ok(runs.runs.some((run) => run.findingCount === 0 && run.cache?.state === "stale"));
+    // Pure wall-clock expiry is "unknown" (unverified), not "stale" — age
+    // alone doesn't prove the tree changed since the run.
+    assert.ok(runs.runs.some((run) => run.findingCount === 0 && run.cache?.state === "unknown"));
 
     const batch = await toolService.callTool("tool_batch", {
       projectId: seeded.projectId,

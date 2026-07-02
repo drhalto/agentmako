@@ -76,11 +76,23 @@ function normalizePath(value: string): string {
   return value.replace(/\\/g, "/").replace(/^[("'`]+|[)"'`,.;:]+$/g, "");
 }
 
+// A quoted span only counts as a searchable code literal when it can
+// plausibly appear verbatim in the tree: a single token, something with code
+// punctuation/casing, or a '/" string (often an error message worth grepping).
+// Prose emphasized with backticks ("the `authentication middleware` flow")
+// otherwise becomes a phantom "literal not found on the filesystem" gap that
+// downgrades coverage for a perfectly good packet.
+function looksLikeSearchableLiteral(value: string, quoteChar: string): boolean {
+  if (!/\s/.test(value)) return true;
+  if (/[_./\\(){}[\]<>=:;$]|[a-z][A-Z]/.test(value)) return true;
+  return quoteChar !== "`";
+}
+
 function extractQuotedText(request: string): string[] {
   const quoted: string[] = [];
-  for (const match of request.matchAll(/["'`]([^"'`]{2,160})["'`]/g)) {
-    const value = match[1]?.trim();
-    if (value) quoted.push(value);
+  for (const match of request.matchAll(/(["'`])([^"'`]{2,160})\1/g)) {
+    const value = match[2]?.trim();
+    if (value && looksLikeSearchableLiteral(value, match[1] ?? "")) quoted.push(value);
   }
   return unique(quoted).slice(0, 20);
 }
@@ -105,12 +117,34 @@ function extractRoutes(request: string, input: ContextPacketToolInput): string[]
   return unique(routes).slice(0, 50);
 }
 
+function isSentenceStart(request: string, index: number): boolean {
+  for (let i = index - 1; i >= 0; i -= 1) {
+    const ch = request[i];
+    if (ch === " " || ch === "\t") continue;
+    return ch === "." || ch === "!" || ch === "?" || ch === ";" || ch === ":" || ch === "\n" || ch === "\r";
+  }
+  return true;
+}
+
 function extractSymbols(request: string, input: ContextPacketToolInput): string[] {
   const symbols = new Set<string>(input.focusSymbols ?? []);
   for (const match of request.matchAll(IDENTIFIER)) {
     const value = match[0];
     if (STOP_WORDS.has(value.toLowerCase())) continue;
-    if (/^[A-Z]/.test(value) || /[a-z][A-Z]/.test(value) || /^use[A-Z0-9_]/.test(value)) {
+    const codeLike =
+      /[a-z][A-Z]/.test(value) ||
+      /^use[A-Z0-9_]/.test(value) ||
+      /[_$0-9]/.test(value) ||
+      /^[A-Z]{2,}/.test(value);
+    if (codeLike) {
+      symbols.add(value);
+      continue;
+    }
+    // A plain Capitalized word only counts as a symbol when it is not just
+    // sentence capitalization — "Explain how the flow works" must not create
+    // an uncoverable `Explain` anchor that sinks request coverage to
+    // missing/weak for an otherwise good packet.
+    if (/^[A-Z][a-z]+$/.test(value) && !isSentenceStart(request, match.index ?? 0)) {
       symbols.add(value);
     }
   }

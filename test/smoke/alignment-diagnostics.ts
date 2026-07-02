@@ -639,7 +639,13 @@ async function main(): Promise<void> {
     assert.ok(dashboardCodes.includes("producer.field_shape_drift"));
     assert.ok(dashboardCodes.includes("sql.relation_alias_drift"));
     assert.equal(dashboardCodes.filter((code) => code === "sql.relation_alias_drift").length, 1);
-    assert.ok(dashboardOutput.result.ranking?.reasons.some((reason) => reason.code === "rank.diagnostic_penalty"));
+    // The tenant identity mismatch (producer lib/dashboard.ts) is the only
+    // remaining high-severity diagnostic; the medium/probable name heuristics
+    // alone would not trigger the penalty.
+    assert.ok(
+      dashboardOutput.result.ranking?.reasons.some((reason) => reason.code === "rank.diagnostic_penalty"),
+      "high-severity identity mismatch should trigger rank.diagnostic_penalty",
+    );
     assert.equal(dashboardOutput.result.ranking?.deEmphasized, false);
 
     const adminPageOutput = (await invokeTool("trace_file", {
@@ -650,6 +656,12 @@ async function main(): Promise<void> {
     assert.ok(adminCodes.includes("identity.boundary_mismatch"));
     assert.equal(adminCodes.filter((code) => code === "identity.boundary_mismatch").length, 1);
     assert.ok(adminCodes.includes("auth.role_source_drift"));
+    // The tenant-scoped identity mismatch stays high severity, so this answer
+    // still takes the diagnostic ranking penalty.
+    assert.ok(
+      adminPageOutput.result.ranking?.reasons.some((reason) => reason.code === "rank.diagnostic_penalty"),
+      "high-severity identity mismatch should trigger rank.diagnostic_penalty",
+    );
 
     const routeOutput = (await invokeTool("trace_file", {
       projectId,
@@ -702,10 +714,10 @@ async function main(): Promise<void> {
     })) as FileFindingsToolOutput;
     assert.ok(
       routeFindings.findings.some((finding) =>
-        finding.source === "cross_search" &&
+        finding.source === "answer_diagnostics" &&
         finding.ruleId === "reuse.helper_bypass"
       ),
-      "file_findings should include persisted cross_search helper reuse diagnostics",
+      "file_findings should include persisted query-time helper reuse diagnostics",
     );
 
     const crossSearchOutput = (await invokeTool("cross_search", {
@@ -736,10 +748,10 @@ async function main(): Promise<void> {
     })) as FileFindingsToolOutput;
     assert.ok(
       adminFindings.findings.some((finding) =>
-        finding.source === "cross_search" &&
+        finding.source === "answer_diagnostics" &&
         finding.ruleId === "identity.boundary_mismatch"
       ),
-      "file_findings should include persisted cross_search diagnostics",
+      "file_findings should include persisted query-time diagnostics",
     );
 
     const ruleFilteredFindings = (await invokeTool("project_findings", {
@@ -752,6 +764,116 @@ async function main(): Promise<void> {
         finding.ruleId === "identity.boundary_mismatch"
       ),
       "project_findings source filter should match rule IDs as well as producer sources",
+    );
+
+    // Regression: a persisted query-time finding must resolve when a later
+    // pass over the same file no longer reproduces it. Previously the persist
+    // path passed empty subjectFingerprints, so fixed (or false-positive)
+    // findings stayed active forever.
+    const fixedAdminPageContent = [
+      "import { loadAdminDashboard } from \"../../../lib/dashboard\";",
+      "import { getCurrentUserRole } from \"../../../lib/auth\";",
+      "import { recordAudit } from \"../../../lib/audit\";",
+      "",
+      "export default async function AdminPage({ profile }: { profile: { id: string } }) {",
+      "  const role = await getCurrentUserRole();",
+      "  if (role !== \"admin\") {",
+      "    return null;",
+      "  }",
+      "  const tenantId = \"tenant-1\";",
+      "  recordAudit(profile.id);",
+      "  return loadAdminDashboard(tenantId);",
+      "}",
+    ].join("\n");
+    writeFileSync(path.join(projectRoot, "app", "dashboard", "admin", "page.tsx"), fixedAdminPageContent);
+    const fixStore = openProjectStore({ projectRoot });
+    try {
+      fixStore.replaceFileIndexRows({
+        deletedPaths: [],
+        files: [
+          {
+            path: "app/dashboard/admin/page.tsx",
+            sha256: "admin-page-fixed",
+            language: "typescript",
+            sizeBytes: Buffer.byteLength(`${fixedAdminPageContent}\n`, "utf8"),
+            lineCount: fixedAdminPageContent.split("\n").length,
+            chunks: [
+              {
+                chunkKind: "file",
+                name: "app/dashboard/admin/page.tsx",
+                lineStart: 1,
+                lineEnd: fixedAdminPageContent.split("\n").length,
+                content: fixedAdminPageContent,
+              },
+            ],
+            symbols: [
+              {
+                name: "AdminPage",
+                kind: "function",
+                exportName: "default",
+                lineStart: 5,
+                lineEnd: 13,
+                signatureText: "export default async function AdminPage(...)",
+              },
+            ],
+            imports: [
+              {
+                targetPath: "lib/dashboard.ts",
+                specifier: "../../../lib/dashboard",
+                importKind: "relative",
+                isTypeOnly: false,
+                line: 1,
+              },
+              {
+                targetPath: "lib/auth.ts",
+                specifier: "../../../lib/auth",
+                importKind: "relative",
+                isTypeOnly: false,
+                line: 2,
+              },
+              {
+                targetPath: "lib/audit.ts",
+                specifier: "../../../lib/audit",
+                importKind: "relative",
+                isTypeOnly: false,
+                line: 3,
+              },
+            ],
+            routes: [],
+          },
+        ],
+      });
+    } finally {
+      fixStore.close();
+    }
+
+    const fixedAdminOutput = (await invokeTool("trace_file", {
+      projectId,
+      file: "app/dashboard/admin/page.tsx",
+    })) as TraceFileToolOutput;
+    assert.ok(
+      !diagnosticCodes(fixedAdminOutput.result).includes("identity.boundary_mismatch"),
+      "fixed call site must no longer produce the identity mismatch diagnostic",
+    );
+
+    const fixedAdminFindings = (await invokeTool("file_findings", {
+      projectId,
+      filePath: "app/dashboard/admin/page.tsx",
+      freshnessPolicy: "allow_stale_labeled",
+    })) as FileFindingsToolOutput;
+    assert.ok(
+      !fixedAdminFindings.findings.some((finding) =>
+        finding.ruleId === "identity.boundary_mismatch" &&
+        finding.status === "active"
+      ),
+      "re-analyzing the fixed file must resolve the persisted identity mismatch finding",
+    );
+    assert.ok(
+      fixedAdminFindings.findings.some((finding) =>
+        finding.ruleId === "auth.role_source_drift" &&
+        finding.status === "active"
+      ),
+      "still-reproduced findings on the same file must stay active",
     );
 
     console.log("alignment-diagnostics: PASS");

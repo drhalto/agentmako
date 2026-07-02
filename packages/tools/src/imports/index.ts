@@ -10,7 +10,7 @@ import type {
   ImportsImpactToolInput,
   ImportsImpactToolOutput,
 } from "@mako-ai/contracts";
-import type { FileImportLink } from "@mako-ai/store";
+import { isUnresolvedInternalImport, type FileImportLink } from "@mako-ai/store";
 import { withProjectContext, resolveIndexedFilePath, type ToolServiceOptions } from "../runtime.js";
 import { buildReefToolExecution } from "../reef/tool-execution.js";
 
@@ -70,7 +70,10 @@ export async function importsDepsTool(input: ImportsDepsToolInput, options: Tool
       file: input.file,
       resolvedFilePath,
       imports,
-      unresolved: imports.filter((edge) => !edge.targetExists),
+      // Package/builtin specifiers and asset imports never resolve to indexed
+      // files, so a bare `!targetExists` filter would report every `react` or
+      // `./logo.svg` import as broken. Only internal source imports count.
+      unresolved: imports.filter(isUnresolvedInternalImport),
       reefExecution,
       warnings: [],
     };
@@ -204,6 +207,11 @@ export async function importsCyclesTool(input: ImportsCyclesToolInput, options: 
     const startedAtMs = Date.now();
     const adjacency = new Map<string, string[]>();
     for (const edge of uniqueInternalEdges(projectStore.listAllImportEdges())) {
+      // `import type` edges are erased at compile time, so a loop closed by
+      // one is not a runtime cycle — there is nothing to "break".
+      if (edge.isTypeOnly) {
+        continue;
+      }
       const current = adjacency.get(edge.sourcePath) ?? [];
       if (!current.includes(edge.targetPath)) {
         current.push(edge.targetPath);

@@ -1,24 +1,9 @@
 import path from "node:path";
-import { isIgnoredDirectory, looksGeneratedFile, toRelativePath } from "@mako-ai/store";
+import { INDEXABLE_EXTENSIONS, isIgnoredDirectory, looksGeneratedFile, toRelativePath } from "@mako-ai/store";
 
 export const MAX_INDEXED_FILE_SIZE_BYTES = 512 * 1024;
 
-export const INDEXABLE_EXTENSIONS = new Set([
-  ".cjs",
-  ".css",
-  ".env",
-  ".html",
-  ".js",
-  ".json",
-  ".jsx",
-  ".md",
-  ".mjs",
-  ".sql",
-  ".ts",
-  ".tsx",
-  ".yml",
-  ".yaml",
-]);
+export { INDEXABLE_EXTENSIONS };
 
 export function isIndexableProjectPath(relativePath: string): boolean {
   const normalized = relativePath.replace(/\\/g, "/");

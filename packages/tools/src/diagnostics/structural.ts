@@ -61,8 +61,11 @@ function findHelperReuseMiss(
           code: "reuse.helper_bypass",
           message:
             `This route queries \`${query.value}\` directly even though ${preferredHelper.functionName} in ${preferredHelper.path} already encapsulates the same domain fetch path.`,
-          severity: preferredHelper.usesRpc ? "high" : "medium",
-          confidence: preferredHelper.usesRpc ? "confirmed" : "probable",
+          // Helper matching is convention-based (function naming + table
+          // substring), so bypassing it may be intentional — reuse advice,
+          // not a confirmed defect.
+          severity: "medium",
+          confidence: "probable",
           path: file.path,
           line: query.line,
           producerPath: preferredHelper.path,
@@ -119,8 +122,11 @@ function findAuthRoleSourceDrift(
         code: "auth.role_source_drift",
         message:
           `Dashboard access control resolves role from \`${layoutRoleSource.source}\` in the layout but \`${pageRoleSource.source}\` in the page, which can drift across the same scope.`,
-        severity: "high",
-        confidence: "confirmed",
+        // Role sources are detected by name (`*.role`, `*Role()` calls), so a
+        // rendered `member.role` and a gating `profile.role` can differ
+        // legitimately — probable drift, not confirmed.
+        severity: "medium",
+        confidence: "probable",
         path: pageFile.path,
         line: pageRoleSource.line,
         producerPath: layoutFile.path,
@@ -197,8 +203,10 @@ function findSqlRelationAliasDrift(
           code: "sql.relation_alias_drift",
           message:
             `The query aliases this relation as \`${alias.alias}\`, but nearby consumer code expects \`${consumerProperty.propertyName}\` for the same relation surface.`,
-          severity: "high",
-          confidence: "confirmed",
+          // Alias↔property pairing is plural/case-insensitive name matching
+          // across "related" files, which can pair unrelated surfaces.
+          severity: "medium",
+          confidence: "probable",
           path: file.path,
           line: alias.line,
           producerPath: file.path,

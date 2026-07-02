@@ -12,9 +12,18 @@ export function createAmbiguityError(
   });
 }
 
-export function createNotFoundError(code: MakoToolError["code"], input: string): MakoToolError {
-  return new MakoToolError(404, code, `No indexed match found for: ${input}`, {
+export function createNotFoundError(
+  code: MakoToolError["code"],
+  input: string,
+  suggestions?: string[],
+): MakoToolError {
+  const trimmed = (suggestions ?? []).filter(Boolean).slice(0, 5);
+  const suffix = trimmed.length > 0
+    ? ` — closest indexed matches: ${trimmed.join(", ")}`
+    : "";
+  return new MakoToolError(404, code, `No indexed match found for: ${input}${suffix}`, {
     input,
+    ...(trimmed.length > 0 ? { suggestions: trimmed } : {}),
   });
 }
 

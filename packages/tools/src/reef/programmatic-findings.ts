@@ -340,7 +340,10 @@ function schemaUsageFreshnessFindings(args: {
           code: SCHEMA_USAGE_STALE_RULE_ID,
         });
     args.subjectFingerprints.add(subjectFingerprint);
-    if (fact.freshness.state === "fresh") {
+    // Only genuinely stale evidence earns a finding. "unknown" (e.g. a
+    // source-fresh migration snapshot whose live DB was never verified) is
+    // visible on the fact itself; a per-usage finding for it is noise.
+    if (fact.freshness.state !== "stale") {
       continue;
     }
     findings.push(schemaUsageFinding({

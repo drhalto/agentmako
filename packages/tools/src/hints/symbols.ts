@@ -6,8 +6,10 @@ import type {
 export function symbolsOfHints(output: SymbolsOfToolOutput): string[] {
   const count = Array.isArray(output.symbols) ? output.symbols.length : 0;
   if (count === 0) {
+    // Barrel re-exports, config/JSON/CSS, and type-only files legitimately
+    // index zero symbols — don't imply the index is broken.
     return [
-      "No symbols indexed for this file — verify the path or run project_index_refresh.",
+      "No symbols indexed for this file — normal for barrels, config, or non-code files; if you expected symbols, verify the path or run project_index_refresh.",
     ];
   }
   return [];

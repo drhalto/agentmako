@@ -166,9 +166,18 @@ export function collectDiagnosticsForFiles(
   return deduped.filter((diagnostic) => touchesPrimaryFocusFile(diagnostic, input.primaryFocusFile!));
 }
 
+export interface AnswerDiagnosticsCollection {
+  diagnostics: AnswerSurfaceIssue[];
+  // Files whose alignment diagnostics were fully recomputed by this pass.
+  // A previously persisted finding anchored to one of these files that this
+  // pass did not reproduce is gone, so persistence can resolve it instead of
+  // letting it sit active forever.
+  analyzedFiles: string[];
+}
+
 export function collectAnswerDiagnostics(
   input: CollectAnswerDiagnosticsInput,
-): AnswerSurfaceIssue[] {
+): AnswerDiagnosticsCollection {
   const primaryFocusFile =
     input.result.queryKind === "file_health" || input.result.queryKind === "trace_file"
       ? normalizePrimaryFile(input.result.packet.queryText)
@@ -182,7 +191,7 @@ export function collectAnswerDiagnostics(
     // Exact file tools still have a safe diagnostic target even when their
     // surrounding evidence is partial or stale-labeled.
     if (!primaryFocusFile) {
-      return [];
+      return { diagnostics: [], analyzedFiles: [] };
     }
   }
 
@@ -197,11 +206,24 @@ export function collectAnswerDiagnostics(
     focusFiles.add(primaryFocusFile);
   }
 
-  return collectDiagnosticsForFiles({
+  const analyzableFiles = [...focusFiles].filter(
+    (filePath) => input.projectStore.getFileContent(filePath) != null,
+  );
+
+  const diagnostics = collectDiagnosticsForFiles({
     projectStore: input.projectStore,
-    focusFiles: [...focusFiles],
+    focusFiles: analyzableFiles,
     primaryFocusFile,
   });
+
+  // With a primary focus file the emitted set is filtered to issues touching
+  // that file, so only findings anchored there are guaranteed re-emitted when
+  // still present; evidence-set files are only opportunistically covered.
+  const analyzedFiles = primaryFocusFile
+    ? analyzableFiles.filter((filePath) => filePath === primaryFocusFile)
+    : analyzableFiles;
+
+  return { diagnostics, analyzedFiles };
 }
 function normalizePrimaryFile(queryText: string): string | null {
   const trimmed = queryText.trim();

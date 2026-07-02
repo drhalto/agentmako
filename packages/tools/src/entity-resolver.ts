@@ -181,7 +181,46 @@ export function resolveIndexedFilePath(
     throw createAmbiguityError("ambiguous_file", fileQuery, candidates);
   }
 
-  throw createNotFoundError("file_not_found", fileQuery);
+  // Suggest near-misses so an agent can self-correct ("lib/auth/index.ts" →
+  // "lib/auth/constants.ts", …) instead of dead-ending on a bare 404.
+  throw createNotFoundError("file_not_found", fileQuery, suggestIndexedFiles(projectStore, fileQuery));
+}
+
+// Path-prefix ranking beats generic text search here: a query is usually an
+// almost-right path, so its siblings (longest shared prefix) are the useful
+// corrections. Text search is the fallback for basename-only queries.
+function suggestIndexedFiles(projectStore: ProjectStore, fileQuery: string): string[] {
+  const normalized = fileQuery.replace(/\\/g, "/").replace(/^\.\//, "").toLowerCase();
+  const scored = projectStore.listFiles().map((file) => {
+    const path = file.path.toLowerCase();
+    const max = Math.min(path.length, normalized.length);
+    let common = 0;
+    while (common < max && path[common] === normalized[common]) common += 1;
+    return { path: file.path, common };
+  });
+
+  const byPrefix = scored
+    .filter((entry) => entry.common >= 4)
+    .sort((left, right) => right.common - left.common || left.path.length - right.path.length)
+    .slice(0, 5)
+    .map((entry) => entry.path);
+  if (byPrefix.length > 0) {
+    return byPrefix;
+  }
+
+  const stem = normalized.split("/").at(-1)?.replace(/\.[^.]+$/, "") ?? "";
+  if (stem.length >= 3) {
+    const byBasename = scored
+      .filter((entry) => (entry.path.toLowerCase().split("/").at(-1) ?? "").includes(stem))
+      .sort((left, right) => left.path.length - right.path.length)
+      .slice(0, 5)
+      .map((entry) => entry.path);
+    if (byBasename.length > 0) {
+      return byBasename;
+    }
+  }
+
+  return projectStore.searchFiles(fileQuery, 5).map((match) => match.path);
 }
 
 export function resolveIndexedRoute(projectStore: ProjectStore, routeQuery: string): ResolvedRouteRecord {

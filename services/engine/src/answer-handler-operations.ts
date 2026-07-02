@@ -1,6 +1,6 @@
 import type { AnswerResult } from "@mako-ai/contracts";
 import type { AnswerEngineQueryKind } from "./query-plans.js";
-import type { FileDetailRecord } from "@mako-ai/store";
+import { isUnresolvedInternalImport, type FileDetailRecord } from "@mako-ai/store";
 import {
   AUTH_HINT_PATTERN,
   DEPENDENCY_HINT_PATTERN,
@@ -116,9 +116,7 @@ function handleFileHealth(context: AnswerContext): AnswerResult {
   const roles = buildFileRoles(context, file);
   const risks: string[] = [];
   const positives: string[] = [];
-  const missingInternalImports = file.outboundImports.filter(
-    (edge) => !edge.targetExists && (edge.importKind === "relative" || edge.importKind === "re-export"),
-  );
+  const missingInternalImports = file.outboundImports.filter(isUnresolvedInternalImport);
 
   if (roles.length > 0) {
     positives.push(`acts as ${listPreview(roles, 4)}`);

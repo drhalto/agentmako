@@ -105,6 +105,9 @@ interface RawStagedChange {
 interface CallRecord {
   name: string;
   line: number;
+  // Name of the nearest enclosing function-like declaration, when it has one.
+  // Lets hook-usage rules distinguish a component body from a custom hook.
+  enclosingFunctionName?: string;
 }
 
 interface ImportRecord {
@@ -257,13 +260,34 @@ function expressionName(sourceFile: ts.SourceFile, expression: ts.Expression): s
   return null;
 }
 
+function enclosingFunctionName(node: ts.Node): string | undefined {
+  for (let current = node.parent; current; current = current.parent) {
+    if (ts.isFunctionDeclaration(current) || ts.isMethodDeclaration(current)) {
+      return current.name && ts.isIdentifier(current.name) ? current.name.text : undefined;
+    }
+    if (ts.isArrowFunction(current) || ts.isFunctionExpression(current)) {
+      const owner = current.parent;
+      if (owner && ts.isVariableDeclaration(owner) && ts.isIdentifier(owner.name)) {
+        return owner.name.text;
+      }
+      return undefined;
+    }
+  }
+  return undefined;
+}
+
 function collectCalls(sourceFile: ts.SourceFile): CallRecord[] {
   const calls: CallRecord[] = [];
   const visit = (node: ts.Node): void => {
     if (ts.isCallExpression(node)) {
       const name = expressionName(sourceFile, node.expression);
       if (name) {
-        calls.push({ name, line: lineOf(sourceFile, node) });
+        const owner = enclosingFunctionName(node);
+        calls.push({
+          name,
+          line: lineOf(sourceFile, node),
+          ...(owner ? { enclosingFunctionName: owner } : {}),
+        });
       }
     }
     ts.forEachChild(node, visit);
@@ -276,6 +300,11 @@ function collectImports(sourceFile: ts.SourceFile): ImportRecord[] {
   const imports: ImportRecord[] = [];
   for (const statement of sourceFile.statements) {
     if (ts.isImportDeclaration(statement) && ts.isStringLiteral(statement.moduleSpecifier)) {
+      // `import type` is erased at compile time and never pulls server code
+      // into a client bundle.
+      if (statement.importClause?.isTypeOnly) {
+        continue;
+      }
       imports.push({
         specifier: statement.moduleSpecifier.text,
         line: lineOf(sourceFile, statement),
@@ -301,12 +330,23 @@ function isPublicRoute(projectPath: string, publicRouteGlobs: readonly string[])
   return publicRouteGlobs.some((glob) => matchesPathGlob(projectPath, glob));
 }
 
+// Conventionally-named guard wrappers (withApiAuth(handler), requireUser(),
+// ensureSession(), checkPermissions()) protect a route just as well as the
+// configured guard symbols; flagging those routes "unprotected" blocks
+// legitimate commits.
+const AUTH_GUARD_NAME_RE =
+  /^(?:with|require|assert|ensure|verify|check|enforce|protect|authorize|authenticate)[A-Za-z0-9_]*$/;
+const AUTH_GUARD_TOKEN_RE = /(auth|session|user|admin|role|perm|guard|token|member|login|access)/i;
+
 function isAuthGuardCall(callName: string, guards: Set<string>): boolean {
   if (guards.has(callName)) {
     return true;
   }
   const lastSegment = callName.split(".").at(-1) ?? callName;
   if (guards.has(lastSegment)) {
+    return true;
+  }
+  if (AUTH_GUARD_NAME_RE.test(lastSegment) && AUTH_GUARD_TOKEN_RE.test(lastSegment)) {
     return true;
   }
   return callName === "auth.getUser" || callName.endsWith(".auth.getUser");
@@ -522,16 +562,28 @@ function checkStagedFile(args: {
   } else {
     for (const call of calls) {
       const lastSegment = call.name.split(".").at(-1) ?? call.name;
-      if (CLIENT_HOOK_CALLS.has(lastSegment)) {
-        findings.push({
-          code: "git.server_uses_client_hook",
-          severity: "high",
-          path: args.file.projectPath,
-          line: call.line,
-          message: `file calls client hook ${call.name} without a top-level "use client" directive`,
-          evidence: call.name,
-        });
+      if (!CLIENT_HOOK_CALLS.has(lastSegment)) {
+        continue;
       }
+      // React hooks are called bare or via the React namespace; a method call
+      // like `emitter.useEffect()` is some other API sharing the name.
+      if (call.name !== lastSegment && call.name !== `React.${lastSegment}`) {
+        continue;
+      }
+      // A custom hook (useToggle, useFetch, …) legitimately calls hooks
+      // without its own "use client" — the directive belongs on the consuming
+      // component boundary, so a hook module must not be flagged.
+      if (call.enclosingFunctionName && /^use[A-Z0-9_]/.test(call.enclosingFunctionName)) {
+        continue;
+      }
+      findings.push({
+        code: "git.server_uses_client_hook",
+        severity: "high",
+        path: args.file.projectPath,
+        line: call.line,
+        message: `file calls client hook ${call.name} without a top-level "use client" directive`,
+        evidence: call.name,
+      });
     }
   }
 

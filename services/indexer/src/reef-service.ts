@@ -2564,6 +2564,12 @@ function buildReefProjectDiagnosticStatus(
     }
   }
 
+  const appliedChangeSets = queryChangeSetsForRevisionScoping({
+    projectStore,
+    projectId: project.projectId,
+    runs: [...latestBySource.values()],
+  });
+
   const sources = REEF_DIAGNOSTIC_STATUS_SOURCES.map(({ source, kind }) =>
     reefDiagnosticSourceStatus({
       source,
@@ -2572,6 +2578,7 @@ function buildReefProjectDiagnosticStatus(
       staleFileCount: staleFileCounts.get(source) ?? 0,
       checkedAtMs,
       currentRevision: analysisState?.currentRevision,
+      appliedChangeSets,
     })
   );
   const bySource = new Map(sources.map((source) => [source.source, source]));
@@ -2588,6 +2595,34 @@ function buildReefProjectDiagnosticStatus(
   };
 }
 
+const REVISION_SCOPING_CHANGE_SET_LIMIT = 200;
+
+// Fetch the change sets that advanced the revision counter past the oldest
+// diagnostic run, so per-source staleness can be scoped to changes that
+// actually overlap each run. Returns undefined ("cannot determine — assume
+// relevant") when there is nothing to scope or the window may be truncated.
+function queryChangeSetsForRevisionScoping(args: {
+  projectStore: ProjectStore;
+  projectId: string;
+  runs: readonly ReefDiagnosticRun[];
+}): ReefAppliedChangeSetRecord[] | undefined {
+  const revisions = args.runs
+    .map((run) => numericDiagnosticMetadata(run, "inputRevision"))
+    .filter((revision): revision is number => revision !== undefined);
+  if (revisions.length === 0) {
+    return undefined;
+  }
+  const changeSets = args.projectStore.queryReefAppliedChangeSets({
+    projectId: args.projectId,
+    minRevision: Math.min(...revisions) + 1,
+    limit: REVISION_SCOPING_CHANGE_SET_LIMIT,
+  });
+  if (changeSets.length >= REVISION_SCOPING_CHANGE_SET_LIMIT) {
+    return undefined;
+  }
+  return changeSets;
+}
+
 function latestReefDiagnosticRunsBySource(runs: readonly ReefDiagnosticRun[]): Map<string, ReefDiagnosticRun> {
   const latest = new Map<string, ReefDiagnosticRun>();
   for (const run of runs) {
@@ -2599,6 +2634,57 @@ function latestReefDiagnosticRunsBySource(runs: readonly ReefDiagnosticRun[]): M
   return latest;
 }
 
+// Files these diagnostic sources can never produce findings for: a change
+// set that only touches docs/assets must not flip code diagnostics stale.
+const DIAGNOSTIC_IRRELEVANT_EXTENSIONS = new Set([
+  ".md",
+  ".mdx",
+  ".txt",
+  ".png",
+  ".jpg",
+  ".jpeg",
+  ".gif",
+  ".svg",
+  ".webp",
+  ".ico",
+  ".pdf",
+  ".lock",
+]);
+
+// Determines whether any change set past `afterRevision` touched something
+// this run analyzed. "unknown" (no change-set data / possibly truncated)
+// preserves the conservative pre-existing behavior of assuming relevance.
+function revisionDriftRelevance(
+  run: ReefDiagnosticRun,
+  afterRevision: number,
+  appliedChangeSets: readonly ReefAppliedChangeSetRecord[] | undefined,
+  maxRevision?: number,
+): "relevant" | "irrelevant" | "unknown" {
+  if (!appliedChangeSets) {
+    return "unknown";
+  }
+  const requestedFiles = stringArrayDiagnosticMetadata(run, "requestedFiles");
+  for (const changeSet of appliedChangeSets) {
+    if (changeSet.newRevision <= afterRevision) continue;
+    if (maxRevision !== undefined && changeSet.newRevision > maxRevision) continue;
+    for (const change of changeSet.fileChanges) {
+      const path = change.path.replace(/\\/g, "/");
+      if (requestedFiles.length > 0) {
+        if (requestedFiles.includes(path)) {
+          return "relevant";
+        }
+        continue;
+      }
+      const dot = path.lastIndexOf(".");
+      const ext = dot >= 0 ? path.slice(dot).toLowerCase() : "";
+      if (!DIAGNOSTIC_IRRELEVANT_EXTENSIONS.has(ext)) {
+        return "relevant";
+      }
+    }
+  }
+  return "irrelevant";
+}
+
 function reefDiagnosticSourceStatus(args: {
   source: string;
   kind: ReefDiagnosticSourceKind;
@@ -2606,6 +2692,7 @@ function reefDiagnosticSourceStatus(args: {
   staleFileCount: number;
   checkedAtMs: number;
   currentRevision: number | undefined;
+  appliedChangeSets: readonly ReefAppliedChangeSetRecord[] | undefined;
 }): ReefDiagnosticSourceStatus {
   const base = {
     source: args.source,
@@ -2657,15 +2744,6 @@ function reefDiagnosticSourceStatus(args: {
     };
   }
 
-  const ageMs = Math.max(0, args.checkedAtMs - finishedAtMs);
-  if (ageMs > REEF_DIAGNOSTIC_CACHE_STALE_AFTER_MS) {
-    return {
-      ...base,
-      ...runFields,
-      state: "stale",
-      reason: `${args.source} diagnostic run is older than ${REEF_DIAGNOSTIC_CACHE_STALE_AFTER_MS} ms`,
-    };
-  }
   if (args.staleFileCount > 0) {
     return {
       ...base,
@@ -2677,7 +2755,8 @@ function reefDiagnosticSourceStatus(args: {
   if (
     inputRevision !== undefined &&
     outputRevision !== undefined &&
-    inputRevision !== outputRevision
+    inputRevision !== outputRevision &&
+    revisionDriftRelevance(args.run, inputRevision, args.appliedChangeSets, outputRevision) !== "irrelevant"
   ) {
     return {
       ...base,
@@ -2689,13 +2768,29 @@ function reefDiagnosticSourceStatus(args: {
   if (
     outputRevision !== undefined &&
     args.currentRevision !== undefined &&
-    outputRevision < args.currentRevision
+    outputRevision < args.currentRevision &&
+    // The revision counter is project-global: an edit to a README or another
+    // package advances it without touching anything this source analyzed.
+    // Only change sets that overlap the run's scope make the run stale.
+    revisionDriftRelevance(args.run, outputRevision, args.appliedChangeSets) !== "irrelevant"
   ) {
     return {
       ...base,
       ...runFields,
       state: "stale",
       reason: `${args.source} diagnostic run is at revision ${outputRevision}, current revision is ${args.currentRevision}`,
+    };
+  }
+
+  // Change-based signals above all cleared. Pure wall-clock age proves
+  // nothing changed — the cache is merely unverified, not stale.
+  const ageMs = Math.max(0, args.checkedAtMs - finishedAtMs);
+  if (ageMs > REEF_DIAGNOSTIC_CACHE_STALE_AFTER_MS) {
+    return {
+      ...base,
+      ...runFields,
+      state: "unknown",
+      reason: `${args.source} diagnostic run cache expired after ${REEF_DIAGNOSTIC_CACHE_STALE_AFTER_MS} ms without re-verification`,
     };
   }
 
@@ -2718,6 +2813,9 @@ function reefDiagnosticChangedAfterCheck(
     return [];
   }
   const changed: ReefProjectDiagnosticStatus["changedAfterCheck"] = [];
+  const indexedShaByPath = new Map(
+    projectStore.listFiles().map((file) => [file.path, file.sha256]),
+  );
   for (const fact of projectStore.queryReefFacts({
     projectId,
     overlay: "working_tree",
@@ -2732,6 +2830,12 @@ function reefDiagnosticChangedAfterCheck(
     }
     const modifiedMs = Date.parse(lastModifiedAt);
     if (!Number.isFinite(modifiedMs)) {
+      continue;
+    }
+    // mtime churn with identical bytes (git checkout/pull, touch, a formatter
+    // rewriting the same content) is not a change the diagnostics missed.
+    const overlaySha = stringDataValue(fact.data, "sha256");
+    if (overlaySha && overlaySha === indexedShaByPath.get(filePath)) {
       continue;
     }
     const staleSources = successfulRuns

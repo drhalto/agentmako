@@ -48,19 +48,26 @@ function issueFilePath(issue: AnswerSurfaceIssue): string | undefined {
   return issue.path ?? issue.consumerPath ?? issue.producerPath;
 }
 
+// One shared source for every query-time alignment diagnostic, whichever
+// query kind discovered it. Per-queryKind sources duplicated the same defect
+// into parallel findings (one per discovering tool) that each needed their
+// own resolution/ack.
+const ANSWER_DIAGNOSTICS_SOURCE = "answer_diagnostics";
+
 function persistAnswerDiagnosticsToReef(args: {
   result: AnswerResult;
   diagnostics: readonly AnswerSurfaceIssue[];
+  analyzedFiles: readonly string[];
   projectStore: ProjectStore;
 }): void {
-  if (args.diagnostics.length === 0) return;
+  if (args.diagnostics.length === 0 && args.analyzedFiles.length === 0) return;
 
-  const source = args.result.queryKind;
+  const source = ANSWER_DIAGNOSTICS_SOURCE;
   const capturedAt = new Date().toISOString();
   const freshness = {
     state: "fresh" as const,
     checkedAt: capturedAt,
-    reason: `query-time diagnostics collected by ${source}`,
+    reason: `query-time diagnostics collected by ${args.result.queryKind}`,
   };
   const descriptors = new Map<string, ReefRuleDescriptor>();
   const findings: ProjectFinding[] = [];
@@ -81,7 +88,7 @@ function persistAnswerDiagnosticsToReef(args: {
       type: "problem",
       severity: reefSeverity(issue),
       title: issue.code,
-      description: `Query-time diagnostic produced by ${source}.`,
+      description: "Query-time alignment diagnostic produced by the answer path.",
       factKinds: [source],
       enabledByDefault: true,
     });
@@ -104,21 +111,26 @@ function persistAnswerDiagnosticsToReef(args: {
     });
   }
 
-  if (findings.length === 0) return;
   if (descriptors.size > 0) {
     args.projectStore.saveReefRuleDescriptors([...descriptors.values()]);
   }
+
+  // Resolution is scoped to the files this pass fully recomputed: a prior
+  // active finding anchored to one of them that was not re-produced is gone
+  // (fixed code, or a heuristic that no longer fires) and must not sit active
+  // forever. Findings anchored to files outside this pass are untouched.
+  const subjectFingerprints = args.analyzedFiles.map((filePath) =>
+    args.projectStore.computeReefSubjectFingerprint({ kind: "file", path: filePath }),
+  );
+  if (findings.length === 0 && subjectFingerprints.length === 0) return;
+
   args.projectStore.replaceReefFindingsForSource({
     projectId: args.result.projectId,
     source,
     overlay: "indexed",
-    // Composer/search diagnostics are opportunistic over the returned
-    // evidence, not a complete per-file diagnostic pass. Persist what the
-    // query saw, but do not resolve prior query-time findings just because a
-    // different query did not reproduce them.
-    subjectFingerprints: [],
+    subjectFingerprints,
     findings,
-    reason: `${source} query-time diagnostic upsert`,
+    reason: `${args.result.queryKind} query-time diagnostic upsert`,
   });
 }
 
@@ -155,13 +167,14 @@ export async function enrichAnswerResultSurface(input: Input): Promise<AnswerRes
     input.options,
   );
 
-  const diagnostics = collectAnswerDiagnostics({
+  const { diagnostics, analyzedFiles } = collectAnswerDiagnostics({
     projectStore: input.projectStore,
     result: input.result,
   });
   persistAnswerDiagnosticsToReef({
     result: input.result,
     diagnostics,
+    analyzedFiles,
     projectStore: input.projectStore,
   });
   const trust = buildTrustSurface({

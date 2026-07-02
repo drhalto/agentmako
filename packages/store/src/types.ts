@@ -563,6 +563,7 @@ export interface QueryReefAppliedChangeSetsOptions {
   projectId: string;
   root?: string;
   changeSetId?: string;
+  minRevision?: number;
   maxRevision?: number;
   limit?: number;
 }
