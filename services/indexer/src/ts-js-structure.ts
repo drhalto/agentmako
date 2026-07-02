@@ -688,6 +688,26 @@ export function collectExportedSymbolsFromAst(content: string, relativePath = "m
   for (const statement of sourceFile.statements) {
     if (ts.isClassDeclaration(statement)) {
       pushDeclarationSymbol(symbols, sourceFile, statement, "class");
+      // Class methods are how agents name behavior ("where is
+      // getUserRoles?"); without them the symbol index only knows the class
+      // shell and every method-level lookup dead-ends.
+      const className = statement.name?.text;
+      for (const member of statement.members) {
+        if (!ts.isMethodDeclaration(member) || !ts.isIdentifier(member.name)) {
+          continue;
+        }
+        if (hasModifier(member, ts.SyntaxKind.PrivateKeyword)) {
+          continue;
+        }
+        symbols.push({
+          name: member.name.text,
+          kind: "method",
+          lineStart: lineStart(sourceFile, member),
+          lineEnd: lineEnd(sourceFile, member),
+          signatureText: firstLineText(sourceFile, member),
+          ...(className ? { metadata: { containerName: className } } : {}),
+        });
+      }
       continue;
     }
     if (ts.isInterfaceDeclaration(statement)) {

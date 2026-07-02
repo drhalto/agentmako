@@ -37,6 +37,7 @@ export interface ProviderContext {
   cachedGraphSeedWarnings?: string[];
   cachedProviderWarnings?: string[];
   cachedExactSymbolHits?: Map<string, SymbolSeedHit[]>;
+  cachedSymbolNameIndex?: Array<{ name: string; filePath: string }>;
 }
 
 type ProviderFn = (ctx: ProviderContext) => ContextPacketCandidateSeed[];
@@ -141,6 +142,48 @@ function exactSymbolScan(ctx: ProviderContext, term: string): SymbolSeedHit[] {
 
   ctx.cachedExactSymbolHits.set(normalizedTerm, hits);
   return hits;
+}
+
+// Closest indexed symbol names for a term that resolved nothing — an agent
+// asking for `getUserRole` when the repo defines `getUserRoles` should get
+// the correction instead of a dead end. Prefix containment (either way) and
+// singular/plural variants cover the common near-miss shapes cheaply.
+function nearMissSymbolSuggestions(ctx: ProviderContext, term: string): string[] {
+  const normalizedTerm = term.toLowerCase();
+  if (normalizedTerm.length < 4) return [];
+  if (!ctx.cachedSymbolNameIndex) {
+    const index: Array<{ name: string; filePath: string }> = [];
+    for (const file of ctx.projectStore.listFiles()) {
+      for (const symbol of ctx.projectStore.listSymbolsForFile(file.path)) {
+        index.push({ name: symbol.name, filePath: file.path });
+      }
+    }
+    ctx.cachedSymbolNameIndex = index;
+  }
+
+  const scored: Array<{ label: string; score: number }> = [];
+  const seen = new Set<string>();
+  for (const entry of ctx.cachedSymbolNameIndex) {
+    const name = entry.name.toLowerCase();
+    if (name === normalizedTerm) continue;
+    const shorter = Math.min(name.length, normalizedTerm.length);
+    const longer = Math.max(name.length, normalizedTerm.length);
+    let score = 0;
+    if (name === `${normalizedTerm}s` || normalizedTerm === `${name}s`) score = 3;
+    // Containment only counts when the shared prefix is most of both names —
+    // otherwise every `get*` symbol "matches" a getX query as junk.
+    else if ((name.startsWith(normalizedTerm) || normalizedTerm.startsWith(name)) && shorter / longer >= 0.6) score = 2;
+    else if (name.includes(normalizedTerm) && normalizedTerm.length >= 6) score = 1;
+    if (score === 0) continue;
+    const label = `${entry.name} (${entry.filePath})`;
+    if (seen.has(label)) continue;
+    seen.add(label);
+    scored.push({ label, score });
+  }
+  return scored
+    .sort((left, right) => right.score - left.score || left.label.length - right.label.length)
+    .slice(0, 3)
+    .map((entry) => entry.label);
 }
 
 function symbolHits(
@@ -480,9 +523,18 @@ function graphSeeds(ctx: ProviderContext): GraphSeed[] {
         symbolName: hit.name ?? symbolTerm,
       });
     }
-    if (source === "focus_symbol" && seeds.length === before) {
-      const warning = graphSeedResolutionWarning(source, symbolTerm);
-      if (warning) warnings.push(warning);
+    if (seeds.length === before) {
+      const suggestions = nearMissSymbolSuggestions(ctx, symbolTerm);
+      if (source === "focus_symbol") {
+        const warning = graphSeedResolutionWarning(source, symbolTerm);
+        if (warning) {
+          warnings.push(suggestions.length > 0 ? `${warning} — closest indexed symbols: ${suggestions.join(", ")}` : warning);
+        }
+      } else if (suggestions.length > 0) {
+        warnings.push(
+          `request symbol "${symbolTerm}" did not resolve to an indexed symbol — closest indexed symbols: ${suggestions.join(", ")}`,
+        );
+      }
     }
   }
 

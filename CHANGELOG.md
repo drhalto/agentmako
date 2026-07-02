@@ -7,6 +7,23 @@ it reaches 1.0.
 
 ## [Unreleased]
 
+### Added
+
+- **Class methods are indexed as symbols** (`kind: "method"`, container class
+  recorded in metadata). Method-level questions — "where is `getUserRoles`
+  defined and who calls it?" — now resolve to real graph anchors with caller
+  edges in `context_packet`, instead of dead-ending because the symbol index
+  only knew the class shell.
+- Context packets suggest near-miss symbols when a requested symbol doesn't
+  resolve ("`getUserRole` did not resolve — closest indexed symbols:
+  `getUserRoles` (lib/auth/…)"), matching the self-correcting behavior of
+  file-not-found errors. Weak matches stay silent rather than emitting junk.
+- Index runs are stamped with an `indexerCapability` version. When an older
+  agentmako install shares a project store with a newer one (global MCP
+  server + workspace CLI), re-indexing with the older writer silently
+  downgrades index content; the writer now detects this and logs a loud
+  warning before proceeding.
+
 ### Fixed
 
 False-positive reduction across the live map — findings now track what is

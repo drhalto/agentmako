@@ -26,6 +26,7 @@ import {
 import type { IndexerOptions, RefreshProjectPathsResult } from "./types.js";
 import { durationMs, withGlobalStore, withProjectStore } from "./utils.js";
 import { withReefRootWriterLock } from "./reef-writer-lock.js";
+import { INDEXER_CAPABILITY_VERSION } from "./index-capability.js";
 
 const pathRefreshLogger = createLogger("mako-indexer", { component: "path-refresh" });
 
@@ -331,6 +332,7 @@ export async function refreshProjectPaths(
           semanticUnitsIndexed: semanticUnitCount,
           pathRefreshCount: plan.paths.length,
           deletedPathCount: plan.deletedPaths.length,
+          indexerCapability: INDEXER_CAPABILITY_VERSION,
         });
         const indexedAt = new Date().toISOString();
         globalStore.markProjectIndexed(attached.project.projectId, indexedAt);

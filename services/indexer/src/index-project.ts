@@ -13,6 +13,7 @@ import {
 import type { AttachProjectResult, IndexProjectResult, IndexerOptions } from "./types.js";
 import { durationMs, withGlobalStore, withProjectStore } from "./utils.js";
 import { withReefRootWriterLock } from "./reef-writer-lock.js";
+import { INDEXER_CAPABILITY_VERSION, indexCapabilityFromStats } from "./index-capability.js";
 
 const indexLogger = createLogger("mako-indexer", { component: "index-project" });
 
@@ -39,6 +40,18 @@ async function indexAttachedProject(
   return withGlobalStore(options, ({ config, globalStore }) =>
     withProjectStore(attached.resolvedRootPath, config, async (projectStore) => {
       const triggerSource = options.triggerSource ?? "manual";
+      const priorCapability = indexCapabilityFromStats(projectStore.getLatestIndexRun()?.stats);
+      if (priorCapability !== undefined && priorCapability > INDEXER_CAPABILITY_VERSION) {
+        // Another (newer) agentmako install shares this store. Re-indexing
+        // with this older writer silently drops newer index content (e.g.
+        // method symbols) — proceed, but say so loudly.
+        indexLogger.warn("indexer-capability-downgrade", {
+          projectId: attached.project.projectId,
+          storeCapability: priorCapability,
+          writerCapability: INDEXER_CAPABILITY_VERSION,
+          detail: "store was last indexed by a newer agentmako; this run will downgrade index content",
+        });
+      }
       const run = projectStore.beginIndexRun(triggerSource);
       const indexStartedAt = new Date().toISOString();
       let lifecycleError: unknown;
@@ -182,6 +195,7 @@ async function indexAttachedProject(
           schemaObjectsIndexed: stats.schemaObjects,
           schemaUsagesIndexed: stats.schemaUsages,
           semanticUnitsIndexed: semanticUnitCount,
+          indexerCapability: INDEXER_CAPABILITY_VERSION,
         });
 
         const indexedAt = new Date().toISOString();
