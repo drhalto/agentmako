@@ -7,6 +7,43 @@ it reaches 1.0.
 
 ## [Unreleased]
 
+## [0.6.0] - 2026-07-26
+
+### Added
+
+- Literal dynamic `import()` calls now contribute real internal import edges,
+  so route layouts and other lazy-loaded boundaries reach their actual
+  dependencies during impact and context analysis.
+- Reef calculation caches now include the current project-index revision,
+  preventing structurally derived answers from surviving a re-index with
+  stale files, routes, or schema usage.
+
+### Changed
+
+- The initial MCP surface is now nine high-signal tools. Specialized tools
+  remain available and are activated per session through `tool_search`,
+  keeping agent tool selection compact without removing advanced workflows.
+- `reef_ask` and feature-flow retrieval now share bounded project context,
+  rank explicit focus and relevant text matches ahead of global graph hubs,
+  cap expansion, and avoid duplicating heavy evidence sections.
+- Default answer budgets are smaller and more focused across primary context,
+  related context, findings, open loops, diagnostics, and feature-flow output.
+
+### Fixed
+
+- Natural-language requests no longer invent database objects from generic
+  words such as "matter", roam every schema definition in a matching
+  migration, or treat broad schema keywords as explicit database targets.
+- Express-style route indexing now requires a route-handler call shape,
+  preventing `Map.get`, header access, set operations, and similar method
+  calls from becoming phantom HTTP routes.
+- TypeScript and JavaScript schema usage is recorded only from structured
+  client calls such as `.from()` and `.rpc()`, eliminating bare property-name
+  false positives.
+- Focused context queries preserve ranked files without using them as
+  unbounded graph-expansion seeds, improving relevance and latency on large
+  repositories.
+
 ## [0.5.0] - 2026-07-02
 
 ### Added
@@ -334,8 +371,9 @@ Initial public release of `agentmako` under Apache-2.0.
 - `mako-ai-claude-plugin` with Mako-specific Claude Code skills and
   bundled MCP wiring.
 
-[Unreleased]: https://github.com/drhalto/agentmako/compare/v0.5.0...HEAD
-[0.5.0]: https://github.com/drhalto/agentmako/compare/v0.4.3...v0.5.0
+[Unreleased]: https://github.com/drhalto/agentmako/compare/v0.6.0...HEAD
+[0.6.0]: https://github.com/drhalto/agentmako/compare/9fae98f...v0.6.0
+[0.5.0]: https://github.com/drhalto/agentmako/compare/v0.4.3...9fae98f
 [0.4.3]: https://github.com/drhalto/agentmako/compare/v0.4.2...v0.4.3
 [0.4.2]: https://github.com/drhalto/agentmako/compare/v0.4.1...v0.4.2
 [0.4.1]: https://github.com/drhalto/agentmako/compare/v0.4.0...v0.4.1
