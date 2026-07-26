@@ -152,7 +152,7 @@ export const REEF_DUPLICATE_CANDIDATES_NODE: ReefCalculationNode = {
 export const REEF_FEATURE_FLOW_NODE: ReefCalculationNode = {
   id: "reef.query.feature_flow",
   kind: "derived_query",
-  version: "1.0.0",
+  version: "1.3.0",
   description: "Calculates a bounded action surface across focused files, routes, imports, schema usages, database facts, triggers, policies, RPC/table refs, and durable findings.",
   outputs: [{ kind: "query", queryKind: REEF_FEATURE_FLOW_QUERY_KIND }],
   dependsOn: [

@@ -3,7 +3,6 @@ import { McpServer, type RegisteredTool } from "@modelcontextprotocol/sdk/server
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
 import { ListRootsResultSchema, isInitializeRequest } from "@modelcontextprotocol/sdk/types.js";
 import type { AttachedProject, JsonObject } from "@mako-ai/contracts";
-import { ACTION_TOOLS } from "@mako-ai/harness-tools";
 import {
   createMcpProgressReporter,
   GenericAgentClient,
@@ -39,17 +38,12 @@ import {
 import type { ProjectIndexRefreshCoordinator } from "./index-refresh-coordinator.js";
 
 const APP_VERSION = "0.1.0";
-const ActionToolUnavailableSchema = z.object({
-  ok: z.literal(false),
-  requiresHarnessSession: z.literal(true),
-  error: z.string(),
-});
 const ToolSearchInputSchema = z.object({
   query: z.string().min(1),
   limit: z.number().int().min(1).max(20).optional(),
 });
 const TOOL_SEARCH_DESCRIPTION =
-  "Search the MCP-visible tool catalog, including deferred and blocked tools. Use when you are unsure which tool fits a task or why a tool is unavailable over MCP.";
+  "Search and activate deferred MCP specialist tools. Use when the compact surface does not already cover the task.";
 const ToolSearchOutputSchema = z.object({
   query: z.string().min(1),
   count: z.number().int().nonnegative(),
@@ -291,7 +285,8 @@ export function createMcpServer(
     surface: "mcp",
   });
 
-  for (const item of registryPlan.immediate) {
+  const deferredRegistryTools = new Map<string, RegisteredTool>();
+  for (const item of [...registryPlan.immediate, ...registryPlan.deferred]) {
     const tool = item.summary;
     const definition = getToolDefinition(tool.name);
     if (!definition) {
@@ -388,19 +383,15 @@ export function createMcpServer(
         }
       },
     );
+    if (item.exposure === "deferred") {
+      registeredTool.disable();
+      deferredRegistryTools.set(tool.name, registeredTool);
+    }
     trackAgentMetadataTool(registeredTool, toolInfo);
   }
 
   const searchableCatalog: ToolSearchCatalogEntry[] = [
     ...buildRegistryToolSearchCatalog(registryPlan),
-    ...ACTION_TOOLS.map((tool) => ({
-      name: tool.name,
-      description: tool.description,
-      category: "action",
-      family: "action" as const,
-      availability: "blocked" as const,
-      reason: "requires harness session approval flow",
-    })),
   ];
 
   const toolSearchInfo = {
@@ -423,25 +414,45 @@ export function createMcpServer(
       },
     },
     async (args) => {
-      const results = rankToolSearchEntries(
+      const matchedEntries = rankToolSearchEntries(
         searchableCatalog,
         args.query,
         args.limit ?? 8,
-      ).map((entry) => ({
-        name: entry.name,
-        family: entry.family,
-        availability: entry.availability,
-        reason: entry.reason,
-        description: entry.description,
-        category: entry.category ?? null,
-      }));
+      );
+      const activated: string[] = [];
+      for (const entry of matchedEntries) {
+        const registeredTool = entry.family === "registry"
+          ? deferredRegistryTools.get(entry.name)
+          : undefined;
+        if (registeredTool && !registeredTool.enabled) {
+          registeredTool.enable();
+          activated.push(entry.name);
+        }
+      }
+      const results = matchedEntries.map((entry) => {
+        const registeredTool = entry.family === "registry"
+          ? deferredRegistryTools.get(entry.name)
+          : undefined;
+        const activatedOrEnabled = registeredTool?.enabled === true;
+        return {
+          name: entry.name,
+          family: entry.family,
+          availability: activatedOrEnabled ? "immediate" as const : entry.availability,
+          reason: activatedOrEnabled ? null : entry.reason,
+          description: entry.description,
+          category: entry.category ?? null,
+        };
+      });
       const output = {
         query: args.query,
         count: results.length,
         results,
-        _hints: results.length === 0
-          ? ["No matching tools found; broaden the query."]
-          : [],
+        _hints: [
+          ...(results.length === 0 ? ["No matching tools found; broaden the query."] : []),
+          ...(activated.length > 0
+            ? [`Activated ${activated.join(", ")} for this MCP session.`]
+            : []),
+        ],
       };
       return {
         content: [{ type: "text", text: JSON.stringify(output, null, 2) }],
@@ -450,42 +461,6 @@ export function createMcpServer(
     },
   );
   trackAgentMetadataTool(registeredToolSearch, toolSearchInfo);
-
-  for (const tool of ACTION_TOOLS) {
-    server.registerTool(
-      tool.name,
-      {
-        description: tool.description,
-        inputSchema: createMcpInputSchema(tool.parameters),
-        outputSchema: withToolHintsSchema(ActionToolUnavailableSchema),
-        annotations: {
-          title: tool.name,
-          readOnlyHint: false,
-          idempotentHint: false,
-          openWorldHint: true,
-          destructiveHint: true,
-        },
-        _meta: {
-          requiresApproval: true,
-        },
-      },
-      async (_args: Record<string, unknown>, _extra: Record<string, unknown>) => {
-        const output = {
-          ok: false as const,
-          requiresHarnessSession: true as const,
-          error:
-            `\`${tool.name}\` is an action tool and requires the harness session transport. ` +
-            "Use `services/harness` or `agentmako chat` so the approval and snapshot flow can run.",
-          _hints: ["Use the harness approval flow for this action tool."],
-        };
-        return {
-          content: [{ type: "text" as const, text: output.error }],
-          structuredContent: output,
-          isError: true,
-        };
-      },
-    );
-  }
 
   return server;
 }

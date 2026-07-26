@@ -38,6 +38,7 @@ export interface ProviderContext {
   cachedProviderWarnings?: string[];
   cachedExactSymbolHits?: Map<string, SymbolSeedHit[]>;
   cachedSymbolNameIndex?: Array<{ name: string; filePath: string }>;
+  cachedKeywordFileSeeds?: Array<{ path: string; term: string }>;
 }
 
 type ProviderFn = (ctx: ProviderContext) => ContextPacketCandidateSeed[];
@@ -58,6 +59,7 @@ type GraphSeedSource =
   | "focus_file"
   | "changed_file"
   | "intent_file"
+  | "keyword_file"
   | "focus_route"
   | "intent_route"
   | "focus_symbol"
@@ -354,6 +356,10 @@ function symbolProvider(ctx: ProviderContext): ContextPacketCandidateSeed[] {
 
 function schemaProvider(ctx: ProviderContext): ContextPacketCandidateSeed[] {
   const candidates: ContextPacketCandidateSeed[] = [];
+  const explicitTerms = new Set(unique([
+    ...ctx.intent.entities.databaseObjects,
+    ...(ctx.input.focusDatabaseObjects ?? []),
+  ]).map((term) => term.toLowerCase()));
   const terms = unique([
     ...ctx.intent.entities.databaseObjects,
     ...(ctx.input.focusDatabaseObjects ?? []),
@@ -361,6 +367,7 @@ function schemaProvider(ctx: ProviderContext): ContextPacketCandidateSeed[] {
   ]);
 
   for (const term of terms) {
+    const explicitDatabaseTarget = explicitTerms.has(term.toLowerCase());
     for (const object of ctx.projectStore.searchSchemaObjects(term, 5)) {
       const objectName = `${object.schemaName}.${object.objectName}`;
       candidates.push({
@@ -371,7 +378,11 @@ function schemaProvider(ctx: ProviderContext): ContextPacketCandidateSeed[] {
         source: "schema_provider",
         strategy: "schema_usage",
         whyIncluded: `Schema object matched request term "${term}".`,
-        confidence: objectName.toLowerCase() === term.toLowerCase() ? 0.92 : 0.72,
+        confidence: objectName.toLowerCase() === term.toLowerCase()
+          ? 0.92
+          : explicitDatabaseTarget
+            ? 0.72
+            : 0.58,
         metadata: metadata({
           query: term,
           objectType: object.objectType,
@@ -389,7 +400,9 @@ function schemaProvider(ctx: ProviderContext): ContextPacketCandidateSeed[] {
           source: "schema_provider",
           strategy: "schema_usage",
           whyIncluded: `File references schema object ${objectName}.`,
-          confidence: usage.usageKind === "definition" ? 0.84 : 0.68,
+          confidence: explicitDatabaseTarget
+            ? usage.usageKind === "definition" ? 0.84 : 0.68
+            : usage.usageKind === "definition" ? 0.5 : 0.6,
           metadata: metadata({
             schemaObject: objectName,
             usageKind: usage.usageKind,
@@ -398,6 +411,33 @@ function schemaProvider(ctx: ProviderContext): ContextPacketCandidateSeed[] {
         });
       }
     }
+  }
+
+  // The file provider runs before graph providers. Preserve a small set of
+  // its request-term matches so import traversal and PageRank are
+  // personalized around semantic hits instead of falling back to unrelated
+  // project-wide hubs for ordinary natural-language questions.
+  const graphTerms = new Set([
+    ...ctx.intent.entities.keywords,
+    ...ctx.intent.entities.quotedText,
+  ].map((term) => term.toLowerCase()));
+  const keywordSeeds = new Map<string, { path: string; term: string }>();
+  for (const candidate of candidates) {
+    const term = typeof candidate.metadata?.query === "string"
+      ? candidate.metadata.query
+      : undefined;
+    if (!candidate.path || !term || !graphTerms.has(term.toLowerCase())) continue;
+    if (!keywordSeeds.has(candidate.path)) {
+      keywordSeeds.set(candidate.path, { path: candidate.path, term });
+    }
+    if (keywordSeeds.size >= 8) break;
+  }
+  ctx.cachedKeywordFileSeeds = [...keywordSeeds.values()];
+  if (ctx.cachedKeywordFileSeeds.length > 0) {
+    // A caller may have asked for preliminary graph-seed diagnostics before
+    // providers run. Recompute once semantic file hits are known.
+    ctx.cachedGraphSeeds = undefined;
+    ctx.cachedGraphSeedWarnings = undefined;
   }
 
   return candidates;
@@ -473,6 +513,40 @@ function graphSeeds(ctx: ProviderContext): GraphSeed[] {
   }
   for (const filePath of ctx.intent.entities.files) {
     addGraphSeed(seeds, fileGraphSeed(ctx, filePath, "intent_file", "request text mentioned this file."));
+  }
+  const hasRequestedGraphFocus = Boolean(
+    ctx.input.focusFiles?.length ||
+      ctx.input.changedFiles?.length ||
+      ctx.input.focusRoutes?.length ||
+      ctx.input.focusSymbols?.length ||
+      ctx.input.focusDatabaseObjects?.length,
+  );
+  if (!hasRequestedGraphFocus) {
+    const keywordFileSeeds = new Map<string, { path: string; term: string }>();
+    for (const seed of ctx.cachedKeywordFileSeeds ?? []) {
+      keywordFileSeeds.set(seed.path, seed);
+    }
+    // Provider contexts may be prepared with graph seeds before the
+    // sequential provider pass begins. Backfill directly from the same
+    // bounded file index so semantic personalization does not depend on
+    // provider call order.
+    for (const term of ctx.intent.entities.keywords.slice(0, 8)) {
+      for (const match of ctx.projectStore.searchFiles(term, 2)) {
+        if (!keywordFileSeeds.has(match.path)) {
+          keywordFileSeeds.set(match.path, { path: match.path, term });
+        }
+        if (keywordFileSeeds.size >= 8) break;
+      }
+      if (keywordFileSeeds.size >= 8) break;
+    }
+    for (const seed of keywordFileSeeds.values()) {
+      addGraphSeed(seeds, {
+        path: seed.path,
+        source: "keyword_file",
+        term: seed.term,
+        reason: `file_provider matched request term ${JSON.stringify(seed.term)} in this file.`,
+      });
+    }
   }
 
   const routeTerms = unique([
@@ -576,8 +650,12 @@ function graphSeeds(ctx: ProviderContext): GraphSeed[] {
   return ctx.cachedGraphSeeds;
 }
 
-function graphSeedPaths(ctx: ProviderContext): string[] {
-  return unique(graphSeeds(ctx).map((seed) => seed.path));
+function graphSeedPaths(ctx: ProviderContext, includeKeywordFiles = true): string[] {
+  return unique(
+    graphSeeds(ctx)
+      .filter((seed) => includeKeywordFiles || seed.source !== "keyword_file")
+      .map((seed) => seed.path),
+  );
 }
 
 function graphSeedSourcesForPath(ctx: ProviderContext, path: string): JsonObject[] {
@@ -742,7 +820,10 @@ function importGraphFrontier(seedPath: string, direction: ImportGraphDirection):
 }
 
 function importGraphProvider(ctx: ProviderContext): ContextPacketCandidateSeed[] {
-  const seedPaths = graphSeedPaths(ctx);
+  // Broad keyword matches personalize the repo map, but they are too weak to
+  // launch a two-hop import traversal. Otherwise a natural-language request
+  // can replace exact semantic hits with dozens of merely adjacent files.
+  const seedPaths = graphSeedPaths(ctx, false);
   const candidates: ContextPacketCandidateSeed[] = [];
   const frontiers: ImportGraphFrontier[] = [];
 
@@ -783,7 +864,12 @@ function importGraphProvider(ctx: ProviderContext): ContextPacketCandidateSeed[]
 }
 
 function repoMapProvider(ctx: ProviderContext): ContextPacketCandidateSeed[] {
-  const seedPaths = graphSeedPaths(ctx);
+  const resolvedGraphSeeds = graphSeeds(ctx);
+  const hasExplicitGraphSeed = resolvedGraphSeeds.some((seed) => seed.source !== "keyword_file");
+  const effectiveGraphSeeds = hasExplicitGraphSeed
+    ? resolvedGraphSeeds.filter((seed) => seed.source !== "keyword_file")
+    : resolvedGraphSeeds;
+  const seedPaths = unique(effectiveGraphSeeds.map((seed) => seed.path));
   const graphSeedCount = seedPaths.length;
   const ranks = rankImportGraphFiles(ctx.projectStore, {
     seedPaths,
@@ -797,7 +883,14 @@ function repoMapProvider(ctx: ProviderContext): ContextPacketCandidateSeed[] {
   return entries
     .slice(0, 8)
     .map((entry) => {
-      const contextScore = Math.min(42, entry.score / 8);
+      // Personalized centrality is supporting context around stronger
+      // semantic/route evidence. Keep it below deterministic provider hits;
+      // global centrality retains the larger fallback range when the request
+      // produced no useful anchors at all.
+      const contextScore = Math.min(
+        personalized && !hasExplicitGraphSeed ? 30 : 42,
+        entry.score / 8,
+      );
       return {
         kind: "file" as const,
         path: entry.filePath,

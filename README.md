@@ -146,9 +146,9 @@ In the agent, default to `reef_ask`. The compact starting surface is:
 - `live_text_search` for exact current-disk regex/glob inventories
 - `lint_files` for bounded diagnostics and `.mako/rules` findings
 - `tool_batch` for independent read-only follow-ups
-- `tool_search` to discover specialized route, graph, DB, finding, refresh, or
-  context-expansion tools only when the compact surface points at a concrete
-  need
+- `tool_search` to discover and activate specialized route, graph, DB, finding,
+  refresh, or context-expansion tools only when the compact surface points at
+  a concrete need
 
 ### 4. Optional: use an agent plugin
 

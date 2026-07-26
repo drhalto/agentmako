@@ -736,6 +736,33 @@ function assertIntentExpandsCompoundRepoTerms(): void {
     false,
     "intent detection should not promote interrogatives or pronouns to symbols",
   );
+
+  const codeSymbolIntent = detectContextPacketIntent({
+    request: "Trace reef_ask and feature_flow before changing auth/role behavior or database objects.",
+    focusSymbols: ["reef_ask"],
+  });
+  assert.deepEqual(
+    codeSymbolIntent.entities.databaseObjects,
+    [],
+    "snake_case code symbols should not be misclassified as database objects without a database-target cue",
+  );
+
+  const databaseIntent = detectContextPacketIntent({
+    request: "What columns and RLS policies are on user_profiles, and what calls public.get_user_role?",
+  });
+  assert.ok(databaseIntent.entities.databaseObjects.includes("user_profiles"));
+  assert.ok(databaseIntent.entities.databaseObjects.includes("public.get_user_role"));
+
+  const broadPlanningIntent = detectContextPacketIntent({
+    request: "What files, role sources, route boundaries, and database objects matter if I change tenant-scoped dashboard role checks?",
+  });
+  assert.ok(["role", "tenant", "dashboard"].every((keyword) => broadPlanningIntent.entities.keywords.includes(keyword)));
+  assert.equal(
+    ["files", "sources", "route", "boundaries", "database", "objects", "matter", "change", "checks"]
+      .some((keyword) => broadPlanningIntent.entities.keywords.includes(keyword)),
+    false,
+    "retrieval keywords should omit task-control and evidence-category words that produce generic exact matches",
+  );
 }
 
 function writeFixtureFile(projectRoot: string, relPath: string, content: string): string {
@@ -2406,12 +2433,13 @@ async function main(): Promise<void> {
         duplicatePaths.has("app/dashboard/instructor/endorsements/create/client-page.tsx"),
       "duplicate discovery should prioritize directly matching peripheral files",
     );
-    assert.ok(
+    assert.equal(
       [...duplicatePacket.primaryContext, ...duplicatePacket.relatedContext].some((candidate) =>
         candidate.strategy === "centrality_rank" &&
-        candidate.path === "components/ui/button.tsx"
+        candidate.metadata?.graphRankMode === "global"
       ),
-      "the centrality candidate should still be available as supporting context",
+      false,
+      "anchored duplicate discovery should not spend bounded context on unrelated global graph hubs",
     );
 
     const graphPacket = await invokeTool(

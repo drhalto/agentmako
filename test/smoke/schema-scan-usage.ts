@@ -42,6 +42,12 @@ async function main(): Promise<void> {
         statementExcerpt: "create or replace function admin_publish_event(...)",
       },
     },
+    {
+      objectKey: "email.message",
+      objectType: "table",
+      schemaName: "email",
+      objectName: "message",
+    },
   ];
 
   // Code file — must be tracked.
@@ -65,6 +71,14 @@ async function main(): Promise<void> {
     "rpcs:\n  - admin_publish_event\n",
   );
 
+  // Common application words that happen to equal a table name are not
+  // database usage unless they occur in a structured client call.
+  const responseFile = makeFile(
+    "app/api/users/route.ts",
+    "typescript",
+    "return Response.json({ message: 'Users updated successfully' });\n",
+  );
+
   // SQL file that legitimately references the RPC — must be tracked.
   const sqlFile = makeFile(
     "supabase/migrations/0002_other.sql",
@@ -72,7 +86,10 @@ async function main(): Promise<void> {
     "select admin_publish_event(uuid_generate_v4(), uuid_generate_v4());\n",
   );
 
-  const usages = collectSchemaUsages([codeFile, docFile, yamlFile, sqlFile], schemaObjects);
+  const usages = collectSchemaUsages(
+    [codeFile, docFile, yamlFile, responseFile, sqlFile],
+    schemaObjects,
+  );
 
   // Expected: definition (from sourceFilePath) + code file reference + sql file reference = 3.
   const references = usages.filter((u) => u.usageKind === "reference");
@@ -98,6 +115,10 @@ async function main(): Promise<void> {
   assert.ok(
     !referencePaths.has("config/permissions.yaml"),
     "yaml config must not produce a usage reference",
+  );
+  assert.ok(
+    !referencePaths.has("app/api/users/route.ts"),
+    "a response `message` property must not be treated as an email.message table usage",
   );
 
   console.log("schema-scan-usage: PASS");

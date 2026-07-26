@@ -46,6 +46,10 @@ function writeProject(projectRoot: string): void {
     ].join("\n"),
   );
   writeFileSync(
+    path.join(projectRoot, "src", "lib", "lazy.ts"),
+    "export const lazyValue = 1;\n",
+  );
+  writeFileSync(
     path.join(projectRoot, "src", "server.ts"),
     [
       "import type { RequestLike } from './types';",
@@ -65,6 +69,13 @@ function writeProject(projectRoot: string): void {
       "",
       "function createTodo() { return null; }",
       "app.post('/api/todos', createTodo);",
+      "const cache = new Map<string, unknown>();",
+      "const flags = new Set<string>();",
+      "cache.get('/not-an-api-route');",
+      "flags.delete('hot_hint_index');",
+      "export async function loadLazy() {",
+      "  return import('@lib/lazy');",
+      "}",
       "",
     ].join("\n"),
   );
@@ -119,6 +130,14 @@ async function main(): Promise<void> {
     assert.equal(typeImport?.targetPath, "src/types.ts");
     assert.ok(server.imports.some((edge) => edge.specifier === "./lib/routes" && edge.targetPath === "src/lib/routes.ts"));
     assert.ok(server.imports.some((edge) => edge.specifier === "@lib/util" && edge.targetPath === "src/lib/util.ts"));
+    assert.ok(
+      server.imports.some((edge) =>
+        edge.specifier === "@lib/lazy"
+        && edge.targetPath === "src/lib/lazy.ts"
+        && edge.isTypeOnly === false
+      ),
+      "literal dynamic import() calls should participate in the internal import graph",
+    );
 
     assert.ok(route.routes.some((record) => record.routeKey === "route:/api/todos:GET"));
     assert.ok(page.routes.some((record) => record.routeKey === "page:/:tenant"));
@@ -134,6 +153,11 @@ async function main(): Promise<void> {
       record.method === "POST" &&
       record.handlerName === "createTodo",
     ));
+    assert.equal(
+      server.routes.some((record) => record.pattern === "/not-an-api-route" || record.pattern === "hot_hint_index"),
+      false,
+      "Map.get and Set.delete calls must not be indexed as local HTTP routes",
+    );
 
     console.log("ts-js-structure-indexing: PASS");
   } finally {

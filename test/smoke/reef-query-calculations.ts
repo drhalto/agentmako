@@ -29,6 +29,7 @@ import {
   REEF_TABLE_NEIGHBORHOOD_QUERY_KIND,
   REEF_WHERE_USED_NODE,
   REEF_WHERE_USED_QUERY_KIND,
+  reefCalculationSourceRevision,
   runCachedReefCalculation,
 } from "../../packages/tools/src/reef/index.ts";
 import { seedReefProject } from "../fixtures/reef/index.ts";
@@ -48,6 +49,24 @@ async function main(): Promise<void> {
     assertQueryCalculationRegistry();
     seedIndexedProject(seeded.store);
     seedOperationalEvidence(seeded.store, seeded.projectId, projectRoot);
+
+    const revisionBeforeIndexRun = reefCalculationSourceRevision(
+      seeded.store,
+      seeded.projectId,
+      projectRoot,
+    );
+    const indexRun = seeded.store.beginIndexRun("calculation-cache-regression");
+    seeded.store.finishIndexRun(indexRun.runId, "succeeded", { filesIndexed: 4 });
+    const revisionAfterIndexRun = reefCalculationSourceRevision(
+      seeded.store,
+      seeded.projectId,
+      projectRoot,
+    );
+    assert.notEqual(
+      revisionAfterIndexRun,
+      revisionBeforeIndexRun,
+      "a completed index run must invalidate derived query caches even when Reef's materialized revision is unchanged",
+    );
 
     const whereUsed = calculateReefWhereUsedStructural({
       projectStore: seeded.store,
@@ -165,6 +184,49 @@ async function main(): Promise<void> {
     assert.ok(featureFlow.findings.some((finding) => finding.ruleId === "reuse.helper_bypass"));
     assert.ok(featureFlow.links.some((link) => link.kind === "handles_route"));
     assert.ok(featureFlow.links.some((link) => link.kind === "reads_table"));
+
+    const genericMigrationTextFlow = calculateReefFeatureFlow({
+      projectStore: seeded.store,
+      projectId: seeded.projectId,
+      fileSeeds: [],
+      routeSeeds: [],
+      databaseObjectSeeds: [],
+      symbolSeeds: [],
+      textSeeds: ["tenant"],
+      importDepth: 1,
+      limit: 20,
+    });
+    assert.equal(
+      genericMigrationTextFlow.databaseObjects.length,
+      0,
+      "generic text seeds must not roam unrelated schema definitions",
+    );
+
+    const explicitMigrationObjectFlow = calculateReefFeatureFlow({
+      projectStore: seeded.store,
+      projectId: seeded.projectId,
+      fileSeeds: [],
+      routeSeeds: [],
+      databaseObjectSeeds: ["app.tenant_config"],
+      symbolSeeds: [],
+      textSeeds: [],
+      importDepth: 1,
+      limit: 20,
+    });
+    assert.ok(
+      explicitMigrationObjectFlow.databaseObjects.some((object) => object.objectName === "tenant_config"),
+      "an explicitly named database object should remain in the flow",
+    );
+    assert.equal(
+      explicitMigrationObjectFlow.databaseObjects.some((object) => object.objectName === "unrelated_a"),
+      false,
+      "one explicit object in a migration must not drag every definition from that file into the flow",
+    );
+    assert.equal(
+      explicitMigrationObjectFlow.databaseObjects.some((object) => object.objectName === "unrelated_b"),
+      false,
+      "migration definition fan-out should stay relevant to the query",
+    );
 
     const caseInsensitiveSymbolFlow = calculateReefFeatureFlow({
       projectStore: seeded.store,
@@ -375,6 +437,7 @@ function seedIndexedProject(store: ProjectStore): void {
           isApi: true,
         }],
       }),
+      indexedFile("supabase/migrations/foundation.sql", "create schema app;"),
     ],
     schemaObjects: [
       {
@@ -388,6 +451,24 @@ function seedIndexedProject(store: ProjectStore): void {
         objectType: "rpc",
         schemaName: "public",
         objectName: "get_user",
+      },
+      {
+        objectKey: "app.tenant_config",
+        objectType: "table",
+        schemaName: "app",
+        objectName: "tenant_config",
+      },
+      {
+        objectKey: "app.unrelated_a",
+        objectType: "table",
+        schemaName: "app",
+        objectName: "unrelated_a",
+      },
+      {
+        objectKey: "app.unrelated_b",
+        objectType: "table",
+        schemaName: "app",
+        objectName: "unrelated_b",
       },
     ],
     schemaUsages: [
@@ -404,6 +485,27 @@ function seedIndexedProject(store: ProjectStore): void {
         usageKind: "call",
         line: 4,
         excerpt: "supabase.rpc('get_user')",
+      },
+      {
+        objectKey: "app.tenant_config",
+        filePath: "supabase/migrations/foundation.sql",
+        usageKind: "definition",
+        line: 1,
+        excerpt: "create table app.tenant_config",
+      },
+      {
+        objectKey: "app.unrelated_a",
+        filePath: "supabase/migrations/foundation.sql",
+        usageKind: "definition",
+        line: 2,
+        excerpt: "create table app.unrelated_a",
+      },
+      {
+        objectKey: "app.unrelated_b",
+        filePath: "supabase/migrations/foundation.sql",
+        usageKind: "definition",
+        line: 3,
+        excerpt: "create table app.unrelated_b",
       },
     ],
   });

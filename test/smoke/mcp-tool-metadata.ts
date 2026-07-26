@@ -3,7 +3,6 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
-import { MAKO_TOOL_NAMES } from "../../packages/contracts/src/tool-registry.js";
 import { COMPACT_MODEL_FACING_REGISTRY_TOOLS } from "../../packages/tools/src/tool-exposure.js";
 
 interface ToolDescriptor {
@@ -32,7 +31,10 @@ function childEnv(): Record<string, string> {
   return env;
 }
 
-async function listToolsForClient(clientName: string): Promise<ToolDescriptor[]> {
+async function listToolsForClient(
+  clientName: string,
+  activate: readonly string[] = [],
+): Promise<ToolDescriptor[]> {
   const client = new Client({ name: clientName, version: "1.0.0" });
   const transport = new StdioClientTransport({
     command: process.execPath,
@@ -44,6 +46,12 @@ async function listToolsForClient(clientName: string): Promise<ToolDescriptor[]>
 
   try {
     await client.connect(transport);
+    for (const toolName of activate) {
+      await client.callTool({
+        name: "tool_search",
+        arguments: { query: toolName, limit: 1 },
+      });
+    }
     const result = await client.listTools();
     return result.tools;
   } finally {
@@ -60,10 +68,20 @@ function outputSchemaHasHints(tool: ToolDescriptor): boolean {
 }
 
 async function main(): Promise<void> {
-  const expectedMakoTools = [...MAKO_TOOL_NAMES, "tool_search"];
+  const activatedSpecialists = ["repo_map", "db_ping", "finding_ack"];
+  const expectedMakoTools = [
+    "tool_search",
+    ...COMPACT_MODEL_FACING_REGISTRY_TOOLS,
+    ...activatedSpecialists,
+  ];
 
-  const claudeTools = await listToolsForClient("claude-code");
+  const claudeTools = await listToolsForClient("claude-code", activatedSpecialists);
   const claudeByName = new Map(claudeTools.map((tool) => [tool.name, tool]));
+  assert.deepEqual(
+    [...claudeByName.keys()].sort(),
+    [...expectedMakoTools].sort(),
+    "Claude tools/list should contain the compact surface plus explicitly activated specialists",
+  );
   for (const name of expectedMakoTools) {
     const tool = claudeByName.get(name);
     assert.ok(tool, `Claude tools/list includes ${name}`);
@@ -89,7 +107,7 @@ async function main(): Promise<void> {
   assert.equal(claudeByName.get("finding_ack")?.annotations?.readOnlyHint, false);
   assert.equal(claudeByName.get("finding_ack")?.annotations?.idempotentHint, false);
 
-  const genericTools = await listToolsForClient("mako-generic-smoke");
+  const genericTools = await listToolsForClient("mako-generic-smoke", activatedSpecialists);
   for (const tool of genericTools) {
     const anthropicKeys = Object.keys(tool._meta ?? {}).filter((key) =>
       key.startsWith("anthropic/"),

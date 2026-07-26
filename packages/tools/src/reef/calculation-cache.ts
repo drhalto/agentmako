@@ -27,6 +27,34 @@ export interface ReefCachedCalculationResult<T> {
   };
 }
 
+/**
+ * Derived queries depend on both the maintained Reef snapshot and the live
+ * indexed code/schema snapshot. Using only materializedRevision leaves cached
+ * results stale after an explicit project reindex, because a reindex can
+ * replace routes, imports, and schema usages without advancing Reef itself.
+ */
+export function reefCalculationSourceRevision(
+  projectStore: ProjectStore,
+  projectId: string,
+  root: string,
+): number | undefined {
+  const analysis = projectStore.loadReefAnalysisState(projectId, root);
+  const indexRun = projectStore.getLatestIndexRun();
+  if (!analysis && !indexRun) {
+    return undefined;
+  }
+
+  const fingerprint = hashText(stableJson({
+    currentRevision: analysis?.currentRevision ?? null,
+    materializedRevision: analysis?.materializedRevision ?? null,
+    indexRunId: indexRun?.runId ?? null,
+    indexRunStatus: indexRun?.status ?? null,
+    indexRunFinishedAt: indexRun?.finishedAt ?? null,
+  }));
+  // Thirteen hex digits fit exactly inside JavaScript's safe integer range.
+  return Number.parseInt(fingerprint.slice(0, 13), 16);
+}
+
 export function runCachedReefCalculation<T>(
   input: ReefCachedCalculationInput<T>,
 ): ReefCachedCalculationResult<T> {

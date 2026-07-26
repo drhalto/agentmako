@@ -90,7 +90,7 @@ async function main(): Promise<void> {
     assert.equal(result.queryPlan.mode, "plan");
     assert.equal(result.evidence.mode, "compact");
     assert.equal(result.limits.evidenceMode, "compact");
-    assert.equal(result.limits.maxEvidenceItemsPerSection, 40);
+    assert.equal(result.limits.maxEvidenceItemsPerSection, 10);
     assert.ok(Array.isArray(result.queryPlan.assumptions));
     assert.equal(result.evidence.sections.primaryContext.total, result.evidence.primaryContext.length);
     assert.ok(result.queryPlan.evidenceLanes.includes("codebase"));
@@ -99,6 +99,19 @@ async function main(): Promise<void> {
     assert.ok(result.queryPlan.evidenceLanes.includes("conventions"));
     assert.ok(result.queryPlan.evidenceLanes.includes("operations"));
     assert.ok(result.evidence.primaryContext.length > 0);
+    const compactContextPaths = [
+      ...result.evidence.primaryContext,
+      ...result.evidence.relatedContext,
+    ].flatMap((candidate) => candidate.path ? [candidate.path] : []);
+    assert.equal(
+      new Set(compactContextPaths).size,
+      compactContextPaths.length,
+      "compact reef_ask evidence should not spend multiple slots on the same file path",
+    );
+    assert.ok(
+      JSON.stringify(result).length < 100_000,
+      "compact reef_ask output should stay below a bounded agent-context payload",
+    );
     assert.ok(result.evidence.databaseObjects.some((object) =>
       object.schemaName === "public" &&
       object.objectName === "user_profiles"
@@ -232,10 +245,10 @@ async function main(): Promise<void> {
       source.source === "lint_files" &&
       source.status === "fresh"
     ));
-    assert.ok(diagnosticSummary.recentRuns.some((run) =>
-      run.source === "lint_files" &&
-      run.status === "succeeded"
-    ));
+    assert.deepEqual(diagnosticSummary.recentRuns, []);
+    assert.deepEqual(diagnosticSummary.changedFiles, []);
+    assert.deepEqual(diagnosticSummary.openLoops, []);
+    assert.equal(diagnosticSummary.truncated, true);
     assert.ok(result.answer.decisionTrace!.entries.some((entry) =>
       entry.lane === "context_compile" &&
       entry.status === "included" &&
@@ -266,9 +279,13 @@ async function main(): Promise<void> {
       entry.status === "included" &&
       entry.evidenceCount > 0
     ));
-    const featureFlowSummary = result.answer.featureFlowSummary;
+    assert.equal(
+      result.answer.featureFlowSummary,
+      undefined,
+      "compact reef_ask output should not duplicate feature flow in both answer and evidence",
+    );
+    const featureFlowSummary = result.evidence.featureFlow;
     assert.ok(featureFlowSummary);
-    assert.ok(result.evidence.featureFlow);
     assert.ok(featureFlowSummary.files.some((file) =>
       file.filePath === "lib/auth/session.ts" &&
       file.role === "backend"
@@ -355,6 +372,54 @@ async function main(): Promise<void> {
     });
     assert.equal(databaseObjectPlan.databaseObject?.objectName, "user_profiles");
     assert.equal(databaseObjectPlan.tableNeighborhood?.tableName, "user_profiles");
+
+    const focusedProsePlan = planReefQuery({
+      projectId,
+      question: "Trace why a focused auth/role query can expand to hundreds of files and database objects.",
+      mode: "plan",
+      focusFiles: ["packages/tools/src/reef/query-engine.ts"],
+      includeVerification: false,
+    });
+    assert.equal(
+      focusedProsePlan.databaseObject,
+      undefined,
+      "generic database prose must not promote an unrelated underscored symbol into a table target",
+    );
+    assert.equal(
+      focusedProsePlan.tableNeighborhood,
+      undefined,
+      "generic database prose must not schedule a table neighborhood",
+    );
+    assert.equal(
+      focusedProsePlan.routeContext,
+      undefined,
+      "a prose fragment such as auth/role is not an application route",
+    );
+    assert.deepEqual(
+      focusedProsePlan.featureFlow?.textSeeds,
+      [],
+      "explicit structural focus should suppress global prose seeds",
+    );
+
+    const broadDatabaseCategoryPlan = planReefQuery({
+      projectId,
+      question: "What files, role sources, route boundaries, and database objects matter if I change tenant-scoped dashboard role checks?",
+      mode: "plan",
+      includeVerification: false,
+    });
+    assert.equal(
+      broadDatabaseCategoryPlan.databaseObject,
+      undefined,
+      "a broad database category should not turn the following verb into a table target",
+    );
+    assert.equal(broadDatabaseCategoryPlan.tableNeighborhood, undefined);
+
+    const explicitRoutePlan = planReefQuery({
+      projectId,
+      question: "Trace GET /api/admin/users/roles before changing its guard.",
+      includeVerification: false,
+    });
+    assert.equal(explicitRoutePlan.routeContext?.route, "GET /api/admin/users/roles");
 
     const rpcObjectPlan = planReefQuery({
       projectId,
@@ -658,10 +723,8 @@ async function main(): Promise<void> {
     const findingsSummary = durableFindings.answer.findingsSummary;
     assert.ok(findingsSummary);
     assert.equal(findingsSummary.bySeverity.warning, 1);
-    assert.ok(findingsSummary.items.some((finding) =>
-      finding.ruleId === "auth.session_profile_rule" &&
-      finding.filePath === "lib/auth/session.ts"
-    ));
+    assert.deepEqual(findingsSummary.items, []);
+    assert.equal(findingsSummary.truncated, true);
     assert.ok(durableFindings.queryPlan.engineSteps!.some((step) =>
       step.name === "project_findings" &&
       step.status === "included" &&

@@ -49,12 +49,68 @@ const STOP_WORDS = new Set([
   "bug",
   "fix",
   "understand",
+  "file",
+  "files",
+  "source",
+  "sources",
+  "route",
+  "routes",
+  "boundary",
+  "boundaries",
+  "database",
+  "databases",
+  "db",
+  "object",
+  "objects",
+  "matter",
+  "matters",
+  "change",
+  "changes",
+  "changing",
+  "check",
+  "checks",
+  "identify",
+  "concrete",
+  "risk",
+  "risks",
+  "should",
+  "verify",
+  "editing",
+  "edit",
+  "scoped",
 ]);
 
 const FILE_TOKEN = /(?:[A-Za-z]:)?(?:[\w.-]+[\\/])+[\w.[\]()-]+\.(?:tsx|ts|jsx|js|mjs|cjs|sql|md|json|scss|css|html|py|rs|go)/g;
 const ROUTE_TOKEN = /(?:^|\s)(\/[A-Za-z0-9_./:{}[\]-]+)/g;
 const IDENTIFIER = /\b[A-Za-z_$][A-Za-z0-9_$]{2,}\b/g;
-const DB_IDENTIFIER = /\b(?:[a-z][a-z0-9]*_+[a-z0-9_]+|[a-z][a-z0-9]*\.[a-z][a-z0-9_]+)\b/g;
+const DB_QUALIFIED_IDENTIFIER = /\b(?<schema>[a-z][a-z0-9_]*)\.(?<object>[a-z][a-z0-9_]*)\b/g;
+const DB_DIRECT_CUE = /\b(?:database\s+object|db\s+object|table|relation|schema\s+object|rpc|function|procedure|index|foreign\s+key|fk|policy|trigger|cron|scheduled\s+job|job)\s+(?:named\s+|called\s+)?(?<object>[a-z][a-z0-9_]*)\b/gi;
+const DB_RELATION_CUE = /\b(?:database\s+objects?|db\s+objects?|tables?|relations?|schemas?|rpcs?|functions?|procedures?|columns?|indexes?|foreign\s+keys?|fks?|rls|polic(?:y|ies)|triggers?|crons?|scheduled\s+jobs?|jobs?)\b[^?\r\n]{0,120}?\b(?:on|for|of)\s+(?<object>[a-z][a-z0-9_]*)\b/gi;
+const FILE_EXTENSION_OBJECTS = new Set(["ts", "tsx", "js", "jsx", "mjs", "cjs", "json", "md", "sql", "yml", "yaml", "css", "scss", "html", "py", "rs", "go"]);
+const GENERIC_DATABASE_TARGETS = new Set([
+  "the",
+  "a",
+  "an",
+  "and",
+  "or",
+  "this",
+  "that",
+  "all",
+  "every",
+  "which",
+  "what",
+  "matter",
+  "matters",
+  "change",
+  "changes",
+  "affect",
+  "affects",
+  "used",
+  "usage",
+  "design",
+  "behavior",
+  "implementation",
+]);
 
 const FAMILY_KEYWORDS: Record<ContextPacketIntentFamily, string[]> = {
   debug_route: ["route", "api", "endpoint", "callback", "handler", "page", "server action"],
@@ -153,8 +209,18 @@ function extractSymbols(request: string, input: ContextPacketToolInput): string[
 
 function extractDatabaseObjects(request: string, input: ContextPacketToolInput): string[] {
   const objects = new Set<string>(input.focusDatabaseObjects ?? []);
-  for (const match of request.matchAll(DB_IDENTIFIER)) {
-    objects.add(match[0]);
+  for (const match of request.matchAll(DB_QUALIFIED_IDENTIFIER)) {
+    const schema = match.groups?.schema;
+    const object = match.groups?.object;
+    if (!schema || !object || FILE_EXTENSION_OBJECTS.has(object)) continue;
+    objects.add(`${schema}.${object}`);
+  }
+  for (const pattern of [DB_DIRECT_CUE, DB_RELATION_CUE]) {
+    for (const match of request.matchAll(pattern)) {
+      const object = match.groups?.object;
+      if (!object || GENERIC_DATABASE_TARGETS.has(object.toLowerCase())) continue;
+      objects.add(object);
+    }
   }
   return unique(objects).slice(0, 60);
 }

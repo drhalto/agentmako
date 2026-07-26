@@ -13,6 +13,7 @@ import {
   registerToolDefinition,
   unregisterToolDefinition,
 } from "../../packages/tools/src/index.ts";
+import { COMPACT_MODEL_FACING_REGISTRY_TOOLS } from "../../packages/tools/src/tool-exposure.ts";
 import { computeVerificationDiff, diffHasAnyDifference } from "../../services/indexer/src/db-binding/verify.ts";
 import { fetchLiveSchemaIR } from "../../services/indexer/src/db-binding/live-catalog.ts";
 import { fetchPingInfo, withReadOnlyConnection } from "../../extensions/postgres/src/index.ts";
@@ -4541,19 +4542,38 @@ CREATE TABLE public.sessions (id uuid PRIMARY KEY);
 
     await mcpClient.connect(mcpTransport);
     const mcpTools = await mcpClient.listTools();
-    assert.ok(
-      mcpTools.tools.some((tool) => tool.name === "symbols_of" && tool.outputSchema != null),
-      "expected symbols_of tool in MCP tools/list output",
-    );
-    assert.ok(
-      mcpTools.tools.some((tool) => tool.name === "ask" && tool.outputSchema != null),
-      "expected ask in MCP tools/list output",
+    assert.deepEqual(
+      mcpTools.tools.map((tool) => tool.name).sort(),
+      ["tool_search", ...COMPACT_MODEL_FACING_REGISTRY_TOOLS].sort(),
+      "expected MCP tools/list to start with the compact agent-facing surface",
     );
     assert.ok(
       mcpTools.tools.some((tool) => tool.name === "tool_search" && tool.outputSchema != null),
       "expected tool_search in MCP tools/list output",
     );
-    const authPathTool = mcpTools.tools.find((tool) => tool.name === "auth_path");
+    for (const specialist of [
+      "symbols_of",
+      "auth_path",
+      "db_ping",
+      "db_columns",
+      "db_fk",
+      "db_rls",
+      "db_rpc",
+      "db_table_schema",
+    ]) {
+      const activation = await mcpClient.callTool({
+        name: "tool_search",
+        arguments: { query: specialist, limit: 1 },
+      });
+      assert.equal(activation.isError, undefined);
+      assert.equal(
+        (activation.structuredContent as { results: Array<{ name: string; availability: string }> })
+          .results[0]?.name,
+        specialist,
+      );
+    }
+    const activatedMcpTools = await mcpClient.listTools();
+    const authPathTool = activatedMcpTools.tools.find((tool) => tool.name === "auth_path");
     assert.ok(authPathTool != null, "expected auth_path in MCP tools/list output");
     const authPathProperties = (
       authPathTool.inputSchema as { properties?: Record<string, unknown> } | undefined
@@ -4562,21 +4582,18 @@ CREATE TABLE public.sessions (id uuid PRIMARY KEY);
     assert.ok(authPathProperties?.file != null, "expected auth_path MCP schema to expose file");
     assert.ok(authPathProperties?.feature != null, "expected auth_path MCP schema to expose feature");
 
-    // Phase 3: verify all 6 DB tools are exposed in the MCP tool manifest with outputSchema.
+    // Phase 3: verify all 6 DB tools can be activated into the MCP manifest.
     for (const dbToolName of ["db_ping", "db_columns", "db_fk", "db_rls", "db_rpc", "db_table_schema"]) {
       assert.ok(
-        mcpTools.tools.some((tool) => tool.name === dbToolName && tool.outputSchema != null),
+        activatedMcpTools.tools.some((tool) => tool.name === dbToolName && tool.outputSchema != null),
         `expected ${dbToolName} in MCP tools/list output with outputSchema`,
       );
     }
     for (const actionToolName of ["file_write", "file_edit", "create_file", "delete_file", "apply_patch", "shell_run"]) {
-      assert.ok(
-        mcpTools.tools.some(
-          (tool) =>
-            tool.name === actionToolName &&
-            (tool._meta as { requiresApproval?: boolean } | undefined)?.requiresApproval === true,
-        ),
-        `expected ${actionToolName} in MCP tools/list output with _meta.requiresApproval=true`,
+      assert.equal(
+        activatedMcpTools.tools.some((tool) => tool.name === actionToolName),
+        false,
+        `harness-only action ${actionToolName} must not pollute MCP tools/list`,
       );
     }
 
@@ -4624,23 +4641,10 @@ CREATE TABLE public.sessions (id uuid PRIMARY KEY);
       }>;
     };
     assert.equal(mcpToolSearchData.query, "ask auth file_write");
-    assert.ok(
-      mcpToolSearchData.results.some(
-        (result) =>
-          result.name === "ask" &&
-          result.family === "registry" &&
-          result.availability === "immediate",
-      ),
-      "expected tool_search to surface the MCP-visible ask tool",
-    );
-    assert.ok(
-      mcpToolSearchData.results.some(
-        (result) =>
-          result.name === "file_write" &&
-          result.family === "action" &&
-          result.availability === "blocked",
-      ),
-      "expected tool_search to surface blocked action tools for MCP callers",
+    assert.equal(
+      mcpToolSearchData.results.some((result) => result.name === "ask" || result.name === "file_write"),
+      false,
+      "tool_search should hide superseded routers and unusable harness-only actions",
     );
 
     let currentRoots = [repoRoot];
@@ -4653,6 +4657,10 @@ CREATE TABLE public.sessions (id uuid PRIMARY KEY);
       roots: currentRoots.map((root, index) => ({ uri: pathToFileURL(root).href, name: `root-${index}` })),
     }));
     await mcpRootsClient.connect(mcpRootsTransport);
+    await mcpRootsClient.callTool({
+      name: "tool_search",
+      arguments: { query: "symbols_of", limit: 1 },
+    });
     const mcpRootsResult = await mcpRootsClient.callTool({
       name: "symbols_of",
       arguments: {
@@ -4684,6 +4692,10 @@ CREATE TABLE public.sessions (id uuid PRIMARY KEY);
     const mcpCwdClient = new Client({ name: "mako-smoke-cwd", version: "0.1.0" });
     const mcpCwdTransport = new StreamableHTTPClientTransport(new URL(`${baseUrl}/mcp`));
     await mcpCwdClient.connect(mcpCwdTransport);
+    await mcpCwdClient.callTool({
+      name: "tool_search",
+      arguments: { query: "symbols_of", limit: 1 },
+    });
     const mcpCwdResult = await mcpCwdClient.callTool({
       name: "symbols_of",
       arguments: {
@@ -5314,6 +5326,12 @@ CREATE TABLE public.sessions (id uuid PRIMARY KEY);
         );
 
         await dbMcpClient.connect(dbMcpTransport);
+        for (const specialist of ["db_ping", "db_rpc"]) {
+          await dbMcpClient.callTool({
+            name: "tool_search",
+            arguments: { query: specialist, limit: 1 },
+          });
+        }
 
         const dbPingOk = await fetchJson(`${dbBaseUrl}/api/v1/tools/db_ping`, {
           method: "POST",

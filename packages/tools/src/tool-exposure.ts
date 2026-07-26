@@ -12,6 +12,7 @@ export type ToolExposure = "immediate" | "deferred" | "blocked";
 export type ToolExposureReason =
   | "router_tool_hidden_from_model_surface"
   | "specialist_tool_deferred_from_compact_surface"
+  | "internal_or_superseded_tool_hidden_from_model_surface"
   | "requires_project_db_binding";
 export type ToolSearchFamily =
   | "registry"
@@ -74,6 +75,30 @@ export const COMPACT_MODEL_FACING_REGISTRY_TOOLS = [
 
 const COMPACT_MODEL_FACING_REGISTRY_TOOL_SET = new Set<ToolName>(
   COMPACT_MODEL_FACING_REGISTRY_TOOLS,
+);
+
+// These remain callable through the programmatic API for compatibility, but
+// they should not consume model context or appear in discovery. Each is either
+// internal telemetry/orchestration or has a maintained model-facing successor.
+export const NON_MODEL_FACING_REGISTRY_TOOLS = [
+  "ask",
+  "suggest",
+  "investigate",
+  "workflow_packet",
+  "task_preflight_artifact",
+  "implementation_handoff_artifact",
+  "review_bundle_artifact",
+  "verification_bundle_artifact",
+  "runtime_telemetry_report",
+  "agent_feedback",
+  "agent_feedback_report",
+  "reef_diff_impact",
+  "reef_agent_status",
+  "reef_known_issues",
+] as const satisfies readonly ToolName[];
+
+const NON_MODEL_FACING_REGISTRY_TOOL_SET = new Set<ToolName>(
+  NON_MODEL_FACING_REGISTRY_TOOLS,
 );
 
 function inferRegistryToolCapabilities(
@@ -152,15 +177,21 @@ export function formatToolExposureReason(reason?: ToolExposureReason): string | 
 export function buildRegistryToolSearchCatalog(
   plan: RegistryToolExposurePlan,
 ): ToolSearchCatalogEntry[] {
-  return plan.items.map((item) => ({
-    name: item.summary.name,
-    description: item.summary.description,
-    searchHint: item.summary.searchHint,
-    category: item.summary.category,
-    family: "registry",
-    availability: item.exposure,
-    reason: formatToolExposureReason(item.reason),
-  }));
+  return plan.items
+    .filter(
+      (item) =>
+        item.reason !== "internal_or_superseded_tool_hidden_from_model_surface"
+        && item.reason !== "router_tool_hidden_from_model_surface",
+    )
+    .map((item) => ({
+      name: item.summary.name,
+      description: item.summary.description,
+      searchHint: item.summary.searchHint,
+      category: item.summary.category,
+      family: "registry",
+      availability: item.exposure,
+      reason: formatToolExposureReason(item.reason),
+    }));
 }
 
 export function buildRegistryToolExposurePlan(
@@ -187,11 +218,19 @@ export function buildRegistryToolExposurePlan(
     let exposure: ToolExposure = "immediate";
     let reason: ToolExposureReason | undefined;
 
-    if (capabilities.requiresDbBinding && !hasDbBinding) {
+    if (
+      options.surface !== "api" &&
+      NON_MODEL_FACING_REGISTRY_TOOL_SET.has(definition.name)
+    ) {
+      exposure = "blocked";
+      reason = definition.name === "ask"
+        ? "router_tool_hidden_from_model_surface"
+        : "internal_or_superseded_tool_hidden_from_model_surface";
+    } else if (capabilities.requiresDbBinding && !hasDbBinding) {
       exposure = "blocked";
       reason = "requires_project_db_binding";
     } else if (
-      options.surface === "harness"
+      (options.surface === "harness" || options.surface === "mcp")
       && capabilities.deferEligible
       && !COMPACT_MODEL_FACING_REGISTRY_TOOL_SET.has(definition.name)
     ) {

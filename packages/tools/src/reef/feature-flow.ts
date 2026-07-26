@@ -38,6 +38,7 @@ export interface ReefFeatureFlowCalculationInput {
   >;
   projectId: string;
   fileSeeds: string[];
+  contextFileSeeds?: string[];
   routeSeeds: string[];
   databaseObjectSeeds: string[];
   symbolSeeds: string[];
@@ -81,6 +82,7 @@ const DEFAULT_LIMIT = 24;
 const MAX_LIMIT = 80;
 const FINDING_LIMIT = 500;
 const DB_FACT_SCAN_LIMIT = 3000;
+const TEXT_SEED_MATCH_LIMIT = 8;
 const DATABASE_FACT_KINDS = [
   "db_table",
   "db_column",
@@ -138,6 +140,11 @@ export function calculateReefFeatureFlow(
   for (const fileSeed of unique(input.fileSeeds.map(normalizePath))) {
     seedKinds.add("file");
     addFileScore(fileSeed, 120, "explicit file focus", true);
+  }
+
+  for (const fileSeed of unique((input.contextFileSeeds ?? []).map(normalizePath))) {
+    seedKinds.add("ranked_context");
+    addFileScore(fileSeed, 72, "ranked primary context");
   }
 
   for (const routeSeed of unique(input.routeSeeds)) {
@@ -200,23 +207,30 @@ export function calculateReefFeatureFlow(
 
   for (const term of unique(input.textSeeds.map((value) => value.toLowerCase()).filter((value) => value.length >= 3))) {
     seedKinds.add("text");
-    for (const file of files) {
-      if (file.path.toLowerCase().includes(term)) {
-        addFileScore(file.path, 28, `path matches query term ${term}`);
-      }
+    const matchedFiles = files
+      .filter((file) => file.path.toLowerCase().includes(term))
+      .sort((left, right) => left.path.localeCompare(right.path));
+    if (matchedFiles.length > TEXT_SEED_MATCH_LIMIT) {
+      warnings.push(
+        `Feature flow capped broad path matches for ${JSON.stringify(term)} at ${TEXT_SEED_MATCH_LIMIT} of ${matchedFiles.length} file(s).`,
+      );
     }
-    for (const route of routes) {
-      if (routeText(route).toLowerCase().includes(term)) {
-        addFileScore(route.filePath, 28, `route matches query term ${term}`);
-      }
+    for (const file of matchedFiles.slice(0, TEXT_SEED_MATCH_LIMIT)) {
+      addFileScore(file.path, 28, `path matches query term ${term}`);
     }
-    for (const object of schemaObjects) {
-      if (schemaObjectText(object).toLowerCase().includes(term)) {
-        for (const usage of input.projectStore.listSchemaUsages(object.objectId)) {
-          addFileScore(usage.filePath, 26, `database object matches query term ${term}`);
-        }
-      }
+
+    const matchedRoutes = routes
+      .filter((route) => routeText(route).toLowerCase().includes(term))
+      .sort((left, right) => routeLabel(left).localeCompare(routeLabel(right)));
+    if (matchedRoutes.length > TEXT_SEED_MATCH_LIMIT) {
+      warnings.push(
+        `Feature flow capped broad route matches for ${JSON.stringify(term)} at ${TEXT_SEED_MATCH_LIMIT} of ${matchedRoutes.length} route(s).`,
+      );
     }
+    for (const route of matchedRoutes.slice(0, TEXT_SEED_MATCH_LIMIT)) {
+      addFileScore(route.filePath, 28, `route matches query term ${term}`);
+    }
+
   }
 
   expandImportNeighborhood({
@@ -236,8 +250,11 @@ export function calculateReefFeatureFlow(
   const returnedFileScores = allScoredFiles.slice(0, limit);
   const returnedFileSet = new Set(returnedFileScores.map((score) => normalizePath(score.file.path)));
   const includedSchemaUsages = schemaUsageEntries.filter((entry) =>
-    returnedFileSet.has(normalizePath(entry.usage.filePath)) ||
-    databaseSeeds.some((seed) => schemaObjectMatchesSeed(entry.object, seed))
+    databaseSeeds.some((seed) => schemaObjectMatchesSeed(entry.object, seed)) ||
+    (
+      returnedFileSet.has(normalizePath(entry.usage.filePath)) &&
+      entry.usage.usageKind.toLowerCase() !== "definition"
+    )
   );
   const includedTables = collectIncludedTables(includedSchemaUsages, databaseSeeds, dbFacts);
   const includedRpcs = collectIncludedRpcs(includedSchemaUsages, databaseSeeds, dbFacts);
@@ -291,6 +308,7 @@ export function calculateReefFeatureFlow(
   return {
     seedCount: unique([
       ...input.fileSeeds,
+      ...(input.contextFileSeeds ?? []),
       ...input.routeSeeds,
       ...input.databaseObjectSeeds,
       ...input.symbolSeeds,
@@ -1017,16 +1035,6 @@ function routeText(route: ResolvedRouteRecord): string {
     route.method ?? "",
     route.handlerName ?? "",
     route.filePath,
-  ].join(" ");
-}
-
-function schemaObjectText(object: ResolvedSchemaObjectRecord): string {
-  return [
-    object.objectType,
-    object.schemaName,
-    object.objectName,
-    object.parentObjectName ?? "",
-    object.dataType ?? "",
   ].join(" ");
 }
 

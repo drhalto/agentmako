@@ -780,6 +780,16 @@ export function collectSchemaUsages(
         continue;
       }
 
+      // In TS/JS, a bare object-name match is not database evidence. Common
+      // identifiers such as `message`, `user`, or `role` occur in response
+      // payloads and local variables constantly. Treating those tokens as
+      // schema usage creates false DB edges and can connect an unrelated
+      // subsystem to every matching table. Runtime TS/JS usage must come
+      // from a structured `.from("...")` or `.rpc("...")` call.
+      if (isTsJsLanguage(file.language)) {
+        continue;
+      }
+
       const match = usageRegex.exec(content);
       if (!match) {
         continue;

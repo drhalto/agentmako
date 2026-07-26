@@ -16,7 +16,10 @@ import type { FileImportLink, ProjectStore, SymbolRecord } from "@mako-ai/store"
 import { normalizeFileQuery, withProjectContext } from "../entity-resolver.js";
 import type { ToolServiceOptions } from "../runtime.js";
 import { collectProjectConventions } from "./conventions.js";
-import { runCachedReefCalculation } from "./calculation-cache.js";
+import {
+  reefCalculationSourceRevision,
+  runCachedReefCalculation,
+} from "./calculation-cache.js";
 import { REEF_IMPACT_NODE, REEF_IMPACT_QUERY_KIND } from "./calculation-nodes.js";
 import { applicableConventionsForFile } from "./file-preflight.js";
 import { stringDataValue } from "./shared.js";
@@ -59,10 +62,11 @@ export async function reefDiffImpactTool(
     const maxConventions = input.maxConventions ?? DEFAULT_MAX_CONVENTIONS;
     const freshnessPolicy = input.freshnessPolicy ?? "allow_stale_labeled";
     const filePaths = uniqueSorted(input.filePaths.map((filePath) => normalizeFileQuery(project.canonicalPath, filePath)));
-    const sourceRevision = projectStore.loadReefAnalysisState(
+    const sourceRevision = reefCalculationSourceRevision(
+      projectStore,
       project.projectId,
       project.canonicalPath,
-    )?.materializedRevision;
+    );
     const calculationInput: JsonObject = {
       filePaths,
       depth,

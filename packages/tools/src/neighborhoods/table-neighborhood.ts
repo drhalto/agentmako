@@ -5,7 +5,10 @@ import type {
   TableNeighborhoodToolOutput,
 } from "@mako-ai/contracts";
 import { withProjectContext, type ToolServiceOptions } from "../runtime.js";
-import { runCachedReefCalculation } from "../reef/calculation-cache.js";
+import {
+  reefCalculationSourceRevision,
+  runCachedReefCalculation,
+} from "../reef/calculation-cache.js";
 import { REEF_TABLE_NEIGHBORHOOD_NODE, REEF_TABLE_NEIGHBORHOOD_QUERY_KIND } from "../reef/calculation-nodes.js";
 import {
   appendTruncationWarning,
@@ -43,10 +46,11 @@ export async function tableNeighborhoodTool(
   const max = normalizeMaxPerSection(input.maxPerSection);
 
   return withProjectContext(input, options, async ({ project, projectStore }) => {
-    const sourceRevision = projectStore.loadReefAnalysisState(
+    const sourceRevision = reefCalculationSourceRevision(
+      projectStore,
       project.projectId,
       project.canonicalPath,
-    )?.materializedRevision;
+    );
     const calculationInput: JsonObject = {
       tableName: input.tableName,
       maxPerSection: max,

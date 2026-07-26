@@ -161,7 +161,9 @@ function compactReefAskSummary(value: JsonObject): JsonObject | undefined {
   const findingsSummary = jsonRecord(answer?.findingsSummary);
   const literalMatchesSummary = jsonRecord(answer?.literalMatchesSummary);
   const whereUsedSummary = jsonRecord(answer?.whereUsedSummary);
-  const featureFlowSummary = jsonRecord(answer?.featureFlowSummary);
+  const featureFlowSummary =
+    jsonRecord(answer?.featureFlowSummary) ??
+    jsonRecord(evidence?.featureFlow);
 
   const summary: JsonObject = {
     toolName: "reef_ask",

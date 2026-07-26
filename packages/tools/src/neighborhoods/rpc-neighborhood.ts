@@ -5,7 +5,10 @@ import type {
   RpcNeighborhoodToolOutput,
 } from "@mako-ai/contracts";
 import { withProjectContext, type ToolServiceOptions } from "../runtime.js";
-import { runCachedReefCalculation } from "../reef/calculation-cache.js";
+import {
+  reefCalculationSourceRevision,
+  runCachedReefCalculation,
+} from "../reef/calculation-cache.js";
 import { REEF_RPC_NEIGHBORHOOD_NODE, REEF_RPC_NEIGHBORHOOD_QUERY_KIND } from "../reef/calculation-nodes.js";
 import {
   appendTruncationWarning,
@@ -42,10 +45,11 @@ export async function rpcNeighborhoodTool(
   const max = normalizeMaxPerSection(input.maxPerSection);
 
   return withProjectContext(input, options, async ({ project, projectStore }) => {
-    const sourceRevision = projectStore.loadReefAnalysisState(
+    const sourceRevision = reefCalculationSourceRevision(
+      projectStore,
       project.projectId,
       project.canonicalPath,
-    )?.materializedRevision;
+    );
     const calculationInput: JsonObject = {
       rpcName: input.rpcName,
       maxPerSection: max,

@@ -6,7 +6,10 @@ import type {
 } from "@mako-ai/contracts";
 import type { ProjectStore } from "@mako-ai/store";
 import { collectExactRouteCandidates, withProjectContext, type ToolServiceOptions } from "../runtime.js";
-import { runCachedReefCalculation } from "../reef/calculation-cache.js";
+import {
+  reefCalculationSourceRevision,
+  runCachedReefCalculation,
+} from "../reef/calculation-cache.js";
 import { REEF_ROUTE_CONTEXT_NODE, REEF_ROUTE_CONTEXT_QUERY_KIND } from "../reef/calculation-nodes.js";
 import { buildReefToolExecution } from "../reef/tool-execution.js";
 import {
@@ -50,10 +53,11 @@ export async function routeContextTool(
   const max = normalizeMaxPerSection(input.maxPerSection);
 
   return withProjectContext(input, options, async ({ project, projectStore }) => {
-    const sourceRevision = projectStore.loadReefAnalysisState(
+    const sourceRevision = reefCalculationSourceRevision(
+      projectStore,
       project.projectId,
       project.canonicalPath,
-    )?.materializedRevision;
+    );
     const calculationInput: JsonObject = {
       route: input.route,
       maxPerSection: max,

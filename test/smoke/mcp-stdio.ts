@@ -8,6 +8,7 @@ import path from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { stopReefDaemon } from "../../services/indexer/src/index.ts";
 import { normalizePath, openGlobalStore, openProjectStore } from "../../packages/store/src/index.ts";
+import { COMPACT_MODEL_FACING_REGISTRY_TOOLS } from "../../packages/tools/src/tool-exposure.ts";
 
 /**
  * Smoke test for `agentmako mcp` (stdio MCP transport).
@@ -16,8 +17,7 @@ import { normalizePath, openGlobalStore, openProjectStore } from "../../packages
  * per the MCP stdio spec (newline-delimited JSON), and verifies:
  *
  * 1. initialize handshake succeeds
- * 2. tools/list returns the expected tool surface (registry tools are
- *    present, including the new `runtime_telemetry_report` from 8.1c)
+ * 2. tools/list starts compact and tool_search activates specialist tools
  * 3. tools/call writes a requestId-visible tool_runs row over stdio
  * 4. the process exits cleanly on SIGTERM
  * 5. stdout carries only valid JSON-RPC (no stray console.log)
@@ -87,6 +87,14 @@ interface ToolBatchStructured {
   summary: {
     requestedOps: number;
   };
+}
+
+interface ToolSearchStructured {
+  query: string;
+  results: Array<{
+    name: string;
+    availability: "immediate" | "deferred" | "blocked";
+  }>;
 }
 
 interface McpStructuredToolError {
@@ -380,19 +388,34 @@ async function main(): Promise<void> {
     const toolsResult = await client.request<ToolsListResult>(2, "tools/list");
     const toolNames = toolsResult.tools.map((tool) => tool.name).sort();
     assert.ok(toolNames.length > 0, "tools/list must return at least one tool");
+    assert.deepEqual(
+      toolNames,
+      ["tool_search", ...COMPACT_MODEL_FACING_REGISTRY_TOOLS].sort(),
+      "MCP should initially expose only the compact agent surface",
+    );
 
-    // Core tools that must be discoverable over the stdio transport.
-    for (const expected of [
-      "runtime_telemetry_report",
-      "task_preflight_artifact",
-      "graph_neighbors",
-      "live_text_search",
-      "tool_search",
-    ]) {
-      assert.ok(
-        toolNames.includes(expected),
-        `tools/list must include ${expected}; got: ${toolNames.join(", ")}`,
-      );
+    const specialistTools = [
+      "project_index_status",
+      "ast_find_pattern",
+      "file_facts",
+      "recall_tool_runs",
+    ];
+    for (const [index, specialist] of specialistTools.entries()) {
+      const searchResult = await client.request<ToolCallResult>(200 + index, "tools/call", {
+        name: "tool_search",
+        arguments: {
+          query: specialist,
+          limit: 1,
+        },
+      });
+      const search = parseStructured<ToolSearchStructured>(searchResult);
+      assert.equal(search.results[0]?.name, specialist);
+      assert.equal(search.results[0]?.availability, "immediate");
+    }
+    const activatedToolsResult = await client.request<ToolsListResult>(210, "tools/list");
+    const activatedToolNames = new Set(activatedToolsResult.tools.map((tool) => tool.name));
+    for (const specialist of specialistTools) {
+      assert.ok(activatedToolNames.has(specialist), `tool_search should activate ${specialist}`);
     }
 
     const missingProjectResult = await client.request<ToolCallResult>(30, "tools/call", {

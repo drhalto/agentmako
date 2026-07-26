@@ -10,7 +10,10 @@ import type {
 } from "@mako-ai/contracts";
 import type { FileImportLink, FileSummaryRecord, ProjectStore, ResolvedRouteRecord, SymbolRecord } from "@mako-ai/store";
 import { withProjectContext, type ToolServiceOptions } from "../runtime.js";
-import { runCachedReefCalculation } from "./calculation-cache.js";
+import {
+  reefCalculationSourceRevision,
+  runCachedReefCalculation,
+} from "./calculation-cache.js";
 import { REEF_WHERE_USED_NODE, REEF_WHERE_USED_QUERY_KIND } from "./calculation-nodes.js";
 import {
   applyReefToolFreshnessPolicy,
@@ -42,10 +45,11 @@ export async function reefWhereUsedTool(
     const query = input.query.trim();
     const limit = input.limit ?? 50;
     const freshnessPolicy = defaultReefToolFreshnessPolicy(input.freshnessPolicy);
-    const sourceRevision = projectStore.loadReefAnalysisState(
+    const sourceRevision = reefCalculationSourceRevision(
+      projectStore,
       project.projectId,
       project.canonicalPath,
-    )?.materializedRevision;
+    );
     const calculationInput: JsonObject = {
       query,
       limit,

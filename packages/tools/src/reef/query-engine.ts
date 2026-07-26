@@ -24,6 +24,7 @@ import type {
   ReefAskPlannedCalculation,
   ReefAskWhereUsedSummary,
   ReefEvidenceGraph,
+  ReefOpenLoop,
   ReefStructuralTargetKind,
   ReefAskToolInput,
   ReefAskToolOutput,
@@ -58,7 +59,10 @@ import {
   REEF_WHERE_USED_NODE,
   REEF_WHERE_USED_QUERY_KIND,
 } from "./calculation-nodes.js";
-import { runCachedReefCalculation } from "./calculation-cache.js";
+import {
+  reefCalculationSourceRevision,
+  runCachedReefCalculation,
+} from "./calculation-cache.js";
 import {
   collectFocusedConventionGraphEvidence,
   type ReefConventionGraphEvidence,
@@ -89,11 +93,11 @@ import { buildReefToolExecution } from "./tool-execution.js";
 import { verificationStateTool } from "./verification.js";
 
 const DEFAULT_BUDGET_TOKENS = 5000;
-const DEFAULT_MAX_PRIMARY_CONTEXT = 10;
-const DEFAULT_MAX_RELATED_CONTEXT = 18;
-const DEFAULT_MAX_OPEN_LOOPS = 8;
+const DEFAULT_MAX_PRIMARY_CONTEXT = 6;
+const DEFAULT_MAX_RELATED_CONTEXT = 6;
+const DEFAULT_MAX_OPEN_LOOPS = 3;
 const DEFAULT_EVIDENCE_MODE: ReefAskEvidenceMode = "compact";
-const DEFAULT_MAX_EVIDENCE_ITEMS_PER_SECTION = 40;
+const DEFAULT_MAX_EVIDENCE_ITEMS_PER_SECTION = 10;
 const LIVE_TEXT_MAX_MATCHES = 80;
 const LIVE_TEXT_MAX_FILES = 40;
 const REEF_FACT_QUERY_LIMIT = 80;
@@ -114,7 +118,7 @@ const ANSWER_DIAGNOSTIC_LOOP_LIMIT = 10;
 const NEIGHBORHOOD_QUERY_MAX_PER_SECTION = 20;
 const ACTIVE_FINDING_STATUS_LIMIT = 500;
 const DUPLICATE_CANDIDATE_LIMIT = 20;
-const FEATURE_FLOW_LIMIT = 24;
+const FEATURE_FLOW_LIMIT = 8;
 const FEATURE_FLOW_IMPORT_DEPTH = 1;
 const FEATURE_FLOW_TEXT_SEED_LIMIT = 10;
 const DATABASE_OBJECT_FACT_KINDS = [
@@ -281,6 +285,12 @@ interface FeatureFlowEvidenceResult {
   featureFlow?: ReefAskFeatureFlowSummary;
   featureFlowWarnings?: string[];
 }
+
+interface GraphAndFeatureEvidenceResult
+  extends IndexedGraphEvidenceResult,
+    ConventionGraphEvidenceResult,
+    OperationalGraphEvidenceResult,
+    FeatureFlowEvidenceResult {}
 
 interface FindingCalculationEvidenceResult {
   activeFindingStatus?: ReefActiveFindingStatusOutput;
@@ -606,9 +616,9 @@ function inferReefFactQueries(question: string): ReefQueryEnginePlan["reefFactQu
 
 function inferProjectFindings(question: string): ReefQueryEnginePlan["projectFindings"] {
   const lower = question.toLowerCase();
-  if (/\b(findings?|known\s+issues?|issues?|risks?|bugs?|warnings?|errors?|audit|review|duplicates?|duplication|drift|bypass(?:es)?|violations?)\b/.test(lower)) {
+  if (/\b(findings?|known\s+issues?|issues?|bugs?|warnings?|errors?|audit|duplicates?|duplication|drift|bypass(?:es)?|violations?)\b/.test(lower)) {
     return {
-      reason: "The question asks for known findings, risks, drift, duplication, or audit evidence, so Reef can read durable project findings.",
+      reason: "The question explicitly asks for known findings, issues, drift, duplication, or audit evidence, so Reef can read durable project findings.",
       limit: PROJECT_FINDINGS_QUERY_LIMIT,
     };
   }
@@ -756,30 +766,42 @@ function parseDatabaseObjectRef(value: string): { schemaName?: string; objectNam
 
 function extractDatabaseObjectTarget(question: string): { schemaName?: string; objectName: string } | undefined {
   const qualified = question.match(/\b(?<schema>[A-Za-z_][A-Za-z0-9_]*)\.(?<object>[A-Za-z_][A-Za-z0-9_]*)\b/);
-  if (qualified?.groups?.object) {
+  const qualifiedSchema = qualified?.groups?.schema;
+  const qualifiedObject = qualified?.groups?.object;
+  if (
+    qualifiedSchema &&
+    qualifiedObject &&
+    !/^(?:ts|tsx|js|jsx|mjs|cjs|json|md|sql|yml|yaml)$/i.test(qualifiedObject)
+  ) {
     return {
-      schemaName: qualified.groups.schema,
-      objectName: qualified.groups.object,
+      schemaName: qualifiedSchema,
+      objectName: qualifiedObject,
     };
   }
 
-  const objectAfterCue = question.match(
-    /\b(?:table|relation|schema|rpcs?|functions?|procedures?|columns?|indexes?|foreign\s+keys?|fks?|rls|polic(?:y|ies)|triggers?|crons?|scheduled\s+jobs?|jobs?|on|for)\s+(?<object>[A-Za-z_][A-Za-z0-9_]*)\b/i,
+  const objectAfterDirectCue = question.match(
+    /\b(?:database\s+object|db\s+object|table|relation|schema\s+object|rpc|function|procedure|index|foreign\s+key|fk|policy|trigger|cron|scheduled\s+job|job)\s+(?:named\s+|called\s+)?(?<object>[A-Za-z_][A-Za-z0-9_]*)\b/i,
   )?.groups?.object;
-  if (objectAfterCue && !/^(?:the|a|an|and|or|this|that|all|every|which|what|in|table|schema|rpcs?|functions?|procedures?|columns?|indexes?|rls|polic(?:y|ies)|triggers?|crons?|scheduled|jobs?)$/i.test(objectAfterCue)) {
+  const objectAfterRelationCue = question.match(
+    /\b(?:database\s+objects?|db\s+objects?|table|relation|schema|rpcs?|functions?|procedures?|columns?|indexes?|foreign\s+keys?|fks?|rls|polic(?:y|ies)|triggers?|crons?|scheduled\s+jobs?|jobs?)\b[^?\r\n]{0,120}?\b(?:on|for)\s+(?<object>[A-Za-z_][A-Za-z0-9_]*)\b/i,
+  )?.groups?.object;
+  const objectAfterCue = [objectAfterDirectCue, objectAfterRelationCue].find((candidate) =>
+    candidate &&
+    !/^(?:the|a|an|and|or|this|that|all|every|which|what|in|table|schema|objects?|detail|details|rpcs?|functions?|procedures?|columns?|indexes?|rls|polic(?:y|ies)|triggers?|crons?|scheduled|jobs?|matter|matters|change|changes|affect|affects|used|usage|design|behavior|implementation)$/i.test(candidate)
+  );
+  if (objectAfterCue) {
     return { objectName: objectAfterCue };
   }
 
-  const underscoreToken = question.match(/\b(?<object>[A-Za-z][A-Za-z0-9]*_[A-Za-z0-9_]*)\b/)?.groups?.object;
-  return underscoreToken ? { objectName: underscoreToken } : undefined;
+  return undefined;
 }
 
 function inferDatabaseObject(input: ReefAskToolInput): ReefQueryEnginePlan["databaseObject"] {
   const focusObject = input.focusDatabaseObjects?.map(parseDatabaseObjectRef).find(Boolean);
-  if (focusObject && looksLikeDatabaseObjectQuestion(input.question)) {
+  if (focusObject) {
     return {
       ...focusObject,
-      reason: "The question asks for database object detail and supplies a focus database object.",
+      reason: "The caller supplied an explicit focus database object.",
       limit: DATABASE_OBJECT_FACT_SCAN_LIMIT,
     };
   }
@@ -830,7 +852,7 @@ function extractRouteTarget(question: string): string | undefined {
   }
   const methodPath = question.match(/\b(?:GET|POST|PUT|PATCH|DELETE)\s+\/[A-Za-z0-9_.\/:\[\]{}-]+/i)?.[0];
   if (methodPath) return methodPath;
-  const path = question.match(/\b\/(?:api\/)?[A-Za-z0-9_.\/:\[\]{}-]+\b/)?.[0];
+  const path = question.match(/(?:^|[\s("'`])(?<path>\/(?:api\/)?[A-Za-z0-9_.\/:\[\]{}-]+\b)/)?.groups?.path;
   return path;
 }
 
@@ -935,6 +957,8 @@ function inferFeatureFlow(
   whereUsed: ReefQueryEnginePlan["whereUsed"],
 ): ReefQueryEnginePlan["featureFlow"] {
   if (!looksLikeFeatureFlowQuestion(input)) return undefined;
+  const fileSeeds = unique([...(input.focusFiles ?? []), ...(input.changedFiles ?? [])]);
+  const routeSeeds = unique([...(input.focusRoutes ?? []), ...(routeContext ? [routeContext.route] : [])]);
   const databaseObjectSeeds = unique([
     ...(input.focusDatabaseObjects ?? []),
     ...(databaseObject
@@ -945,13 +969,20 @@ function inferFeatureFlow(
     ...(input.focusSymbols ?? []),
     ...(whereUsed && whereUsed.targetKind !== "file" && whereUsed.targetKind !== "route" ? [whereUsed.query] : []),
   ]);
+  const hasStructuralSeeds =
+    fileSeeds.length > 0 ||
+    routeSeeds.length > 0 ||
+    databaseObjectSeeds.length > 0 ||
+    symbolSeeds.length > 0;
   return {
     reason: "The question is action-oriented or focused, so Reef can calculate a bounded file-route-database-finding flow before the agent reads files.",
-    fileSeeds: unique([...(input.focusFiles ?? []), ...(input.changedFiles ?? [])]),
-    routeSeeds: unique([...(input.focusRoutes ?? []), ...(routeContext ? [routeContext.route] : [])]),
+    fileSeeds,
+    routeSeeds,
     databaseObjectSeeds,
     symbolSeeds,
-    textSeeds: extractFeatureFlowTextSeeds(input.question),
+    // Explicit structural anchors are already higher-quality than global prose
+    // matching. Mixing both made focused requests fan out to unrelated files.
+    textSeeds: hasStructuralSeeds ? [] : extractFeatureFlowTextSeeds(input.question),
     importDepth: FEATURE_FLOW_IMPORT_DEPTH,
     limit: FEATURE_FLOW_LIMIT,
   };
@@ -1244,7 +1275,10 @@ function emptyOpenLoopCounts(): ReefAskDiagnosticSummary["openLoopCounts"] {
   };
 }
 
-function compileDiagnosticSummary(evidence: ReefQueryEvidenceBundle): ReefAskDiagnosticSummary | undefined {
+function compileDiagnosticSummary(
+  evidence: ReefQueryEvidenceBundle,
+  compact: boolean,
+): ReefAskDiagnosticSummary | undefined {
   const verification = evidence.verification;
   const openLoops = evidence.openLoops;
   if (!verification && !openLoops) return undefined;
@@ -1326,6 +1360,16 @@ function compileDiagnosticSummary(evidence: ReefQueryEvidenceBundle): ReefAskDia
     reason: loop.reason,
   }));
 
+  const fullDetailTruncated = (verification?.sources.length ?? 0) > ANSWER_DIAGNOSTIC_SOURCE_LIMIT ||
+    (verification?.recentRuns.length ?? 0) > ANSWER_DIAGNOSTIC_RUN_LIMIT ||
+    (verification?.changedFiles.length ?? 0) > ANSWER_DIAGNOSTIC_FILE_LIMIT ||
+    (openLoops?.loops.length ?? 0) > ANSWER_DIAGNOSTIC_LOOP_LIMIT;
+  const compactDetailOmitted = compact && (
+    recentRuns.length > 0 ||
+    changedFiles.length > 0 ||
+    loopSummaries.length > 0
+  );
+
   return {
     gate,
     canClaimVerified: gate === "clear",
@@ -1335,18 +1379,17 @@ function compileDiagnosticSummary(evidence: ReefQueryEvidenceBundle): ReefAskDia
     changedFileCount,
     blockerCount,
     sources,
-    recentRuns,
-    changedFiles,
-    openLoops: loopSummaries,
-    suggestedActions: suggestedActions.slice(0, 10),
-    truncated: (verification?.sources.length ?? 0) > ANSWER_DIAGNOSTIC_SOURCE_LIMIT ||
-      (verification?.recentRuns.length ?? 0) > ANSWER_DIAGNOSTIC_RUN_LIMIT ||
-      (verification?.changedFiles.length ?? 0) > ANSWER_DIAGNOSTIC_FILE_LIMIT ||
-      (openLoops?.loops.length ?? 0) > ANSWER_DIAGNOSTIC_LOOP_LIMIT,
+    recentRuns: compact ? [] : recentRuns,
+    changedFiles: compact ? [] : changedFiles,
+    openLoops: compact ? [] : loopSummaries,
+    suggestedActions: suggestedActions.slice(0, compact ? 5 : 10),
+    truncated: fullDetailTruncated || compactDetailOmitted,
   };
 }
 
 const COMPACT_FINDING_MESSAGE_LIMIT = 220;
+const COMPACT_OPEN_LOOP_TEXT_LIMIT = 240;
+const COMPACT_OPEN_LOOP_ACTION_LIMIT = 2;
 
 // Findings can carry long rule prose (multi-sentence guidance) repeated verbatim
 // per occurrence. In compact mode the message is clipped to a lead snippet; the
@@ -1354,6 +1397,26 @@ const COMPACT_FINDING_MESSAGE_LIMIT = 220;
 function compactFindingMessage(message: string): string {
   if (message.length <= COMPACT_FINDING_MESSAGE_LIMIT) return message;
   return `${message.slice(0, COMPACT_FINDING_MESSAGE_LIMIT - 1).trimEnd()}…`;
+}
+
+function compactOpenLoopText(value: string): string {
+  if (value.length <= COMPACT_OPEN_LOOP_TEXT_LIMIT) return value;
+  return `${value.slice(0, COMPACT_OPEN_LOOP_TEXT_LIMIT - 1).trimEnd()}…`;
+}
+
+function compactOpenLoop(loop: ReefOpenLoop): ReefOpenLoop {
+  return {
+    id: loop.id,
+    kind: loop.kind,
+    severity: loop.severity,
+    title: compactOpenLoopText(loop.title),
+    ...(loop.filePath ? { filePath: loop.filePath } : {}),
+    source: loop.source,
+    reason: compactOpenLoopText(loop.reason),
+    suggestedActions: loop.suggestedActions
+      .slice(0, COMPACT_OPEN_LOOP_ACTION_LIMIT)
+      .map(compactOpenLoopText),
+  };
 }
 
 function compileFindingsSummary(findings: ProjectFinding[], compact: boolean): ReefAskFindingsSummary | undefined {
@@ -1379,18 +1442,23 @@ function compileFindingsSummary(findings: ProjectFinding[], compact: boolean): R
     bySeverity,
     bySource,
     staleCount: findings.filter((finding) => finding.freshness.state !== "fresh").length,
-    items: sorted.slice(0, ANSWER_FINDING_ITEM_LIMIT).map((finding) => ({
-      fingerprint: finding.fingerprint,
-      source: finding.source,
-      ...(finding.ruleId ? { ruleId: finding.ruleId } : {}),
-      severity: finding.severity,
-      status: finding.status,
-      ...(finding.filePath ? { filePath: finding.filePath } : {}),
-      ...(finding.line ? { line: finding.line } : {}),
-      message: compact ? compactFindingMessage(finding.message) : finding.message,
-      freshness: finding.freshness,
-    })),
-    truncated: findings.length > ANSWER_FINDING_ITEM_LIMIT,
+    // Compact evidence already carries the selected finding records. Keep this
+    // answer projection count-only so the same messages and freshness payloads
+    // are not serialized twice.
+    items: compact
+      ? []
+      : sorted.slice(0, ANSWER_FINDING_ITEM_LIMIT).map((finding) => ({
+          fingerprint: finding.fingerprint,
+          source: finding.source,
+          ...(finding.ruleId ? { ruleId: finding.ruleId } : {}),
+          severity: finding.severity,
+          status: finding.status,
+          ...(finding.filePath ? { filePath: finding.filePath } : {}),
+          ...(finding.line ? { line: finding.line } : {}),
+          message: finding.message,
+          freshness: finding.freshness,
+        })),
+    truncated: compact || findings.length > ANSWER_FINDING_ITEM_LIMIT,
   };
 }
 
@@ -1546,7 +1614,22 @@ function buildSummary(args: {
   whereUsed?: ReefWhereUsedToolOutput;
   featureFlow?: ReefAskFeatureFlowSummary;
 }, diagnosticSummary?: ReefAskDiagnosticSummary): string {
-  const totalContext = args.context.primaryContext.length + args.context.relatedContext.length;
+  const seenContextAnchors = new Set<string>();
+  const uniqueCandidates = (
+    candidates: ContextPacketResult["primaryContext"],
+  ): ContextPacketResult["primaryContext"] => candidates.filter((candidate) => {
+    const key = candidate.path ??
+      candidate.routeKey ??
+      candidate.databaseObjectName ??
+      candidate.symbolName ??
+      candidate.id;
+    if (seenContextAnchors.has(key)) return false;
+    seenContextAnchors.add(key);
+    return true;
+  });
+  const primaryContext = uniqueCandidates(args.context.primaryContext);
+  const relatedContext = uniqueCandidates(args.context.relatedContext);
+  const totalContext = primaryContext.length + relatedContext.length;
   const liveTextMatchCount = args.liveTextSearch?.matches.length ?? 0;
   const allFacts = [
     ...(args.reefFacts ?? []).flatMap((result) => result.facts),
@@ -1560,10 +1643,10 @@ function buildSummary(args: {
     return "Reef did not find deterministic project context for this question. Use the warnings and suggested actions to broaden the query or fall back to exact live search.";
   }
 
-  const primary = args.context.primaryContext.slice(0, 5).map(candidateLabel);
+  const primary = primaryContext.slice(0, 5).map(candidateLabel);
   const parts = totalContext > 0
     ? [
-        `Reef found ${args.context.primaryContext.length} primary and ${args.context.relatedContext.length} related context item(s).`,
+        `Reef found ${primaryContext.length} primary and ${relatedContext.length} related context item(s).`,
         primary.length > 0
           ? `Primary anchors: ${primary.join(", ")}.`
           : "No primary anchors were selected; related context carried the indexed evidence.",
@@ -2415,6 +2498,18 @@ function projectContextCandidates(items: ReefContextCandidate[], compact: boolea
   return compact ? items.map(compactContextCandidate) : items;
 }
 
+function uniqueContextCandidatesByPath(
+  items: ReefContextCandidate[],
+  seenPaths: Set<string>,
+): ReefContextCandidate[] {
+  return items.filter((item) => {
+    if (!item.path) return true;
+    if (seenPaths.has(item.path)) return false;
+    seenPaths.add(item.path);
+    return true;
+  });
+}
+
 function buildReefAskEvidenceOutput(args: {
   plan: ReefQueryEnginePlan;
   context: ContextPacketResult;
@@ -2436,12 +2531,19 @@ function buildReefAskEvidenceOutput(args: {
   const limit = evidenceCap(args.plan);
   const compactItems = args.plan.evidenceMode !== "full";
   const sections: ReefCompiledQuery["evidence"]["sections"] = {};
+  const compactContextPaths = new Set<string>();
+  const primaryContextInput = compactItems
+    ? uniqueContextCandidatesByPath(args.context.primaryContext, compactContextPaths)
+    : args.context.primaryContext;
+  const relatedContextInput = compactItems
+    ? uniqueContextCandidatesByPath(args.context.relatedContext, compactContextPaths)
+    : args.context.relatedContext;
   const primaryContext = projectContextCandidates(
-    capEvidenceArray(sections, "primaryContext", args.context.primaryContext, limit),
+    capEvidenceArray(sections, "primaryContext", primaryContextInput, limit),
     compactItems,
   );
   const relatedContext = projectContextCandidates(
-    capEvidenceArray(sections, "relatedContext", args.context.relatedContext, limit),
+    capEvidenceArray(sections, "relatedContext", relatedContextInput, limit),
     compactItems,
   );
   const symbols = capEvidenceArray(sections, "symbols", args.context.symbols, limit);
@@ -2457,7 +2559,8 @@ function buildReefAskEvidenceOutput(args: {
     : findingsCapped;
   const risks = capEvidenceArray(sections, "risks", args.context.risks, limit);
   const instructions = capEvidenceArray(sections, "instructions", args.context.scopedInstructions, limit);
-  const openLoops = capEvidenceArray(sections, "openLoops", args.openLoops?.loops ?? [], limit);
+  const openLoopsCapped = capEvidenceArray(sections, "openLoops", args.openLoops?.loops ?? [], limit);
+  const openLoops = compactItems ? openLoopsCapped.map(compactOpenLoop) : openLoopsCapped;
   const facts = capEvidenceArray(sections, "facts", args.facts, limit);
   const tableNeighborhood = args.tableNeighborhood
     ? {
@@ -2579,6 +2682,13 @@ function buildReefAskEvidenceOutput(args: {
         changedFiles: [],
         suggestedActions: [],
       };
+  // A caller that explicitly asks for the decision trace also needs enough
+  // graph room to preserve the relationships behind that trace. Keep the
+  // normal compact cap for model-facing answers, but do not let a low section
+  // cap silently remove core edges from trace mode.
+  const graphLimit = args.plan.includeTrace && limit !== undefined
+    ? Math.max(limit, DEFAULT_MAX_EVIDENCE_ITEMS_PER_SECTION * 4)
+    : limit;
   const fullGraph = buildReefEvidenceGraph({
     ...(args.revision !== undefined ? { revision: args.revision } : {}),
     primaryContext: args.context.primaryContext,
@@ -2620,7 +2730,7 @@ function buildReefAskEvidenceOutput(args: {
       changedFiles: args.verification?.changedFiles ?? [],
       suggestedActions: args.verification?.suggestedActions ?? [],
     },
-    ...(limit !== undefined ? { nodeLimit: limit, edgeLimit: limit } : {}),
+    ...(graphLimit !== undefined ? { nodeLimit: graphLimit, edgeLimit: graphLimit } : {}),
   });
   // The raw evidence graph (nodes/edges with provenance) is the single heaviest
   // section and has no compact-surface consumers, so it is only emitted for
@@ -2908,57 +3018,120 @@ async function collectFindingCalculationEvidence(
   }));
 }
 
-async function collectFeatureFlowEvidence(
+async function collectGraphAndFeatureEvidence(
   plan: ReefQueryEnginePlan,
+  context: ContextPacketResult,
   locatorInput: ProjectLocatorInput,
   options: ToolServiceOptions,
-): Promise<FeatureFlowEvidenceResult> {
-  const featurePlan = plan.featureFlow;
-  if (!featurePlan) return {};
+): Promise<GraphAndFeatureEvidenceResult> {
+  const focusedGraphFiles = focusedIndexedGraphFiles(context, plan);
+  const focusedGraphDatabaseObjects = focusedIndexedGraphDatabaseObjects(context, plan);
+  const freshness = indexedGraphFreshness(context);
   return await withProjectContext(locatorInput, options, ({ project, projectStore }) => {
-    const sourceRevision = projectStore.loadReefAnalysisState(
-      project.projectId,
-      project.canonicalPath,
-    )?.materializedRevision;
-    const calculationInput: JsonObject = {
-      fileSeeds: featurePlan.fileSeeds,
-      routeSeeds: featurePlan.routeSeeds,
-      databaseObjectSeeds: featurePlan.databaseObjectSeeds,
-      symbolSeeds: featurePlan.symbolSeeds,
-      textSeeds: featurePlan.textSeeds,
-      importDepth: featurePlan.importDepth,
-      limit: featurePlan.limit,
-    };
-    const calculation = runCachedReefCalculation({
-      projectStore,
-      projectId: project.projectId,
-      root: project.canonicalPath,
-      node: REEF_FEATURE_FLOW_NODE,
-      queryKind: REEF_FEATURE_FLOW_QUERY_KIND,
-      sourceRevision,
-      input: calculationInput,
-      compute: () => calculateReefFeatureFlow({
+    const result: GraphAndFeatureEvidenceResult = {};
+    try {
+      result.indexedGraph = collectFocusedIndexedGraphEvidence({
         projectStore,
         projectId: project.projectId,
-        fileSeeds: featurePlan.fileSeeds,
-        routeSeeds: featurePlan.routeSeeds,
-        databaseObjectSeeds: featurePlan.databaseObjectSeeds,
-        symbolSeeds: featurePlan.symbolSeeds,
-        textSeeds: featurePlan.textSeeds,
-        importDepth: featurePlan.importDepth,
-        limit: featurePlan.limit,
-      }),
-      toJson: reefFeatureFlowToJson,
-      fromJson: reefFeatureFlowFromJson,
-    });
-    return {
-      featureFlow: {
-        ...calculation.value,
-      },
-    };
+        root: project.canonicalPath,
+        focusFiles: focusedGraphFiles,
+        focusDatabaseObjects: focusedGraphDatabaseObjects,
+        freshness,
+      });
+    } catch (error) {
+      result.indexedGraphWarnings = [
+        `focused indexed graph enrichment failed: ${errorMessage(error)}`,
+      ];
+    }
+    try {
+      result.conventionGraph = collectFocusedConventionGraphEvidence({
+        projectStore,
+        projectId: project.projectId,
+        focusFiles: focusedGraphFiles,
+        freshness,
+      });
+    } catch (error) {
+      result.conventionGraphWarnings = [
+        `focused convention graph enrichment failed: ${errorMessage(error)}`,
+      ];
+    }
+    try {
+      result.operationalGraph = collectFocusedOperationalGraphEvidence({
+        projectStore,
+        projectId: project.projectId,
+        focusFiles: focusedGraphFiles,
+        freshness,
+      });
+    } catch (error) {
+      result.operationalGraphWarnings = [
+        `focused operational graph enrichment failed: ${errorMessage(error)}`,
+      ];
+    }
+
+    const featurePlan = plan.featureFlow;
+    if (featurePlan) {
+      try {
+        // Context ranking has already paid the cost to identify the strongest
+        // query-relevant files. Feed those bounded primary hits into the flow
+        // calculation so a focused graph does not discard a relevant direct
+        // dependency merely because it sorts after the output cap.
+        const contextFileSeeds = unique(
+          context.primaryContext.flatMap((candidate) =>
+            candidate.path ? [candidate.path] : []
+          ),
+        ).slice(0, featurePlan.limit);
+        const sourceRevision = reefCalculationSourceRevision(
+          projectStore,
+          project.projectId,
+          project.canonicalPath,
+        );
+        const calculationInput: JsonObject = {
+          fileSeeds: featurePlan.fileSeeds,
+          contextFileSeeds,
+          routeSeeds: featurePlan.routeSeeds,
+          databaseObjectSeeds: featurePlan.databaseObjectSeeds,
+          symbolSeeds: featurePlan.symbolSeeds,
+          textSeeds: featurePlan.textSeeds,
+          importDepth: featurePlan.importDepth,
+          limit: featurePlan.limit,
+        };
+        const calculation = runCachedReefCalculation({
+          projectStore,
+          projectId: project.projectId,
+          root: project.canonicalPath,
+          node: REEF_FEATURE_FLOW_NODE,
+          queryKind: REEF_FEATURE_FLOW_QUERY_KIND,
+          sourceRevision,
+          input: calculationInput,
+          compute: () => calculateReefFeatureFlow({
+            projectStore,
+            projectId: project.projectId,
+            fileSeeds: featurePlan.fileSeeds,
+            contextFileSeeds,
+            routeSeeds: featurePlan.routeSeeds,
+            databaseObjectSeeds: featurePlan.databaseObjectSeeds,
+            symbolSeeds: featurePlan.symbolSeeds,
+            textSeeds: featurePlan.textSeeds,
+            importDepth: featurePlan.importDepth,
+            limit: featurePlan.limit,
+          }),
+          toJson: reefFeatureFlowToJson,
+          fromJson: reefFeatureFlowFromJson,
+        });
+        result.featureFlow = { ...calculation.value };
+      } catch (error) {
+        result.featureFlowWarnings = [
+          `feature flow calculation failed: ${errorMessage(error)}`,
+        ];
+      }
+    }
+    return result;
   }).catch((error: unknown) => ({
+    indexedGraphWarnings: [
+      `focused graph enrichment failed while resolving project context: ${errorMessage(error)}`,
+    ],
     featureFlowWarnings: [
-      `feature flow calculation failed: ${errorMessage(error)}`,
+      `feature flow calculation failed while resolving project context: ${errorMessage(error)}`,
     ],
   }));
 }
@@ -2970,58 +3143,12 @@ export async function collectReefQueryEvidence(
   const context = await contextPacketTool(plan.contextInput, options);
 
   const projectLocator = { projectId: context.projectId };
-  const focusedGraphFiles = focusedIndexedGraphFiles(context, plan);
-  const focusedGraphDatabaseObjects = focusedIndexedGraphDatabaseObjects(context, plan);
-  const indexedGraphPromise: Promise<IndexedGraphEvidenceResult> = withProjectContext(
+  const graphAndFeaturePromise = collectGraphAndFeatureEvidence(
+    plan,
+    context,
     projectLocator,
     options,
-    ({ project, projectStore }) => ({
-      indexedGraph: collectFocusedIndexedGraphEvidence({
-        projectStore,
-        projectId: project.projectId,
-        root: project.canonicalPath,
-        focusFiles: focusedGraphFiles,
-        focusDatabaseObjects: focusedGraphDatabaseObjects,
-        freshness: indexedGraphFreshness(context),
-      }),
-    }),
-  ).catch((error: unknown) => ({
-    indexedGraphWarnings: [
-      `focused indexed graph enrichment failed: ${errorMessage(error)}`,
-    ],
-  }));
-  const conventionGraphPromise: Promise<ConventionGraphEvidenceResult> = withProjectContext(
-    projectLocator,
-    options,
-    ({ project, projectStore }) => ({
-      conventionGraph: collectFocusedConventionGraphEvidence({
-        projectStore,
-        projectId: project.projectId,
-        focusFiles: focusedGraphFiles,
-        freshness: indexedGraphFreshness(context),
-      }),
-    }),
-  ).catch((error: unknown) => ({
-    conventionGraphWarnings: [
-      `focused convention graph enrichment failed: ${errorMessage(error)}`,
-    ],
-  }));
-  const operationalGraphPromise: Promise<OperationalGraphEvidenceResult> = withProjectContext(
-    projectLocator,
-    options,
-    ({ project, projectStore }) => ({
-      operationalGraph: collectFocusedOperationalGraphEvidence({
-        projectStore,
-        projectId: project.projectId,
-        focusFiles: focusedGraphFiles,
-        freshness: indexedGraphFreshness(context),
-      }),
-    }),
-  ).catch((error: unknown) => ({
-    operationalGraphWarnings: [
-      `focused operational graph enrichment failed: ${errorMessage(error)}`,
-    ],
-  }));
+  );
   const openLoopsPromise = plan.includeOpenLoops
     ? projectOpenLoopsTool({
         ...projectLocator,
@@ -3115,14 +3242,8 @@ export async function collectReefQueryEvidence(
     plan.projectFindings || plan.duplicateCandidates
       ? collectFindingCalculationEvidence(plan, projectLocator, options)
       : undefined;
-  const featureFlowPromise: Promise<FeatureFlowEvidenceResult> | undefined = plan.featureFlow
-    ? collectFeatureFlowEvidence(plan, projectLocator, options)
-    : undefined;
-
   const [
-    indexedGraphResult,
-    conventionGraphResult,
-    operationalGraphResult,
+    graphAndFeatureResult,
     openLoops,
     verification,
     liveTextSearchResult,
@@ -3132,11 +3253,8 @@ export async function collectReefQueryEvidence(
     neighborhoodResult,
     whereUsedResult,
     findingCalculationResult,
-    featureFlowResult,
   ] = await Promise.all([
-    indexedGraphPromise,
-    conventionGraphPromise,
-    operationalGraphPromise,
+    graphAndFeaturePromise,
     openLoopsPromise,
     verificationPromise,
     liveTextSearchPromise,
@@ -3146,22 +3264,21 @@ export async function collectReefQueryEvidence(
     neighborhoodPromise,
     whereUsedPromise,
     findingCalculationPromise,
-    featureFlowPromise,
   ]);
 
   return {
     context,
-    ...(indexedGraphResult.indexedGraph ? { indexedGraph: indexedGraphResult.indexedGraph } : {}),
-    ...(indexedGraphResult.indexedGraphWarnings?.length
-      ? { indexedGraphWarnings: indexedGraphResult.indexedGraphWarnings }
+    ...(graphAndFeatureResult.indexedGraph ? { indexedGraph: graphAndFeatureResult.indexedGraph } : {}),
+    ...(graphAndFeatureResult.indexedGraphWarnings?.length
+      ? { indexedGraphWarnings: graphAndFeatureResult.indexedGraphWarnings }
       : {}),
-    ...(conventionGraphResult.conventionGraph ? { conventionGraph: conventionGraphResult.conventionGraph } : {}),
-    ...(conventionGraphResult.conventionGraphWarnings?.length
-      ? { conventionGraphWarnings: conventionGraphResult.conventionGraphWarnings }
+    ...(graphAndFeatureResult.conventionGraph ? { conventionGraph: graphAndFeatureResult.conventionGraph } : {}),
+    ...(graphAndFeatureResult.conventionGraphWarnings?.length
+      ? { conventionGraphWarnings: graphAndFeatureResult.conventionGraphWarnings }
       : {}),
-    ...(operationalGraphResult.operationalGraph ? { operationalGraph: operationalGraphResult.operationalGraph } : {}),
-    ...(operationalGraphResult.operationalGraphWarnings?.length
-      ? { operationalGraphWarnings: operationalGraphResult.operationalGraphWarnings }
+    ...(graphAndFeatureResult.operationalGraph ? { operationalGraph: graphAndFeatureResult.operationalGraph } : {}),
+    ...(graphAndFeatureResult.operationalGraphWarnings?.length
+      ? { operationalGraphWarnings: graphAndFeatureResult.operationalGraphWarnings }
       : {}),
     ...(openLoops ? { openLoops } : {}),
     ...(verification ? { verification } : {}),
@@ -3211,9 +3328,9 @@ export async function collectReefQueryEvidence(
     ...(findingCalculationResult?.statusCalculationWarnings
       ? { statusCalculationWarnings: findingCalculationResult.statusCalculationWarnings }
       : {}),
-    ...(featureFlowResult?.featureFlow ? { featureFlow: featureFlowResult.featureFlow } : {}),
-    ...(featureFlowResult?.featureFlowWarnings
-      ? { featureFlowWarnings: featureFlowResult.featureFlowWarnings }
+    ...(graphAndFeatureResult.featureFlow ? { featureFlow: graphAndFeatureResult.featureFlow } : {}),
+    ...(graphAndFeatureResult.featureFlowWarnings
+      ? { featureFlowWarnings: graphAndFeatureResult.featureFlowWarnings }
       : {}),
   };
 }
@@ -3227,11 +3344,18 @@ export function compileReefQueryAnswer(
   const findings = mergedFindings(evidence);
   const inventorySummary = compileInventorySummary(facts);
   const databaseObjectSummary = compileDatabaseObjectSummary(facts, evidence.databaseObjectQuery);
-  const diagnosticSummary = compileDiagnosticSummary(evidence);
-  const findingsSummary = compileFindingsSummary(findings, plan.evidenceMode !== "full");
+  const compactEvidence = plan.evidenceMode !== "full";
+  const diagnosticSummary = compileDiagnosticSummary(evidence, compactEvidence);
+  const findingsSummary = compileFindingsSummary(findings, compactEvidence);
   const literalMatchesSummary = compileLiteralMatchesSummary(evidence.liveTextSearch);
   const whereUsedSummary = compileWhereUsedSummary(evidence.whereUsed);
-  const featureFlowSummary = evidence.featureFlow;
+  // Compact responses already carry feature flow once in evidence.featureFlow.
+  // Repeating the same large structure in answer.featureFlowSummary wastes the
+  // model's context window. Keep the compatibility projection for explicit
+  // full-evidence callers only.
+  const featureFlowSummary = plan.evidenceMode === "full"
+    ? evidence.featureFlow
+    : undefined;
   const nextQueries = compileNextQueries({ evidence, facts, findings });
   const decisionTrace = plan.includeTrace
     ? compileDecisionTrace({

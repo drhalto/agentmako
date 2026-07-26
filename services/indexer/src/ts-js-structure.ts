@@ -297,6 +297,27 @@ export function collectImportEdgesFromAst(
 ): IndexedFileRecord["imports"] {
   const sourceFile = parseSourceFile(sourceRelativePath, content);
   const imports: IndexedFileRecord["imports"] = [];
+  const pushImport = (
+    specifier: string,
+    node: ts.Node,
+    options: { reExport: boolean; isTypeOnly: boolean },
+  ): void => {
+    imports.push({
+      specifier,
+      targetPath: resolveRelativeImportTarget(
+        rootPath,
+        sourceRelativePath,
+        specifier,
+        knownRelativePaths,
+        pathAliases,
+      ),
+      importKind: importKindForSpecifier(specifier, pathAliases, {
+        reExport: options.reExport,
+      }),
+      isTypeOnly: options.isTypeOnly,
+      line: lineStart(sourceFile, node),
+    });
+  };
 
   for (const statement of sourceFile.statements) {
     if (ts.isImportDeclaration(statement)) {
@@ -304,18 +325,9 @@ export function collectImportEdgesFromAst(
       if (specifier == null) {
         continue;
       }
-      imports.push({
-        specifier,
-        targetPath: resolveRelativeImportTarget(
-          rootPath,
-          sourceRelativePath,
-          specifier,
-          knownRelativePaths,
-          pathAliases,
-        ),
-        importKind: importKindForSpecifier(specifier, pathAliases, { reExport: false }),
+      pushImport(specifier, statement, {
+        reExport: false,
         isTypeOnly: statement.importClause?.isTypeOnly === true,
-        line: lineStart(sourceFile, statement),
       });
       continue;
     }
@@ -325,21 +337,32 @@ export function collectImportEdgesFromAst(
       if (specifier == null) {
         continue;
       }
-      imports.push({
-        specifier,
-        targetPath: resolveRelativeImportTarget(
-          rootPath,
-          sourceRelativePath,
-          specifier,
-          knownRelativePaths,
-          pathAliases,
-        ),
-        importKind: importKindForSpecifier(specifier, pathAliases, { reExport: true }),
+      pushImport(specifier, statement, {
+        reExport: true,
         isTypeOnly: statement.isTypeOnly,
-        line: lineStart(sourceFile, statement),
       });
     }
   }
+
+  // Dynamic import() calls can sit inside functions and are common at real
+  // route/auth boundaries. Treat literal targets as dependency edges so
+  // focused graph traversal does not silently stop at a lazy-loaded module.
+  const visitDynamicImports = (node: ts.Node): void => {
+    if (
+      ts.isCallExpression(node)
+      && node.expression.kind === ts.SyntaxKind.ImportKeyword
+    ) {
+      const specifier = stringLiteralValue(node.arguments[0]);
+      if (specifier != null) {
+        pushImport(specifier, node, {
+          reExport: false,
+          isTypeOnly: false,
+        });
+      }
+    }
+    ts.forEachChild(node, visitDynamicImports);
+  };
+  visitDynamicImports(sourceFile);
 
   return imports;
 }
@@ -1091,6 +1114,13 @@ function routeCandidateFromExpressCall(
   }
   const rawMethod = node.expression.name.text.toLowerCase();
   if (!EXPRESS_METHODS.has(rawMethod)) {
+    return undefined;
+  }
+  // Collection access such as map.get("key") and set.delete("key") shares
+  // Express' method names. A local HTTP registration needs at least a path
+  // and a handler/options argument; accepting one-argument calls turns
+  // ordinary Sets and Maps into phantom API routes throughout the index.
+  if (node.arguments.length < 2) {
     return undefined;
   }
   const firstArgument = node.arguments[0];
